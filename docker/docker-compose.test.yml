@@ -1,0 +1,15 @@
+# Docker Compose test local - chạy thử patch trên máy local
+services:
+  n8n_test:
+    image: n8nio/n8n:latest
+    user: root
+    restart: "no"
+    ports:
+      - "5679:5678"
+    volumes:
+      - ./test-data:/home/node/.n8n
+      - ./patch-license.sh:/patch-license.sh:ro
+    entrypoint: ["tini", "--", "/patch-license.sh"]
+    environment:
+      GENERIC_TIMEZONE: Asia/Ho_Chi_Minh
+      NODEJS_PREFER_IPV4: "true"

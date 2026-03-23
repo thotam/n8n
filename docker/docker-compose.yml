@@ -16,7 +16,7 @@ services:
     volumes:
       - ${APP_PATH}/data:/home/node/.n8n
       - ${APP_PATH}/patch-license.sh:/patch-license.sh:ro  # PATCH: mount script
-    entrypoint: ["tini", "--", "/patch-license.sh"]          # PATCH: custom entrypoint
+    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]    # PATCH: custom entrypoint
     # command không cần vì script sẽ gọi /docker-entrypoint.sh
     env_file:
       - .env

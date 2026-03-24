@@ -1,15 +1,104 @@
-# Docker Compose test local - chạy thử patch trên máy local
+# Docker Compose test local — chạy thử patch trên máy local
+# Bao gồm PostgreSQL và Redis để test queue mode đầy đủ
 services:
+
+  postgres_test:
+    image: postgres:16-alpine
+    restart: "no"
+    environment:
+      POSTGRES_USER: n8n
+      POSTGRES_PASSWORD: testpassword
+      POSTGRES_DB: n8n
+    volumes:
+      - ./test-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U n8n -d n8n"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis_test:
+    image: redis:7-alpine
+    restart: "no"
+    command: redis-server --requirepass testredispass --appendonly yes
+    volumes:
+      - ./test-redis-data:/data
+
   n8n_test:
     image: n8nio/n8n:latest
     user: root
     restart: "no"
+    depends_on:
+      postgres_test:
+        condition: service_healthy
+      redis_test:
+        condition: service_started
     ports:
       - "5679:5678"
     volumes:
       - ./test-data:/home/node/.n8n
       - ./patch-license.sh:/patch-license.sh:ro
-    entrypoint: ["tini", "--", "/patch-license.sh"]
+    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]  # fix: thêm "sh"
     environment:
+      # Database
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres_test
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: testpassword
+      # Queue
+      EXECUTIONS_MODE: queue
+      QUEUE_BULL_REDIS_HOST: redis_test
+      QUEUE_BULL_REDIS_PORT: 6379
+      QUEUE_BULL_REDIS_PASSWORD: testredispass
+      QUEUE_HEALTH_CHECK_ACTIVE: "true"
+      N8N_GRACEFUL_SHUTDOWN_TIMEOUT: "30"
+      OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS: "true"
+      N8N_ENCRYPTION_KEY: test-encryption-key-local-only
       GENERIC_TIMEZONE: Asia/Ho_Chi_Minh
       NODEJS_PREFER_IPV4: "true"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_SECURE_COOKIE: "false"
+
+  # ─── n8n Worker: test queue mode ─────────────────────────────────────────────
+  n8n_worker_test:
+    image: n8nio/n8n:latest
+    user: root
+    restart: "no"
+    command: worker --concurrency=5
+    deploy:
+      replicas: 2        # 2 worker để test multi-replica
+    depends_on:
+      postgres_test:
+        condition: service_healthy
+      redis_test:
+        condition: service_started
+      n8n_test:
+        condition: service_started
+    # Không expose port — worker chỉ cần kết nối Redis + PostgreSQL
+    volumes:
+      - ./patch-license.sh:/patch-license.sh:ro
+    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]
+    environment:
+      # Database — giống main
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres_test
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: testpassword
+      # Queue
+      EXECUTIONS_MODE: queue
+      QUEUE_BULL_REDIS_HOST: redis_test
+      QUEUE_BULL_REDIS_PORT: 6379
+      QUEUE_BULL_REDIS_PASSWORD: testredispass
+      QUEUE_HEALTH_CHECK_ACTIVE: "true"
+      N8N_GRACEFUL_SHUTDOWN_TIMEOUT: "30"
+      # QUAN TRỌNG: phải giống main
+      N8N_ENCRYPTION_KEY: test-encryption-key-local-only
+      GENERIC_TIMEZONE: Asia/Ho_Chi_Minh
+      NODEJS_PREFER_IPV4: "true"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"

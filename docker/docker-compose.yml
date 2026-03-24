@@ -1,29 +1,162 @@
-# Docker Compose cho n8n với auto-patch license
-# So với bản gốc, chỉ thêm 3 thay đổi (đánh dấu # PATCH)
+# Docker Compose cho n8n — Queue Mode
+# Bao gồm: PostgreSQL, Redis, n8n main, n8n worker (multi-replica), patch license
 
 services:
+
+  # ─── PostgreSQL ─────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data  # persistent storage
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - baota_net
+
+  # ─── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    volumes:
+      - redis_data:/data  # persistent storage (AOF enabled)
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - baota_net
+
+  # ─── n8n Main: UI + API + Trigger ───────────────────────────────────────────
   n8n_dtp:
     image: n8nio/n8n:${VERSION}
     user: root
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - ${HOST_IP}:${WEB_HTTP_PORT}:5678
+    volumes:
+      - n8n_data:/home/node/.n8n              # persistent: credentials, settings
+      - ${APP_PATH}/patch-license.sh:/patch-license.sh:ro  # PATCH
+    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]  # PATCH
+    # command không cần — script forward $@ vào /docker-entrypoint.sh
+    environment:
+      # Database
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${POSTGRES_HOST}
+      DB_POSTGRESDB_PORT: ${POSTGRES_PORT}
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      # Redis / Queue
+      EXECUTIONS_MODE: ${EXECUTIONS_MODE}
+      QUEUE_BULL_REDIS_HOST: ${REDIS_HOST}
+      QUEUE_BULL_REDIS_PORT: ${REDIS_PORT}
+      QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      QUEUE_HEALTH_CHECK_ACTIVE: ${QUEUE_HEALTH_CHECK_ACTIVE}
+      N8N_GRACEFUL_SHUTDOWN_TIMEOUT: ${N8N_GRACEFUL_SHUTDOWN_TIMEOUT}
+      OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS: ${OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS:-true}
+      # n8n Core
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: ${N8N_HOST}
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE}
+      N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-1}
+      NODEJS_PREFER_IPV4: ${NODEJS_PREFER_IPV4}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: ${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS}
+      N8N_DIAGNOSTICS_ENABLED: ${N8N_DIAGNOSTICS_ENABLED}
+      N8N_METRICS: ${N8N_METRICS}
+      N8N_USER_FOLDER: ${N8N_USER_FOLDER}
+      # SMTP
+      N8N_EMAIL_MODE: ${N8N_EMAIL_MODE}
+      N8N_SMTP_HOST: ${N8N_SMTP_HOST}
+      N8N_SMTP_PORT: ${N8N_SMTP_PORT}
+      N8N_SMTP_USER: ${N8N_SMTP_USER}
+      N8N_SMTP_PASS: ${N8N_SMTP_PASS}
+      N8N_SMTP_SENDER: ${N8N_SMTP_SENDER}
+      CREDENTIALS_OVERWRITE_DATA: ${CREDENTIALS_OVERWRITE_DATA}
     deploy:
       resources:
         limits:
           cpus: ${CPUS}
           memory: ${MEMORY_LIMIT}
-    restart: always
-    ports:
-      - ${HOST_IP}:${WEB_HTTP_PORT}:5678
-    volumes:
-      - ${APP_PATH}/data:/home/node/.n8n
-      - ${APP_PATH}/patch-license.sh:/patch-license.sh:ro  # PATCH: mount script
-    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]    # PATCH: custom entrypoint
-    # command không cần vì script sẽ gọi /docker-entrypoint.sh
-    env_file:
-      - .env
     labels:
       createdBy: "bt_apps"
     networks:
       - baota_net
+
+  # ─── n8n Worker: thực thi workflow ──────────────────────────────────────────
+  n8n_worker:
+    image: n8nio/n8n:${VERSION}
+    user: root
+    restart: always
+    command: worker --concurrency=${WORKER_CONCURRENCY:-10}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      n8n_dtp:
+        condition: service_started
+    # Không có ports — worker không cần expose ra ngoài
+    volumes:
+      - ${APP_PATH}/patch-license.sh:/patch-license.sh:ro  # PATCH
+    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]  # PATCH → exec worker
+    environment:
+      # Database
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: ${POSTGRES_HOST}
+      DB_POSTGRESDB_PORT: ${POSTGRES_PORT}
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      # Redis / Queue
+      EXECUTIONS_MODE: ${EXECUTIONS_MODE}
+      QUEUE_BULL_REDIS_HOST: ${REDIS_HOST}
+      QUEUE_BULL_REDIS_PORT: ${REDIS_PORT}
+      QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      QUEUE_HEALTH_CHECK_ACTIVE: ${QUEUE_HEALTH_CHECK_ACTIVE}
+      N8N_GRACEFUL_SHUTDOWN_TIMEOUT: ${N8N_GRACEFUL_SHUTDOWN_TIMEOUT}
+      # n8n Core — ENCRYPTION_KEY phải giống main
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      NODEJS_PREFER_IPV4: ${NODEJS_PREFER_IPV4}
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: ${N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS}
+      N8N_DIAGNOSTICS_ENABLED: ${N8N_DIAGNOSTICS_ENABLED}
+      N8N_METRICS: ${N8N_METRICS}
+      N8N_USER_FOLDER: ${N8N_USER_FOLDER}
+      CREDENTIALS_OVERWRITE_DATA: ${CREDENTIALS_OVERWRITE_DATA}
+    deploy:
+      replicas: ${WORKER_COUNT:-2}
+      resources:
+        limits:
+          cpus: ${WORKER_CPUS:-0.5}
+          memory: ${WORKER_MEMORY:-512m}
+    labels:
+      createdBy: "bt_apps"
+    networks:
+      - baota_net
+
+# ─── Volumes persistent ───────────────────────────────────────────────────────
+volumes:
+  postgres_data:    # dữ liệu PostgreSQL
+  redis_data:       # dữ liệu Redis (AOF)
+  n8n_data:         # credentials, settings n8n
 
 networks:
   baota_net:

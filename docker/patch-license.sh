@@ -1,18 +1,25 @@
 #!/bin/sh
-# Script tự động patch license.js khi container khởi động
+# Script tự động patch license.js
 # Dùng Node.js để patch chính xác (tránh lỗi sed multiline)
+# Flag: --skip-exec → chỉ patch, không exec n8n (dùng khi Dockerfile build-time)
+
+SKIP_EXEC=0
+if [ "$1" = "--skip-exec" ]; then
+  SKIP_EXEC=1
+  shift
+fi
 
 LICENSE_FILE="/usr/local/lib/node_modules/n8n/dist/license.js"
 
 if [ ! -f "$LICENSE_FILE" ]; then
   echo "[patch] CẢNH BÁO: Không tìm thấy license.js"
-  exec /docker-entrypoint.sh "$@"
+  [ "$SKIP_EXEC" = "1" ] && exit 0 || exec /docker-entrypoint.sh "$@"
 fi
 
 # Kiểm tra đã patch chưa
 if grep -q "feat:showNonProdBanner" "$LICENSE_FILE"; then
   echo "[patch] Đã patch trước đó, bỏ qua."
-  exec /docker-entrypoint.sh "$@"
+  [ "$SKIP_EXEC" = "1" ] && exit 0 || exec /docker-entrypoint.sh "$@"
 fi
 
 echo "[patch] Đang patch license.js ..."
@@ -83,6 +90,11 @@ if [ $? -ne 0 ]; then
   echo "[patch] LỖI: Patch thất bại!"
 else
   echo "[patch] Hoàn tất!"
+fi
+
+if [ "$SKIP_EXEC" = "1" ]; then
+  echo "[patch] Chế độ build-time: Hoàn tất, không khởi động n8n."
+  exit 0
 fi
 
 echo "[patch] Khởi động n8n..."

@@ -25,8 +25,12 @@ services:
       - ./test-redis-data:/data
 
   n8n_test:
-    image: n8nio/n8n:latest
-    user: root
+    build:
+      context: .            # thư mục docker/
+      dockerfile: Dockerfile
+      args:
+        VERSION: latest
+    image: n8n_dtp:latest   # dùng lại image nếu đã build
     restart: "no"
     depends_on:
       postgres_test:
@@ -37,8 +41,6 @@ services:
       - "5679:5678"
     volumes:
       - ./test-data:/home/node/.n8n
-      - ./patch-license.sh:/patch-license.sh:ro
-    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]  # fix: thêm "sh"
     environment:
       # Database
       DB_TYPE: postgresdb
@@ -64,8 +66,12 @@ services:
 
   # ─── n8n Worker: test queue mode ─────────────────────────────────────────────
   n8n_worker_test:
-    image: n8nio/n8n:latest
-    user: root
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: latest
+    image: n8n_dtp:latest   # tái dùng image, không build lại
     restart: "no"
     command: worker --concurrency=5
     deploy:
@@ -78,9 +84,6 @@ services:
       n8n_test:
         condition: service_started
     # Không expose port — worker chỉ cần kết nối Redis + PostgreSQL
-    volumes:
-      - ./patch-license.sh:/patch-license.sh:ro
-    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]
     environment:
       # Database — giống main
       DB_TYPE: postgresdb

@@ -38,8 +38,12 @@ services:
 
   # ─── n8n Main: UI + API + Trigger ───────────────────────────────────────────
   n8n_dtp:
-    image: n8nio/n8n:${VERSION}
-    user: root
+    build:
+      context: .            # thư mục docker/
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION}
+    image: n8n_dtp:${VERSION}  # cache image sau khi build
     restart: always
     depends_on:
       postgres:
@@ -50,9 +54,6 @@ services:
       - ${HOST_IP}:${WEB_HTTP_PORT}:5678
     volumes:
       - n8n_data:/home/node/.n8n              # persistent: credentials, settings
-      - ${APP_PATH}/patch-license.sh:/patch-license.sh:ro  # PATCH
-    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]  # PATCH
-    # command không cần — script forward $@ vào /docker-entrypoint.sh
     environment:
       # Database
       DB_TYPE: postgresdb
@@ -102,8 +103,12 @@ services:
 
   # ─── n8n Worker: thực thi workflow ──────────────────────────────────────────
   n8n_worker:
-    image: n8nio/n8n:${VERSION}
-    user: root
+    build:
+      context: .            # dùng chung Dockerfile đã patch
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION}
+    image: n8n_dtp:${VERSION}  # tái dùng image đã build, không pull lại
     restart: always
     command: worker --concurrency=${WORKER_CONCURRENCY:-10}
     depends_on:
@@ -114,9 +119,6 @@ services:
       n8n_dtp:
         condition: service_started
     # Không có ports — worker không cần expose ra ngoài
-    volumes:
-      - ${APP_PATH}/patch-license.sh:/patch-license.sh:ro  # PATCH
-    entrypoint: ["tini", "--", "sh", "/patch-license.sh"]  # PATCH → exec worker
     environment:
       # Database
       DB_TYPE: postgresdb

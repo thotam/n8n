@@ -31,6 +31,7 @@ services:
       args:
         VERSION: latest
     image: n8n_dtp:latest   # dùng lại image nếu đã build
+    pull_policy: never       # image này chỉ tồn tại local
     restart: "no"
     depends_on:
       postgres_test:
@@ -72,6 +73,7 @@ services:
       args:
         VERSION: latest
     image: n8n_dtp:latest   # tái dùng image, không build lại
+    pull_policy: never       # image này chỉ tồn tại local
     restart: "no"
     command: worker --concurrency=5
     deploy:

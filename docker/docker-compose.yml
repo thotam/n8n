@@ -44,6 +44,7 @@ services:
       args:
         VERSION: ${VERSION}
     image: n8n_dtp:${VERSION}  # cache image sau khi build
+    pull_policy: never         # image này chỉ tồn tại local, không pull từ registry
     restart: always
     depends_on:
       postgres:
@@ -109,6 +110,7 @@ services:
       args:
         VERSION: ${VERSION}
     image: n8n_dtp:${VERSION}  # tái dùng image đã build, không pull lại
+    pull_policy: never         # image này chỉ tồn tại local, không pull từ registry
     restart: always
     command: worker --concurrency=${WORKER_CONCURRENCY:-10}
     depends_on:

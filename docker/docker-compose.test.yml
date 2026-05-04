@@ -86,8 +86,6 @@ services:
       n8n_test:
         condition: service_started
     # Không expose port — worker chỉ cần kết nối Redis + PostgreSQL
-    volumes:
-      - ./test-data:/home/node/.n8n
     environment:
       # Database — giống main
       DB_TYPE: postgresdb

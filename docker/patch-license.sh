@@ -28,10 +28,10 @@ node -e "
 const fs = require('fs');
 let code = fs.readFileSync('$LICENSE_FILE', 'utf8');
 
-// 1. isLicensed() → return true (trừ showNonProdBanner, apiDisabled)
+// 1. isLicensed() → return true (trừ showNonProdBanner, apiDisabled, và toàn bộ AI features)
 code = code.replace(
   /isLicensed\(feature\)\s*\{\s*return this\.manager\?\.hasFeatureEnabled\(feature\) \?\? false;\s*\}/,
-  \"isLicensed(_feature) { if (_feature === 'feat:showNonProdBanner' || _feature === 'feat:apiDisabled') return false; return true; }\"
+  \"isLicensed(_feature) { const _disabled = ['feat:showNonProdBanner','feat:apiDisabled','feat:aiAssistant','feat:aiBuilder','feat:aiGateway','feat:aiCredits']; if (_disabled.includes(_feature)) return false; return true; }\"
 );
 
 // 2. getValue() → return unlimited cho mọi quota

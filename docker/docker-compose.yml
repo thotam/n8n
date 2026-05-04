@@ -121,6 +121,8 @@ services:
       n8n_dtp:
         condition: service_started
     # Không có ports — worker không cần expose ra ngoài
+    volumes:
+      - n8n_data:/home/node/.n8n              # chia sẻ community nodes & settings với main
     environment:
       # Database
       DB_TYPE: postgresdb

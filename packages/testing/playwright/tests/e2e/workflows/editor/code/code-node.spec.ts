@@ -25,13 +25,15 @@ test.describe(
 					n8n.ndv.getPlaceholderText('// Loop over input items and add a new field'),
 				).toBeVisible();
 
-				await n8n.ndv.selectOptionInParameterDropdown('mode', 'Run Once for Each Item');
+				await n8n.ndv.getParameterInput('mode').click();
+				await n8n.page.getByRole('option', { name: 'Run Once for Each Item' }).click();
 
 				await expect(
 					n8n.ndv.getPlaceholderText("// Add a new field called 'myNewField'"),
 				).toBeVisible();
 
-				await n8n.ndv.selectOptionInParameterDropdown('mode', 'Run Once for All Items');
+				await n8n.ndv.getParameterInput('mode').click();
+				await n8n.page.getByRole('option', { name: 'Run Once for All Items' }).click();
 
 				await expect(
 					n8n.ndv.getPlaceholderText('// Loop over input items and add a new field'),
@@ -45,7 +47,8 @@ test.describe(
 					n8n.notifications.getNotificationByTitle('Node executed successfully').first(),
 				).toBeVisible();
 
-				await n8n.ndv.selectOptionInParameterDropdown('mode', 'Run Once for Each Item');
+				await n8n.ndv.getParameterInput('mode').click();
+				await n8n.page.getByRole('option', { name: 'Run Once for Each Item' }).click();
 
 				await n8n.ndv.execute();
 

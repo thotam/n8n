@@ -32,7 +32,7 @@ export class TodoistApi implements ICredentialType {
 
 	test: ICredentialTestRequest = {
 		request: {
-			baseURL: 'https://api.todoist.com/api/v1',
+			baseURL: 'https://api.todoist.com/rest/v2',
 			url: '/labels',
 		},
 	};

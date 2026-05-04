@@ -35,10 +35,7 @@ const emit = defineEmits<N8nDateRangePickerRootEmits>();
 defineSlots<{
 	presets?: {};
 	trigger?: {};
-	footer?: { close: () => void };
 }>();
-
-const closePopover = () => emit('update:open', false);
 
 const forwarded = useForwardPropsEmits(props, emit);
 </script>
@@ -113,15 +110,13 @@ const forwarded = useForwardPropsEmits(props, emit);
 						<N8nDateRangePickerField :class="$style.DateField"></N8nDateRangePickerField>
 						<div :class="$style.DateFieldError">Outside of allowed range</div>
 
-						<slot name="footer" :close="closePopover">
-							<N8nButton
-								variant="subtle"
-								label="Apply"
-								class="mt-2xs"
-								:class="$style.ApplyButton"
-								@click="closePopover"
-							/>
-						</slot>
+						<N8nButton
+							variant="subtle"
+							label="Apply"
+							class="mt-2xs"
+							:class="$style.ApplyButton"
+							@click="emit('update:open', false)"
+						/>
 					</div>
 				</div>
 			</DateRangePickerCalendar>

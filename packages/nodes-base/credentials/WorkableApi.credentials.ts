@@ -1,9 +1,4 @@
-import type {
-	IAuthenticateGeneric,
-	ICredentialTestRequest,
-	ICredentialType,
-	INodeProperties,
-} from 'n8n-workflow';
+import type { ICredentialType, INodeProperties } from 'n8n-workflow';
 
 export class WorkableApi implements ICredentialType {
 	name = 'workableApi';
@@ -27,20 +22,4 @@ export class WorkableApi implements ICredentialType {
 			default: '',
 		},
 	];
-
-	authenticate: IAuthenticateGeneric = {
-		type: 'generic',
-		properties: {
-			headers: {
-				Authorization: '=Bearer {{$credentials.accessToken}}',
-			},
-		},
-	};
-
-	test: ICredentialTestRequest = {
-		request: {
-			baseURL: '=https://{{$credentials.subdomain}}.workable.com/spi/v3',
-			url: '/jobs',
-		},
-	};
 }

@@ -7,10 +7,6 @@ import { useCanvasMapping } from '@/features/workflows/canvas/composables/useCan
 import type { Workflow, IConnections, INodeTypeDescription, NodeDiff } from 'n8n-workflow';
 import { compareWorkflowsNodes, NodeDiffStatus } from 'n8n-workflow';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
-import {
-	createWorkflowDocumentId,
-	useWorkflowDocumentStore,
-} from '@/app/stores/workflowDocument.store';
 
 export function mapConnections(connections: CanvasConnection[]) {
 	return connections.reduce(
@@ -111,13 +107,10 @@ export const useWorkflowDiff = (
 	targetWorkflow: MaybeRefOrGetter<IWorkflowDb | undefined>,
 ) => {
 	const workflowsStore = useWorkflowsStore();
-	const workflowDocumentStore = useWorkflowDocumentStore(
-		createWorkflowDocumentId(workflowsStore.workflowId),
-	);
 	const nodeTypesStore = useNodeTypesStore();
 
-	const sourceRefs = createWorkflowRefs(sourceWorkflow, workflowDocumentStore.createWorkflowObject);
-	const targetRefs = createWorkflowRefs(targetWorkflow, workflowDocumentStore.createWorkflowObject);
+	const sourceRefs = createWorkflowRefs(sourceWorkflow, workflowsStore.createWorkflowObject);
+	const targetRefs = createWorkflowRefs(targetWorkflow, workflowsStore.createWorkflowObject);
 
 	const sourceDiff = createWorkflowDiff(
 		sourceRefs.workflowRef,

@@ -20,7 +20,6 @@ const mockRootStore = {
 	setMaxExecutionTimeout: vi.fn(),
 	setInstanceId: vi.fn(),
 	setOauthCallbackUrls: vi.fn(),
-	setJwksUri: vi.fn(),
 	setN8nMetadata: vi.fn(),
 	setDefaultLocale: vi.fn(),
 	setBinaryDataMode: vi.fn(),

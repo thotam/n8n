@@ -50,7 +50,6 @@ export function useTelemetryInitializer() {
 			userId: currentUserId.value,
 			projectId: projectsStore.personalProject?.id,
 			versionCli: rootStore.versionCli,
-			userRole: usersStore.currentUser?.role,
 		});
 
 		isTelemetryInitialized.value = true;

@@ -7,12 +7,7 @@ export interface ProvisioningConfig {
 	scopesProjectsRolesClaimName: string;
 	scopesProvisionInstanceRole: boolean;
 	scopesProvisionProjectRoles: boolean;
-	scopesUseExpressionMapping: boolean;
 }
-
-export type ProvisioningConfigPatch = Partial<ProvisioningConfig> & {
-	deleteProjectRules?: boolean;
-};
 
 export const getProvisioningConfig = async (
 	context: IRestApiContext,
@@ -22,7 +17,7 @@ export const getProvisioningConfig = async (
 
 export const saveProvisioningConfig = async (
 	context: IRestApiContext,
-	config: ProvisioningConfigPatch,
+	config: Partial<ProvisioningConfig>,
 ): Promise<ProvisioningConfig> => {
 	return await makeRestApiRequest(context, 'PATCH', '/sso/provisioning/config', config);
 };

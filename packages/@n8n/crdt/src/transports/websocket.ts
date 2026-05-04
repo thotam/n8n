@@ -85,8 +85,7 @@ export class WebSocketTransport implements SyncTransport {
 			throw new Error('Transport not connected');
 		}
 
-		// TODO: narrow SyncTransport.send to Uint8Array<ArrayBuffer> and propagate through Y.js call sites
-		this.ws.send(data as unknown as Uint8Array<ArrayBuffer>);
+		this.ws.send(data);
 	}
 
 	onReceive(handler: ReceiveHandler): Unsubscribe {

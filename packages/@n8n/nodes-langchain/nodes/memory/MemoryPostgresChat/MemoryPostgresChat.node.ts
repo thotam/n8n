@@ -20,7 +20,6 @@ import {
 	sessionKeyProperty,
 	contextWindowLengthProperty,
 	expressionSessionKeyProperty,
-	scopedSessionHint,
 } from '../descriptions';
 
 export class MemoryPostgresChat implements INodeType {
@@ -29,7 +28,7 @@ export class MemoryPostgresChat implements INodeType {
 		name: 'memoryPostgresChat',
 		icon: 'file:postgres.svg',
 		group: ['transform'],
-		version: [1, 1.1, 1.2, 1.3, 1.4],
+		version: [1, 1.1, 1.2, 1.3],
 		description: 'Stores the chat history in Postgres table.',
 		defaults: {
 			name: 'Postgres Chat Memory',
@@ -64,7 +63,6 @@ export class MemoryPostgresChat implements INodeType {
 			getConnectionHintNoticeField([NodeConnectionTypes.AiAgent]),
 			sessionIdOption,
 			expressionSessionKeyProperty(1.2),
-			scopedSessionHint(1.4),
 			sessionKeyProperty,
 			{
 				displayName: 'Table Name',

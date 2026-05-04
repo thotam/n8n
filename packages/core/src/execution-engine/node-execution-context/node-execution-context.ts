@@ -16,7 +16,6 @@ import type {
 	INodeOutputConfiguration,
 	IRunExecutionData,
 	IWorkflowExecuteAdditionalData,
-	IWorkflowExecutionCustomData,
 	NodeConnectionType,
 	NodeFeatures,
 	NodeInputConnections,
@@ -42,14 +41,13 @@ import {
 	WAITING_TOKEN_QUERY_PARAM,
 } from '@/constants';
 import { InstanceSettings } from '@/instance-settings';
-import { generateUrlSignature, prepareUrlForSigning } from '@/utils/signature-helpers';
 
 import { cleanupParameterData } from './utils/cleanup-parameter-data';
-import { createExecutionCustomData } from './utils/custom-data';
 import { ensureType } from './utils/ensure-type';
 import { extractValue } from './utils/extract-value';
 import { getAdditionalKeys } from './utils/get-additional-keys';
 import { validateValueAgainstSchema } from './utils/validate-value-against-schema';
+import { generateUrlSignature, prepareUrlForSigning } from '../../utils/signature-helpers';
 
 export abstract class NodeExecutionContext implements Omit<FunctionsBase, 'getCredentials'> {
 	protected readonly instanceSettings = Container.get(InstanceSettings);
@@ -68,19 +66,6 @@ export abstract class NodeExecutionContext implements Omit<FunctionsBase, 'getCr
 	@Memoized
 	get logger() {
 		return Container.get(Logger);
-	}
-
-	@Memoized
-	get customData(): IWorkflowExecutionCustomData {
-		if (!this.runExecutionData) {
-			throw new ApplicationError(
-				'Cannot access customData: runExecutionData is not available in this context',
-			);
-		}
-		return createExecutionCustomData({
-			runExecutionData: this.runExecutionData,
-			mode: this.mode,
-		});
 	}
 
 	getExecutionContext() {
@@ -263,6 +248,10 @@ export abstract class NodeExecutionContext implements Omit<FunctionsBase, 'getCr
 		return this.instanceSettings.instanceId;
 	}
 
+	setSignatureValidationRequired() {
+		if (this.runExecutionData) this.runExecutionData.validateSignature = true;
+	}
+
 	getSignedResumeUrl(parameters: Record<string, string> = {}) {
 		const { webhookWaitingBaseUrl, executionId } = this.additionalData;
 
@@ -276,14 +265,11 @@ export abstract class NodeExecutionContext implements Omit<FunctionsBase, 'getCr
 			baseURL.searchParams.set(key, value);
 		}
 
-		// Sign the full URL (pathname + query params) using instance secret as HMAC key
-		// This ensures action parameters (like approved=true/false) cannot be tampered with
 		const urlForSigning = prepareUrlForSigning(baseURL);
-		const signature = generateUrlSignature(
-			urlForSigning,
-			this.instanceSettings.hmacSignatureSecret,
-		);
-		baseURL.searchParams.set(WAITING_TOKEN_QUERY_PARAM, signature);
+
+		const token = generateUrlSignature(urlForSigning, this.instanceSettings.hmacSignatureSecret);
+
+		baseURL.searchParams.set(WAITING_TOKEN_QUERY_PARAM, token);
 
 		return baseURL.toString();
 	}
@@ -304,19 +290,6 @@ export abstract class NodeExecutionContext implements Omit<FunctionsBase, 'getCr
 		itemIndex?: number,
 	): Promise<T> {
 		const { workflow, node, additionalData, mode, runExecutionData, runIndex } = this;
-
-		// Eval-mode bypass: only mock when the node is fully unconfigured, so
-		// nodes that probe multiple auth types still get production's throw.
-		if (mode === 'evaluation' && additionalData.evalLlmMockHandler && !node.credentials?.[type]) {
-			const hasOtherCreds = !!node.credentials && Object.keys(node.credentials).length > 0;
-			if (!hasOtherCreds) {
-				const { buildEvalMockCredentials } = await import('../eval-mock-helpers');
-				return buildEvalMockCredentials(
-					additionalData.credentialsHelper.getCredentialsProperties(type),
-				) as T;
-			}
-		}
-
 		// Get the NodeType as it has the information if the credentials are required
 		const nodeType = workflow.nodeTypes.getByNameAndVersion(node.type, node.typeVersion);
 

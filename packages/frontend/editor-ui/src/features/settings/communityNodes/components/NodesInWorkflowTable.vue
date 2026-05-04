@@ -59,7 +59,7 @@ const sortedItems = computed(() => {
 const getWorkflowLink = (workflowId: string): RouteLocationRaw => ({
 	name: VIEWS.WORKFLOW,
 	params: {
-		workflowId,
+		name: workflowId,
 	},
 });
 </script>

@@ -91,7 +91,6 @@ beforeEach(() => {
 	workflowValidationService.validateForActivation.mockReturnValue({ isValid: true });
 	workflowValidationService.validateDynamicCredentials.mockResolvedValue({ isValid: true });
 	workflowValidationService.validateSubWorkflowReferences.mockResolvedValue({ isValid: true });
-	webhookServiceMock.findWebhookConflicts.mockReset();
 	webhookServiceMock.findWebhookConflicts.mockResolvedValue([]);
 });
 

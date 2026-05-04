@@ -91,19 +91,6 @@ export const createVectorStoreNode = <T extends VectorStore = VectorStore>(
 						},
 					},
 				},
-				outputs: {
-					main: {
-						displayOptions: { show: { mode: ['insert', 'load', 'update'] } },
-					},
-					ai_vectorStore: {
-						required: true,
-						displayOptions: { show: { mode: ['retrieve'] } },
-					},
-					ai_tool: {
-						required: true,
-						displayOptions: { show: { mode: ['retrieve-as-tool'] } },
-					},
-				},
 			},
 			credentials: args.meta.credentials,
 

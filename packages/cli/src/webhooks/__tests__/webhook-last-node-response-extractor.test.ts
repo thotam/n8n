@@ -8,17 +8,15 @@ import { Readable } from 'node:stream';
 
 import { extractWebhookLastNodeResponse } from '../webhook-last-node-response-extractor';
 
+import type { WebhookExecutionContext } from '@/webhooks/webhook-execution-context';
+
 describe('extractWebhookLastNodeResponse', () => {
+	let context: MockProxy<WebhookExecutionContext>;
 	let lastNodeTaskData: MockProxy<ITaskData>;
 	let binaryDataService: MockProxy<BinaryDataService>;
 
-	const defaultOptions = {
-		responsePropertyName: undefined,
-		responseContentType: undefined,
-		responseBinaryPropertyName: undefined,
-	} as const;
-
 	beforeEach(() => {
+		context = mock<WebhookExecutionContext>();
 		lastNodeTaskData = mock<ITaskData>();
 		binaryDataService = mock<BinaryDataService>();
 
@@ -37,10 +35,9 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryJson',
 				lastNodeTaskData,
-				false,
-				defaultOptions,
 			);
 
 			expect(result).toEqual({
@@ -59,10 +56,9 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryJson',
 				lastNodeTaskData,
-				false,
-				defaultOptions,
 			);
 
 			assert(!result.ok);
@@ -75,15 +71,14 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[{ json: jsonData }]],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression
+				.mockReturnValueOnce('nested.value')
+				.mockReturnValueOnce(undefined);
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryJson',
 				lastNodeTaskData,
-				false,
-				{
-					responsePropertyName: 'nested.value',
-					responseContentType: undefined,
-					responseBinaryPropertyName: undefined,
-				},
 			);
 
 			expect(result).toEqual({
@@ -102,15 +97,14 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[{ json: jsonData }]],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression
+				.mockReturnValueOnce(undefined)
+				.mockReturnValueOnce('application/xml');
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryJson',
 				lastNodeTaskData,
-				false,
-				{
-					responsePropertyName: undefined,
-					responseContentType: 'application/xml',
-					responseBinaryPropertyName: undefined,
-				},
 			);
 
 			expect(result).toEqual({
@@ -133,10 +127,9 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryJson',
 				lastNodeTaskData,
-				false,
-				defaultOptions,
 			);
 
 			assert(!result.ok);
@@ -154,10 +147,10 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryJson',
 				lastNodeTaskData,
 				true, // checkAllMainOutputs = true
-				defaultOptions,
 			);
 
 			expect(result).toEqual({
@@ -176,10 +169,9 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryJson',
 				lastNodeTaskData,
-				false,
-				defaultOptions,
 			);
 
 			assert(!result.ok);
@@ -202,15 +194,12 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[nodeExecutionData]],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression.mockReturnValue('data');
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				{
-					responsePropertyName: undefined,
-					responseContentType: undefined,
-					responseBinaryPropertyName: 'data',
-				},
 			);
 
 			expect(result).toEqual({
@@ -240,15 +229,12 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[nodeExecutionData]],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression.mockReturnValue('data');
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				{
-					responsePropertyName: undefined,
-					responseContentType: undefined,
-					responseBinaryPropertyName: 'data',
-				},
 			);
 
 			expect(result).toEqual({
@@ -268,10 +254,9 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				defaultOptions,
 			);
 
 			assert(!result.ok);
@@ -288,10 +273,9 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				defaultOptions,
 			);
 
 			assert(!result.ok);
@@ -308,15 +292,12 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[nodeExecutionData]],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression.mockReturnValue(undefined);
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				{
-					responsePropertyName: undefined,
-					responseContentType: undefined,
-					responseBinaryPropertyName: undefined,
-				},
 			);
 
 			assert(!result.ok);
@@ -333,15 +314,12 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[nodeExecutionData]],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression.mockReturnValue(123);
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				{
-					responsePropertyName: undefined,
-					responseContentType: undefined,
-					responseBinaryPropertyName: 123,
-				},
 			);
 
 			assert(!result.ok);
@@ -358,15 +336,12 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[nodeExecutionData]],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression.mockReturnValue('nonExistentProperty');
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				{
-					responsePropertyName: undefined,
-					responseContentType: undefined,
-					responseBinaryPropertyName: 'nonExistentProperty',
-				},
 			);
 
 			assert(!result.ok);
@@ -392,15 +367,12 @@ describe('extractWebhookLastNodeResponse', () => {
 				],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression.mockReturnValue('data');
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				{
-					responsePropertyName: undefined,
-					responseContentType: undefined,
-					responseBinaryPropertyName: 'data',
-				},
 			);
 
 			assert(!result.ok);
@@ -424,15 +396,13 @@ describe('extractWebhookLastNodeResponse', () => {
 				],
 			};
 
+			context.evaluateSimpleWebhookDescriptionExpression.mockReturnValue('data');
+
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
 				true, // checkAllMainOutputs = true
-				{
-					responsePropertyName: undefined,
-					responseContentType: undefined,
-					responseBinaryPropertyName: 'data',
-				},
 			);
 
 			expect(result).toEqual({
@@ -451,10 +421,9 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'firstEntryBinary',
 				lastNodeTaskData,
-				false,
-				defaultOptions,
 			);
 
 			assert(!result.ok);
@@ -465,12 +434,7 @@ describe('extractWebhookLastNodeResponse', () => {
 
 	describe('responseDataType: noData', () => {
 		it('should return undefined body and contentType', async () => {
-			const result = await extractWebhookLastNodeResponse(
-				'noData',
-				lastNodeTaskData,
-				false,
-				defaultOptions,
-			);
+			const result = await extractWebhookLastNodeResponse(context, 'noData', lastNodeTaskData);
 
 			expect(result).toEqual({
 				ok: true,
@@ -492,12 +456,7 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[{ json: jsonData1 }, { json: jsonData2 }, { json: jsonData3 }]],
 			};
 
-			const result = await extractWebhookLastNodeResponse(
-				'allEntries',
-				lastNodeTaskData,
-				false,
-				defaultOptions,
-			);
+			const result = await extractWebhookLastNodeResponse(context, 'allEntries', lastNodeTaskData);
 
 			expect(result).toEqual({
 				ok: true,
@@ -514,12 +473,7 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[]],
 			};
 
-			const result = await extractWebhookLastNodeResponse(
-				'allEntries',
-				lastNodeTaskData,
-				false,
-				defaultOptions,
-			);
+			const result = await extractWebhookLastNodeResponse(context, 'allEntries', lastNodeTaskData);
 
 			expect(result).toEqual({
 				ok: true,
@@ -542,12 +496,7 @@ describe('extractWebhookLastNodeResponse', () => {
 				],
 			};
 
-			const result = await extractWebhookLastNodeResponse(
-				'allEntries',
-				lastNodeTaskData,
-				false,
-				defaultOptions,
-			);
+			const result = await extractWebhookLastNodeResponse(context, 'allEntries', lastNodeTaskData);
 
 			expect(result).toEqual({
 				ok: true,
@@ -571,10 +520,10 @@ describe('extractWebhookLastNodeResponse', () => {
 			};
 
 			const result = await extractWebhookLastNodeResponse(
+				context,
 				'allEntries',
 				lastNodeTaskData,
 				true, // checkAllMainOutputs = true
-				defaultOptions,
 			);
 
 			expect(result).toEqual({
@@ -599,12 +548,7 @@ describe('extractWebhookLastNodeResponse', () => {
 				],
 			};
 
-			const result = await extractWebhookLastNodeResponse(
-				'allEntries',
-				lastNodeTaskData,
-				false,
-				defaultOptions,
-			);
+			const result = await extractWebhookLastNodeResponse(context, 'allEntries', lastNodeTaskData);
 
 			expect(result).toEqual({
 				ok: true,
@@ -621,12 +565,7 @@ describe('extractWebhookLastNodeResponse', () => {
 				main: [[], [], []],
 			};
 
-			const result = await extractWebhookLastNodeResponse(
-				'allEntries',
-				lastNodeTaskData,
-				false,
-				defaultOptions,
-			);
+			const result = await extractWebhookLastNodeResponse(context, 'allEntries', lastNodeTaskData);
 
 			expect(result).toEqual({
 				ok: true,

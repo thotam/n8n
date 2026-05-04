@@ -313,7 +313,6 @@ export async function execute(this: IExecuteFunctions, items: INodeExecutionData
 
 			if (options.fileName) {
 				fileName = options.fileName as string;
-				delete options.fileName;
 			}
 
 			const data: ics.EventAttributes = {

@@ -415,7 +415,7 @@ function _getResponseForOutbinds(
 				itemData: { item: j },
 			});
 			if (executionData) {
-				returnData = returnData.concat(executionData);
+				returnData.push(...executionData);
 			}
 		}
 	}
@@ -583,9 +583,9 @@ export function configureQueryRunner(
 								{ itemData: { item: i } },
 							);
 
-							returnData = returnData.concat(executionData);
+							returnData.push.apply(returnData, executionData);
 						} else {
-							returnData = returnData.concat(resultOutBinds);
+							returnData.push.apply(returnData, resultOutBinds);
 						}
 					} catch (caughtError) {
 						const error = parseOracleError(node, caughtError, i);
@@ -639,9 +639,9 @@ export function configureQueryRunner(
 								wrapData(rowData as IDataObject[]),
 								{ itemData: { item: i } },
 							);
-							returnData = returnData.concat(executionData);
+							returnData.push.apply(returnData, executionData);
 						} else {
-							returnData = returnData.concat(resultOutBinds);
+							returnData.push.apply(returnData, resultOutBinds);
 						}
 					} catch (caughtError) {
 						const error = parseOracleError(node, caughtError, i);

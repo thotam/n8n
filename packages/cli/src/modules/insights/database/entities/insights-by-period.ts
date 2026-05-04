@@ -36,14 +36,13 @@ export class InsightsByPeriod extends BaseEntity {
 	private type_: number;
 
 	get type() {
-		const typeValue = this.type_;
-		if (!isValidTypeNumber(typeValue)) {
+		if (!isValidTypeNumber(this.type_)) {
 			throw new UnexpectedError(
-				`Type '${typeValue}' is not a valid type for 'InsightsByPeriod.type'`,
+				`Type '${this.type_}' is not a valid type for 'InsightsByPeriod.type'`,
 			);
 		}
 
-		return NumberToType[typeValue];
+		return NumberToType[this.type_];
 	}
 
 	set type(value: keyof typeof TypeToNumber) {
@@ -62,14 +61,13 @@ export class InsightsByPeriod extends BaseEntity {
 	private periodUnit_: number;
 
 	get periodUnit() {
-		const periodUnitValue = this.periodUnit_;
-		if (!isValidPeriodNumber(periodUnitValue)) {
+		if (!isValidPeriodNumber(this.periodUnit_)) {
 			throw new UnexpectedError(
-				`Period unit '${periodUnitValue}' is not a valid unit for 'InsightsByPeriod.periodUnit'`,
+				`Period unit '${this.periodUnit_}' is not a valid unit for 'InsightsByPeriod.periodUnit'`,
 			);
 		}
 
-		return NumberToPeriodUnit[periodUnitValue];
+		return NumberToPeriodUnit[this.periodUnit_];
 	}
 
 	set periodUnit(value: PeriodUnit) {

@@ -71,9 +71,7 @@ export async function notionApiRequest(
 			delete options.body;
 		}
 		if (!uri) {
-			const authentication = this.getNodeParameter('authentication', 0, 'apiKey') as string;
-			const credentialType = authentication === 'oAuth2' ? 'notionOAuth2Api' : 'notionApi';
-			return await this.helpers.requestWithAuthentication.call(this, credentialType, options);
+			return await this.helpers.requestWithAuthentication.call(this, 'notionApi', options);
 		}
 		return await this.helpers.request(options);
 	} catch (error) {

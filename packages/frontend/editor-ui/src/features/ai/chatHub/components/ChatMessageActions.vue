@@ -43,7 +43,7 @@ const executionUrl = computed(() => {
 	) {
 		return router.resolve({
 			name: VIEWS.EXECUTION_PREVIEW,
-			params: { workflowId: message.workflowId, executionId: message.executionId },
+			params: { name: message.workflowId, executionId: message.executionId },
 		}).href;
 	}
 	return undefined;

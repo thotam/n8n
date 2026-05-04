@@ -427,7 +427,7 @@ export function TriggerView() {
 					name: WEBHOOK_NODE_TYPE,
 					displayName: i18n.baseText('nodeCreator.triggerHelperPanel.webhookTriggerDisplayName'),
 					description: i18n.baseText('nodeCreator.triggerHelperPanel.webhookTriggerDescription'),
-					icon: 'node:webhook',
+					iconData: { type: 'icon', icon: 'webhook' },
 				},
 			},
 			{
@@ -439,7 +439,7 @@ export function TriggerView() {
 					name: FORM_TRIGGER_NODE_TYPE,
 					displayName: i18n.baseText('nodeCreator.triggerHelperPanel.formTriggerDisplayName'),
 					description: i18n.baseText('nodeCreator.triggerHelperPanel.formTriggerDescription'),
-					icon: 'node:form-trigger',
+					iconData: { type: 'icon', icon: 'form' },
 				},
 			},
 			{

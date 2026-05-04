@@ -20,8 +20,7 @@ jobs:
   cloudflare:
     name: Cloudflare Pages
     if: |
-      !contains(github.event.pull_request.labels.*.name, 'community') &&
-      github.repository == 'n8n-io/n8n'
+      !contains(github.event.pull_request.labels.*.name, 'community')
     runs-on: blacksmith-2vcpu-ubuntu-2204
     permissions:
       contents: read

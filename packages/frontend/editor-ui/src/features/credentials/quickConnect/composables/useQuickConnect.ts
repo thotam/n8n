@@ -1,6 +1,7 @@
 import type { QuickConnectOption, QuickConnectPineconeOption } from '@n8n/api-types';
-import { MODAL_CONFIRM } from '@/app/constants';
+import { MODAL_CONFIRM, QUICK_CONNECT_EXPERIMENT } from '@/app/constants';
 import { useTelemetry } from '@/app/composables/useTelemetry';
+import { usePostHog } from '@/app/stores/posthog.store';
 import { useSettingsStore } from '@/app/stores/settings.store';
 import { useProjectsStore } from '@/features/collaboration/projects/projects.store';
 import { computed, onBeforeUnmount, ref, h } from 'vue';
@@ -18,6 +19,7 @@ import { useUsersStore } from '@/features/settings/users/users.store';
 
 export function useQuickConnect() {
 	const settingsStore = useSettingsStore();
+	const posthogStore = usePostHog();
 	const telemetry = useTelemetry();
 	const message = useMessage();
 	const toast = useToast();
@@ -29,6 +31,10 @@ export function useQuickConnect() {
 	const loading = ref(false);
 	const { isOAuthCredentialType, createAndAuthorize, cancelAuthorize } = useCredentialOAuth();
 	const cleanUpHandlers: Array<() => void> = [];
+
+	const isQuickConnectEnabled = computed(() =>
+		posthogStore.isVariantEnabled(QUICK_CONNECT_EXPERIMENT.name, QUICK_CONNECT_EXPERIMENT.variant),
+	);
 
 	const optionsByCredentialType = computed(() => {
 		const map = new Map<string, QuickConnectOption>();
@@ -52,7 +58,7 @@ export function useQuickConnect() {
 		credentialType: string,
 		nodeType: string,
 	): QuickConnectOption | undefined {
-		if (optionsByCredentialType.value.size === 0) {
+		if (!isQuickConnectEnabled.value || optionsByCredentialType.value.size === 0) {
 			return undefined;
 		}
 		const option = optionsByCredentialType.value.get(credentialType);
@@ -62,7 +68,7 @@ export function useQuickConnect() {
 	}
 
 	function getQuickConnectOptionByPackageName(packageName: string): QuickConnectOption | undefined {
-		if (optionsByPackageName.value.size === 0) {
+		if (!isQuickConnectEnabled.value || optionsByPackageName.value.size === 0) {
 			return undefined;
 		}
 		return optionsByPackageName.value.get(packageName);
@@ -71,7 +77,7 @@ export function useQuickConnect() {
 	function getQuickConnectOptionByCredentialTypes(
 		credentialTypes: string[],
 	): QuickConnectOption | undefined {
-		if (optionsByCredentialType.value.size === 0) {
+		if (!isQuickConnectEnabled.value || optionsByCredentialType.value.size === 0) {
 			return undefined;
 		}
 		for (const type of credentialTypes) {
@@ -222,6 +228,7 @@ export function useQuickConnect() {
 
 	return {
 		loading,
+		isQuickConnectEnabled,
 		getQuickConnectOption,
 		getQuickConnectOptionByPackageName,
 		getQuickConnectOptionByCredentialTypes,

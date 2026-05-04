@@ -348,9 +348,6 @@ export interface SerializerContext extends PluginContext {
 
 	/** Workflow meta information (if set) */
 	readonly meta?: Record<string, unknown>;
-
-	/** Whether to use Dagre-based layout for node positioning */
-	readonly tidyUp?: boolean;
 }
 
 /**

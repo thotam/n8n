@@ -677,7 +677,6 @@ export function validateNodeConfig(
 			parameters,
 			// Override resolveSchema to inject isToolNode
 			resolveSchema: (cfg) => schemaHelpers.resolveSchema({ ...cfg, isToolNode }),
-			resolveOneOfSchemas: (cfg) => schemaHelpers.resolveOneOfSchemas({ ...cfg, isToolNode }),
 		});
 	}
 

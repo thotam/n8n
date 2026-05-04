@@ -1,3 +1,4 @@
+import { createTestWorkflowObject } from '@/__tests__/mocks';
 import { createComponentRenderer } from '@/__tests__/render';
 import { type MockedStore, mockedStore } from '@/__tests__/utils';
 import { VIEWS } from '@/app/constants';
@@ -6,6 +7,7 @@ import {
 	createCanvasProvide,
 } from '@/features/workflows/canvas/__tests__/utils';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
+import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { createTestingPinia } from '@pinia/testing';
 import { fireEvent } from '@testing-library/vue';
 import { NodeConnectionTypes } from 'n8n-workflow';
@@ -47,7 +49,10 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	const pinia = createTestingPinia();
 	setActivePinia(pinia);
+	const workflowsStore = useWorkflowsStore();
 	nodeTypesStore = mockedStore(useNodeTypesStore);
+	const workflowObject = createTestWorkflowObject(workflowsStore.workflow);
+	workflowsStore.workflowObject = workflowObject;
 	mockedUseRoute.mockReturnValue({} as RouteLocationNormalizedLoadedGeneric);
 });
 

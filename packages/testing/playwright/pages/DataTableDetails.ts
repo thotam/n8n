@@ -4,10 +4,6 @@ import type { Locator } from '@playwright/test';
 import { BasePage } from './BasePage';
 
 export class DataTableDetails extends BasePage {
-	async goto(datatableId: string) {
-		await this.page.goto(`/datatables/${datatableId}`);
-	}
-
 	getPageWrapper() {
 		return this.page.getByTestId('data-table-details-view');
 	}

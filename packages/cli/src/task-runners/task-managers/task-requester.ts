@@ -442,7 +442,7 @@ export abstract class TaskRequester {
 				}
 			}
 
-			const data = await func.call(funcs, ...params);
+			const data = (await func.call(funcs, ...params)) as unknown;
 
 			this.sendMessage({
 				type: 'requester:rpcresponse',

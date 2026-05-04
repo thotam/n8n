@@ -261,9 +261,6 @@ export class Git implements INodeType {
 				setUpstream = false,
 				remoteName = 'origin',
 			} = options;
-
-			validateGitReference(branchName, this.getNode());
-
 			try {
 				if (force) {
 					await git.checkout(['-f', branchName]);

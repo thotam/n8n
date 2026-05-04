@@ -187,7 +187,7 @@ export class ProjectController {
 
 		try {
 			const { totalSubFolders, totalWorkflows } =
-				await this.folderService.findFolderWithContentCounts(folderId, projectId);
+				await this.folderService.getFolderAndWorkflowCount(folderId, projectId);
 
 			return {
 				totalSubFolders,

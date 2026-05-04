@@ -39,8 +39,6 @@ describe('N8NCredentialResolver', () => {
 		mockCipher = {
 			encrypt: jest.fn(),
 			decrypt: jest.fn(),
-			encryptV2: jest.fn(),
-			decryptV2: jest.fn(),
 		} as unknown as jest.Mocked<Cipher>;
 	});
 
@@ -85,8 +83,8 @@ describe('N8NCredentialResolver', () => {
 				},
 			);
 
-			mockCipher.encryptV2.mockImplementation(async (data) => JSON.stringify(data));
-			mockCipher.decryptV2.mockImplementation(async (data) => data);
+			mockCipher.encrypt.mockImplementation((data) => JSON.stringify(data));
+			mockCipher.decrypt.mockImplementation((data) => data);
 
 			return new N8NCredentialResolver(mockLogger, mockIdentifier, mockStorage, mockCipher);
 		},
@@ -120,7 +118,7 @@ describe('N8NCredentialResolver', () => {
 				const handle = testHelpers.createHandle({});
 
 				mockStorage.getCredentialData.mockResolvedValue('encrypted-data');
-				mockCipher.decryptV2.mockResolvedValue('{"apiKey":"secret-123"}');
+				mockCipher.decrypt.mockReturnValue('{"apiKey":"secret-123"}');
 
 				await resolver.getSecret(credentialId, context, handle);
 
@@ -141,7 +139,7 @@ describe('N8NCredentialResolver', () => {
 				const handle = testHelpers.createHandle({});
 
 				mockStorage.getCredentialData.mockResolvedValue('encrypted-data');
-				mockCipher.decryptV2.mockResolvedValue('invalid-json{{{');
+				mockCipher.decrypt.mockReturnValue('invalid-json{{{');
 
 				await expect(resolver.getSecret(credentialId, context, handle)).rejects.toThrow(
 					CredentialResolverDataNotFoundError,
@@ -161,11 +159,11 @@ describe('N8NCredentialResolver', () => {
 				const data = testHelpers.createCredentialData({ apiKey: 'new-secret' });
 				const handle = testHelpers.createHandle({});
 
-				mockCipher.encryptV2.mockResolvedValue('encrypted-new-data');
+				mockCipher.encrypt.mockReturnValue('encrypted-new-data');
 
 				await resolver.setSecret(credentialId, context, data, handle);
 
-				expect(mockCipher.encryptV2).toHaveBeenCalledWith(data);
+				expect(mockCipher.encrypt).toHaveBeenCalledWith(data);
 				expect(mockStorage.setCredentialData).toHaveBeenCalledWith(
 					credentialId,
 					'user-123',
@@ -182,7 +180,7 @@ describe('N8NCredentialResolver', () => {
 				const handle = testHelpers.createHandle({});
 
 				mockIdentifier.resolve.mockResolvedValue('user-resolved-789');
-				mockCipher.encryptV2.mockResolvedValue('encrypted-data');
+				mockCipher.encrypt.mockReturnValue('encrypted-data');
 
 				await resolver.setSecret(credentialId, context, data, handle);
 

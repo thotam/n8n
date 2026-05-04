@@ -535,7 +535,6 @@ describe('TelemetryEventRelay', () => {
 		it('should track on `external-secrets-connection-created` event with global scope', () => {
 			const event: RelayEventMap['external-secrets-connection-created'] = {
 				userId: 'user123',
-				userRole: 'global:owner',
 				providerKey: 'provider-key-123',
 				vaultType: 'gcp',
 				projects: [],
@@ -545,7 +544,6 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User created external secrets connection', {
 				user_id: 'user123',
-				user_role: 'global:owner',
 				vault_type: 'gcp',
 				scope: 'global',
 				project_ids: [],
@@ -555,7 +553,6 @@ describe('TelemetryEventRelay', () => {
 		it('should track on `external-secrets-connection-created` event with project scope', () => {
 			const event: RelayEventMap['external-secrets-connection-created'] = {
 				userId: 'user123',
-				userRole: 'global:member',
 				providerKey: 'provider-key-123',
 				vaultType: 'gcp',
 				projects: [
@@ -568,7 +565,6 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User created external secrets connection', {
 				user_id: 'user123',
-				user_role: 'global:member',
 				vault_type: 'gcp',
 				scope: 'project',
 				project_ids: ['project1', 'project2'],
@@ -578,7 +574,6 @@ describe('TelemetryEventRelay', () => {
 		it('should track on `external-secrets-connection-updated` event with global scope', () => {
 			const event: RelayEventMap['external-secrets-connection-updated'] = {
 				userId: 'user123',
-				userRole: 'global:owner',
 				providerKey: 'provider-key-123',
 				vaultType: 'aws',
 				projects: [],
@@ -588,7 +583,6 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User updated external secrets connection', {
 				user_id: 'user123',
-				user_role: 'global:owner',
 				vault_type: 'aws',
 				scope: 'global',
 				project_ids: [],
@@ -598,7 +592,6 @@ describe('TelemetryEventRelay', () => {
 		it('should track on `external-secrets-connection-updated` event with project scope', () => {
 			const event: RelayEventMap['external-secrets-connection-updated'] = {
 				userId: 'user123',
-				userRole: 'global:member',
 				providerKey: 'provider-key-123',
 				vaultType: 'aws',
 				projects: [{ id: 'project1', name: 'Project 1' }],
@@ -608,7 +601,6 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User updated external secrets connection', {
 				user_id: 'user123',
-				user_role: 'global:member',
 				vault_type: 'aws',
 				scope: 'project',
 				project_ids: ['project1'],
@@ -618,7 +610,6 @@ describe('TelemetryEventRelay', () => {
 		it('should track on `external-secrets-connection-deleted` event with global scope', () => {
 			const event: RelayEventMap['external-secrets-connection-deleted'] = {
 				userId: 'user123',
-				userRole: 'global:owner',
 				providerKey: 'provider-key-123',
 				vaultType: 'vault',
 				projects: [],
@@ -628,7 +619,6 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User deleted external secrets connection', {
 				user_id: 'user123',
-				user_role: 'global:owner',
 				vault_type: 'vault',
 				scope: 'global',
 				project_ids: [],
@@ -638,7 +628,6 @@ describe('TelemetryEventRelay', () => {
 		it('should track on `external-secrets-connection-deleted` event with project scope', () => {
 			const event: RelayEventMap['external-secrets-connection-deleted'] = {
 				userId: 'user123',
-				userRole: 'global:member',
 				providerKey: 'provider-key-123',
 				vaultType: 'vault',
 				projects: [
@@ -652,72 +641,9 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User deleted external secrets connection', {
 				user_id: 'user123',
-				user_role: 'global:member',
 				vault_type: 'vault',
 				scope: 'project',
 				project_ids: ['project1', 'project2', 'project3'],
-			});
-		});
-
-		it('should track on `external-secrets-system-roles-toggled` event', () => {
-			const event: RelayEventMap['external-secrets-system-roles-toggled'] = {
-				userId: 'user123',
-				enabled: true,
-			};
-
-			eventService.emit('external-secrets-system-roles-toggled', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User toggled external secrets system roles', {
-				user_id: 'user123',
-				enabled: true,
-			});
-		});
-	});
-
-	describe('custom role events', () => {
-		it('should track on `custom-role-created` event', () => {
-			const event: RelayEventMap['custom-role-created'] = {
-				userId: 'user123',
-				roleSlug: 'project:my-role-abc123',
-				scopes: ['workflow:create', 'workflow:read', 'credential:read'],
-			};
-
-			eventService.emit('custom-role-created', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User created custom role', {
-				user_id: 'user123',
-				role_slug: 'project:my-role-abc123',
-				scopes: ['workflow:create', 'workflow:read', 'credential:read'],
-			});
-		});
-
-		it('should track on `custom-role-updated` event', () => {
-			const event: RelayEventMap['custom-role-updated'] = {
-				userId: 'user123',
-				roleSlug: 'project:my-role-abc123',
-				scopes: ['workflow:create', 'workflow:read'],
-			};
-
-			eventService.emit('custom-role-updated', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User updated custom role', {
-				user_id: 'user123',
-				role_slug: 'project:my-role-abc123',
-				scopes: ['workflow:create', 'workflow:read'],
-			});
-		});
-
-		it('should track on `custom-role-deleted` event', () => {
-			const event: RelayEventMap['custom-role-deleted'] = {
-				userId: 'user123',
-				roleSlug: 'project:my-role-abc123',
-			};
-
-			eventService.emit('custom-role-deleted', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User deleted custom role', {
-				user_id: 'user123',
-				role_slug: 'project:my-role-abc123',
 			});
 		});
 	});
@@ -899,13 +825,11 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User created credentials', {
 				user_id: 'user123',
-				user_role: GLOBAL_OWNER_ROLE.slug,
 				credential_type: 'github',
 				credential_id: 'cred123',
 				project_id: 'project123',
 				project_type: 'personal',
 				is_dynamic: false,
-				uses_external_secrets: false,
 			});
 		});
 
@@ -929,7 +853,6 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User updated cred sharing', {
 				user_id: 'user123',
-				user_role: GLOBAL_OWNER_ROLE.slug,
 				credential_type: 'github',
 				credential_id: 'cred123',
 				user_id_sharer: 'user123',
@@ -956,11 +879,9 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User updated credentials', {
 				user_id: 'user123',
-				user_role: GLOBAL_OWNER_ROLE.slug,
 				credential_type: 'github',
 				credential_id: 'cred123',
 				is_dynamic: true,
-				uses_external_secrets: false,
 			});
 		});
 
@@ -981,7 +902,6 @@ describe('TelemetryEventRelay', () => {
 
 			expect(telemetry.track).toHaveBeenCalledWith('User deleted credentials', {
 				user_id: 'user123',
-				user_role: GLOBAL_OWNER_ROLE.slug,
 				credential_type: 'github',
 				credential_id: 'cred123',
 			});
@@ -1119,7 +1039,6 @@ describe('TelemetryEventRelay', () => {
 				public_api: false,
 				project_id: 'project123',
 				project_type: 'personal',
-				source: 'ui',
 			});
 		});
 
@@ -1177,109 +1096,6 @@ describe('TelemetryEventRelay', () => {
 				public_api: false,
 				project_id: 'project123',
 				project_type: 'personal',
-				source: 'ui',
-			});
-		});
-
-		it('should track on `workflow-activated` event with source', () => {
-			const event: RelayEventMap['workflow-activated'] = {
-				user: {
-					id: 'user123',
-					email: 'user@example.com',
-					firstName: 'John',
-					lastName: 'Doe',
-					role: { slug: GLOBAL_OWNER_ROLE.slug },
-				},
-				workflowId: 'workflow123',
-				workflow: mock<IWorkflowDb>({ id: 'workflow123', name: 'Test Workflow' }),
-				publicApi: true,
-				source: 'api',
-			};
-
-			eventService.emit('workflow-activated', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User activated workflow', {
-				user_id: 'user123',
-				workflow_id: 'workflow123',
-				public_api: true,
-				source: 'api',
-			});
-		});
-
-		it('should default source to ui on `workflow-activated` event', () => {
-			const event: RelayEventMap['workflow-activated'] = {
-				user: {
-					id: 'user123',
-					email: 'user@example.com',
-					firstName: 'John',
-					lastName: 'Doe',
-					role: { slug: GLOBAL_OWNER_ROLE.slug },
-				},
-				workflowId: 'workflow123',
-				workflow: mock<IWorkflowDb>({ id: 'workflow123', name: 'Test Workflow' }),
-				publicApi: false,
-			};
-
-			eventService.emit('workflow-activated', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User activated workflow', {
-				user_id: 'user123',
-				workflow_id: 'workflow123',
-				public_api: false,
-				source: 'ui',
-			});
-		});
-
-		it('should track on `workflow-deactivated` event with source', () => {
-			const event: RelayEventMap['workflow-deactivated'] = {
-				user: {
-					id: 'user123',
-					email: 'user@example.com',
-					firstName: 'John',
-					lastName: 'Doe',
-					role: { slug: GLOBAL_OWNER_ROLE.slug },
-				},
-				workflowId: 'workflow123',
-				workflow: mock<IWorkflowDb>({ id: 'workflow123', name: 'Test Workflow' }),
-				publicApi: true,
-				deactivatedVersionId: 'version-abc-123',
-				source: 'n8n-mcp',
-			};
-
-			eventService.emit('workflow-deactivated', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User deactivated workflow', {
-				user_id: 'user123',
-				workflow_id: 'workflow123',
-				public_api: true,
-				deactivated_version_id: 'version-abc-123',
-				source: 'n8n-mcp',
-			});
-		});
-
-		it('should default source to ui on `workflow-deactivated` event', () => {
-			const event: RelayEventMap['workflow-deactivated'] = {
-				user: {
-					id: 'user123',
-					email: 'user@example.com',
-					firstName: 'John',
-					lastName: 'Doe',
-					role: { slug: GLOBAL_OWNER_ROLE.slug },
-				},
-				workflowId: 'workflow123',
-				workflow: mock<IWorkflowDb>({ id: 'workflow123', name: 'Test Workflow' }),
-				publicApi: false,
-				deactivatedVersionId: null,
-			};
-
-			eventService.emit('workflow-deactivated', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User deactivated workflow', {
-				user_id: 'user123',
-				workflow_id: 'workflow123',
-				public_api: false,
-				deactivated_version_id: null,
-				source: 'ui',
 			});
 		});
 
@@ -1406,8 +1222,6 @@ describe('TelemetryEventRelay', () => {
 				credential_edited: false,
 				ai_builder_assisted: false,
 				identity_extractor_changed: false,
-				redaction_policy: undefined,
-				source: 'ui',
 			});
 		});
 
@@ -1424,7 +1238,7 @@ describe('TelemetryEventRelay', () => {
 					id: 'workflow123',
 					name: 'Test Workflow',
 					nodes: [],
-					settings: { credentialResolverId: 'resolver-123', redactionPolicy: undefined },
+					settings: { credentialResolverId: 'resolver-123' },
 				}),
 				publicApi: false,
 				settingsChanged: {
@@ -1455,70 +1269,6 @@ describe('TelemetryEventRelay', () => {
 				ai_builder_assisted: false,
 				credential_resolver_id: 'resolver-123',
 				identity_extractor_changed: false,
-				redaction_policy: undefined,
-				source: 'ui',
-			});
-		});
-
-		it('should track redaction policy when it changes', async () => {
-			const event: RelayEventMap['workflow-saved'] = {
-				user: {
-					id: 'user123',
-					email: 'user@example.com',
-					firstName: 'John',
-					lastName: 'Doe',
-					role: { slug: GLOBAL_OWNER_ROLE.slug },
-				},
-				workflow: mock<IWorkflowDb>({
-					id: 'workflow123',
-					name: 'Test Workflow',
-					nodes: [],
-					settings: { redactionPolicy: 'all' },
-				}),
-				publicApi: false,
-				settingsChanged: {
-					redactionPolicy: {
-						from: 'none',
-						to: 'all',
-					},
-				},
-			};
-
-			eventService.emit('workflow-saved', event);
-
-			await flushPromises();
-
-			expect(telemetry.track).toHaveBeenCalledWith(
-				'User saved workflow',
-				expect.objectContaining({
-					redaction_policy: 'all',
-				}),
-			);
-		});
-
-		it('should track on `execution-data-revealed` event', () => {
-			const event: RelayEventMap['execution-data-revealed'] = {
-				user: {
-					id: 'user123',
-					email: 'user@example.com',
-					firstName: 'John',
-					lastName: 'Doe',
-					role: { slug: GLOBAL_OWNER_ROLE.slug },
-				},
-				executionId: 'exec123',
-				workflowId: 'workflow123',
-				ipAddress: '127.0.0.1',
-				userAgent: 'test-agent',
-				redactionPolicy: 'all',
-			};
-
-			eventService.emit('execution-data-revealed', event);
-
-			expect(telemetry.track).toHaveBeenCalledWith('User confirmed reveal data', {
-				user_id: 'user123',
-				execution_id: 'exec123',
-				workflow_id: 'workflow123',
-				redaction_policy: 'all',
 			});
 		});
 

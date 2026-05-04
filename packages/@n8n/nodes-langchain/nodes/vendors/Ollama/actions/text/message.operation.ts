@@ -1,6 +1,6 @@
 import type { Tool } from '@langchain/core/tools';
 import type { IExecuteFunctions, INodeExecutionData, INodeProperties } from 'n8n-workflow';
-import { accumulateTokenUsage, updateDisplayOptions } from 'n8n-workflow';
+import { updateDisplayOptions } from 'n8n-workflow';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 
 import { getConnectedTools } from '@utils/helpers';
@@ -96,14 +96,6 @@ const properties: INodeProperties[] = [
 					numberPrecision: 2,
 				},
 				description: 'Controls randomness in responses. Lower values make output more focused.',
-			},
-			{
-				displayName: 'Thinking',
-				name: 'think',
-				type: 'boolean',
-				default: true,
-				description:
-					"Whether to enable (default) thinking mode for supported models. When enabled, the model's thinking process is separated from the output. When disabled, the model outputs content directly (only for supported models).",
 			},
 			{
 				displayName: 'Output Randomness (Top P)',
@@ -343,7 +335,6 @@ const properties: INodeProperties[] = [
 interface MessageOptions {
 	system?: string;
 	temperature?: number;
-	think?: boolean;
 	top_p?: number;
 	top_k?: number;
 	num_predict?: number;
@@ -381,15 +372,17 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	const model = this.getNodeParameter('modelId', i, '', { extractValue: true }) as string;
 	const messages = this.getNodeParameter('messages.values', i, []) as OllamaMessage[];
 	const simplify = this.getNodeParameter('simplify', i, true) as boolean;
-	const { think, system, ...options } = this.getNodeParameter('options', i, {}) as MessageOptions;
+	const options = this.getNodeParameter('options', i, {}) as MessageOptions;
 	const { tools, connectedTools } = await getTools.call(this);
 
-	if (system) {
+	if (options.system) {
 		messages.unshift({
 			role: 'system',
-			content: system,
+			content: options.system,
 		});
 	}
+
+	delete options.system;
 
 	const processedOptions = { ...options };
 	if (processedOptions.stop && typeof processedOptions.stop === 'string') {
@@ -405,16 +398,11 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		stream: false,
 		tools,
 		options: processedOptions,
-		think,
 	};
 
 	let response: OllamaChatResponse = await apiRequest.call(this, 'POST', '/api/chat', {
 		body,
 	});
-
-	if (response.prompt_eval_count != null || response.eval_count != null) {
-		accumulateTokenUsage(this, response.prompt_eval_count ?? 0, response.eval_count ?? 0);
-	}
 
 	if (tools.length > 0 && response.message.tool_calls && response.message.tool_calls.length > 0) {
 		const toolCalls = response.message.tool_calls;
@@ -461,10 +449,6 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		response = await apiRequest.call(this, 'POST', '/api/chat', {
 			body: updatedBody,
 		});
-
-		if (response.prompt_eval_count != null || response.eval_count != null) {
-			accumulateTokenUsage(this, response.prompt_eval_count ?? 0, response.eval_count ?? 0);
-		}
 	}
 
 	if (simplify) {

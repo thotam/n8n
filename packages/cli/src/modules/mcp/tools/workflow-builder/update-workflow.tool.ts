@@ -1,22 +1,20 @@
 import { type User, type SharedWorkflowRepository, WorkflowEntity } from '@n8n/db';
-import { layoutWorkflowJSON } from '@n8n/workflow-sdk';
+import { resolveNodeWebhookId } from 'n8n-workflow';
 import z from 'zod';
 
 import { USER_CALLED_MCP_TOOL_EVENT } from '../../mcp.constants';
 import type { ToolDefinition, UserCalledMCPToolEventPayload } from '../../mcp.types';
 import { CODE_BUILDER_VALIDATE_TOOL, MCP_UPDATE_WORKFLOW_TOOL } from './constants';
-import { autoPopulateNodeCredentials, stripNullCredentialStubs } from './credentials-auto-assign';
+import { autoPopulateNodeCredentials } from './credentials-auto-assign';
 
-import type { CollaborationService } from '@/collaboration/collaboration.service';
 import type { CredentialsService } from '@/credentials/credentials.service';
 import type { NodeTypes } from '@/node-types';
 import type { UrlService } from '@/services/url.service';
 import type { Telemetry } from '@/telemetry';
-import { resolveNodeWebhookIds } from '@/workflow-helpers';
 import type { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 import type { WorkflowService } from '@/workflows/workflow.service';
 
-import { getMcpWorkflow, getSdkReferenceHint } from '../workflow-validation.utils';
+import { getMcpWorkflow } from '../workflow-validation.utils';
 
 const inputSchema = {
 	workflowId: z.string().describe('The ID of the workflow to update'),
@@ -49,7 +47,6 @@ const outputSchema = {
 			z.object({
 				nodeName: z.string().describe('The name of the node that had credentials auto-assigned'),
 				credentialName: z.string().describe('The name of the credential that was auto-assigned'),
-				credentialType: z.string().describe('The credential type that was auto-assigned'),
 			}),
 		)
 		.describe('List of credentials that were automatically assigned to nodes'),
@@ -58,12 +55,6 @@ const outputSchema = {
 		.optional()
 		.describe(
 			'Additional notes about the workflow update, such as any nodes that were skipped during credential auto-assignment.',
-		),
-	hint: z
-		.string()
-		.optional()
-		.describe(
-			'Actionable hint for recovering from the error. When present, follow the suggested action before retrying.',
 		),
 } satisfies z.ZodRawShape;
 
@@ -81,7 +72,6 @@ export const createUpdateWorkflowTool = (
 	nodeTypes: NodeTypes,
 	credentialsService: CredentialsService,
 	sharedWorkflowRepository: SharedWorkflowRepository,
-	collaborationService: CollaborationService,
 ): ToolDefinition<typeof inputSchema> => ({
 	name: MCP_UPDATE_WORKFLOW_TOOL.toolName,
 	config: {
@@ -122,8 +112,6 @@ export const createUpdateWorkflowTool = (
 				workflowFinderService,
 			);
 
-			await collaborationService.ensureWorkflowEditable(existingWorkflow.id);
-
 			const { ParseValidateHandler, stripImportStatements } = await import(
 				'@n8n/ai-workflow-builder'
 			);
@@ -131,8 +119,7 @@ export const createUpdateWorkflowTool = (
 			const handler = new ParseValidateHandler({ generatePinData: false });
 			const strippedCode = stripImportStatements(code);
 			const result = await handler.parseAndValidate(strippedCode);
-
-			const workflowJson = layoutWorkflowJSON(result.workflow);
+			const workflowJson = result.workflow;
 
 			const workflowUpdateData = new WorkflowEntity();
 			Object.assign(workflowUpdateData, {
@@ -141,12 +128,17 @@ export const createUpdateWorkflowTool = (
 				nodes: workflowJson.nodes,
 				connections: workflowJson.connections,
 				pinData: workflowJson.pinData,
-				meta: { ...workflowJson.meta, aiBuilderAssisted: true, builderVariant: 'mcp' },
+				meta: { ...workflowJson.meta, aiBuilderAssisted: true },
 			});
 
-			resolveNodeWebhookIds(workflowUpdateData, nodeTypes);
-
-			stripNullCredentialStubs(workflowUpdateData.nodes);
+			for (const node of workflowUpdateData.nodes) {
+				try {
+					const desc = nodeTypes.getByNameAndVersion(node.type, node.typeVersion);
+					resolveNodeWebhookId(node, desc.description);
+				} catch {
+					// Node type not found, skip
+				}
+			}
 
 			// Preserve user-configured credentials from the existing workflow.
 			// Match nodes by name + type so that auto-assign skips them.
@@ -179,10 +171,7 @@ export const createUpdateWorkflowTool = (
 
 			const updatedWorkflow = await workflowService.update(user, workflowUpdateData, workflowId, {
 				aiBuilderAssisted: true,
-				source: 'n8n-mcp',
 			});
-
-			void collaborationService.broadcastWorkflowUpdate(workflowId, user.id).catch(() => {});
 
 			const baseUrl = urlService.getInstanceBaseUrl();
 			const workflowUrl = `${baseUrl}/workflow/${updatedWorkflow.id}`;
@@ -220,8 +209,7 @@ export const createUpdateWorkflowTool = (
 			};
 			telemetry.track(USER_CALLED_MCP_TOOL_EVENT, telemetryPayload);
 
-			const hint = getSdkReferenceHint(error);
-			const output = { error: errorMessage, ...(hint ? { hint } : {}) };
+			const output = { error: errorMessage };
 
 			return {
 				content: [{ type: 'text', text: JSON.stringify(output, null, 2) }],

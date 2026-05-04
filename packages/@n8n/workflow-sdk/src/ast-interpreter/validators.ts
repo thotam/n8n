@@ -40,7 +40,6 @@ export const ALLOWED_SDK_FUNCTIONS = new Set([
 
 	// Utility
 	'fromAi', // NEW: replaces ($) => $.fromAi() pattern
-	'nodeJson',
 ]);
 
 /**
@@ -378,7 +377,6 @@ export function getSafeJSONMethod(
  */
 const SAFE_STRING_METHODS: Record<string, (str: string, ...args: unknown[]) => unknown> = {
 	repeat: (str: string, count: unknown) => str.repeat(count as number),
-	trim: (str: string) => str.trim(),
 };
 
 /**

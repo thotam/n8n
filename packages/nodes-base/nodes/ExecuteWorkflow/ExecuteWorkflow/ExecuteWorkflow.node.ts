@@ -17,7 +17,7 @@ export class ExecuteWorkflow implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Execute Sub-workflow',
 		name: 'executeWorkflow',
-		icon: 'node:execute-sub-workflow',
+		icon: 'fa:sign-in-alt',
 		iconColor: 'orange-red',
 		group: ['transform'],
 		version: [1, 1.1, 1.2, 1.3],
@@ -25,6 +25,7 @@ export class ExecuteWorkflow implements INodeType {
 		description: 'Execute another workflow',
 		defaults: {
 			name: 'Execute Workflow',
+			color: '#ff6d5a',
 		},
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],

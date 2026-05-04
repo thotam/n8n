@@ -23,17 +23,11 @@ const emit = defineEmits<{
 	'add:ai': [id: string];
 }>();
 
-const props = withDefaults(
-	defineProps<{
-		readOnly?: boolean;
-		canExecute?: boolean;
-		showStatusIcons: boolean;
-		itemsClass: string;
-	}>(),
-	{
-		canExecute: false,
-	},
-);
+const props = defineProps<{
+	readOnly?: boolean;
+	showStatusIcons: boolean;
+	itemsClass: string;
+}>();
 
 const $style = useCssModule();
 const i18n = useI18n();
@@ -67,7 +61,7 @@ const classes = computed(() => ({
 
 const isExecuteNodeVisible = computed(() => {
 	return (
-		(!props.readOnly || props.canExecute) &&
+		!props.readOnly &&
 		render.value.type === CanvasNodeRenderType.Default &&
 		'configuration' in render.value.options &&
 		(!render.value.options.configuration || isToolNode.value)

@@ -13,7 +13,6 @@ import type { EventService } from '@/events/event.service';
 import type { SourceControlExportService } from '../source-control-export.service.ee';
 import type { SourceControlGitService } from '../source-control-git.service.ee';
 import type { SourceControlImportService } from '../source-control-import.service.ee';
-import type { SourceControlContextFactory } from '../source-control-context.factory';
 import type { SourceControlScopedService } from '../source-control-scoped.service';
 import { sourceControlFoldersExistCheck } from '../source-control-helper.ee';
 import type { ExportResult } from '../types/export-result';
@@ -49,7 +48,6 @@ describe('SourceControlService', () => {
 	);
 	const sourceControlImportService = mock<SourceControlImportService>();
 	const sourceControlExportService = mock<SourceControlExportService>();
-	const sourceControlContextFactory = mock<SourceControlContextFactory>();
 	const sourceControlScopedService = mock<SourceControlScopedService>();
 	const gitService = mock<SourceControlGitService>();
 	const eventService = mock<EventService>();
@@ -59,7 +57,6 @@ describe('SourceControlService', () => {
 		preferencesService,
 		sourceControlExportService,
 		sourceControlImportService,
-		sourceControlContextFactory,
 		sourceControlScopedService,
 		eventService, // event service
 		mockStatusService as any, // status service

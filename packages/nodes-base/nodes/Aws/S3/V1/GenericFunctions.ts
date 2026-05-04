@@ -8,7 +8,6 @@ import type {
 	IHttpRequestOptions,
 	IHttpRequestMethods,
 } from 'n8n-workflow';
-import { sanitizeXmlName } from 'n8n-workflow';
 import { parseString } from 'xml2js';
 
 export async function awsApiRequest(
@@ -95,20 +94,12 @@ export async function awsApiRequestSOAP(
 	);
 	try {
 		return await new Promise((resolve, reject) => {
-			parseString(
-				response as string,
-				{
-					explicitArray: false,
-					tagNameProcessors: [sanitizeXmlName],
-					attrNameProcessors: [sanitizeXmlName],
-				},
-				(err, data) => {
-					if (err) {
-						return reject(err);
-					}
-					resolve(data);
-				},
-			);
+			parseString(response as string, { explicitArray: false }, (err, data) => {
+				if (err) {
+					return reject(err);
+				}
+				resolve(data);
+			});
 		});
 	} catch (error) {
 		return error;

@@ -15,7 +15,7 @@ import { test, expect } from '../../../../fixtures/base';
 test.use({ capability: 'observability' });
 
 test.describe(
-	'Log Streaming to VictoriaLogs @capability:observability @licensed',
+	'Log Streaming to VictoriaLogs @capability:observability',
 	{
 		annotation: [{ type: 'owner', description: 'Lifecycle & Governance' }],
 	},

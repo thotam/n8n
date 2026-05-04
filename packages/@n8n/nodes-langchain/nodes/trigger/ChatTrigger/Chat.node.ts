@@ -1,6 +1,5 @@
 /* eslint-disable n8n-nodes-base/node-dirname-against-convention */
 import type { BaseChatMemory } from '@langchain/classic/memory';
-import { autoSaveHighlightedDataProperty } from 'n8n-nodes-base/dist/utils/highlightedData';
 import {
 	limitWaitTimeOption,
 	sendAndWaitWebhooksDescription,
@@ -16,8 +15,6 @@ import {
 	NodeConnectionTypes,
 	NodeOperationError,
 	SEND_AND_WAIT_OPERATION,
-	getHighlightedInputKey,
-	getHighlightedResponseKey,
 } from 'n8n-workflow';
 import type {
 	IExecuteFunctions,
@@ -41,7 +38,7 @@ export class Chat implements INodeType {
 		usableAsTool: true,
 		displayName: 'Chat',
 		name: 'chat',
-		icon: 'node:chat-trigger',
+		icon: 'fa:comments',
 		iconColor: 'black',
 		group: ['input'],
 		version: [1, 1.1, 1.2, 1.3],
@@ -171,7 +168,6 @@ export class Chat implements INodeType {
 							},
 						},
 					},
-					autoSaveHighlightedDataProperty,
 				],
 			},
 			{
@@ -180,7 +176,7 @@ export class Chat implements INodeType {
 				type: 'collection',
 				placeholder: 'Add Option',
 				default: {},
-				options: [limitWaitTimeOption, autoSaveHighlightedDataProperty],
+				options: [limitWaitTimeOption],
 				displayOptions: {
 					show: {
 						'@tool': [true],
@@ -194,7 +190,7 @@ export class Chat implements INodeType {
 				type: 'collection',
 				placeholder: 'Add Option',
 				default: {},
-				options: [limitWaitTimeOption, autoSaveHighlightedDataProperty],
+				options: [limitWaitTimeOption],
 				displayOptions: {
 					show: {
 						'@tool': [true],
@@ -232,18 +228,15 @@ export class Chat implements INodeType {
 			return [inputData];
 		}
 
-		const message = data.json?.chatInput as string;
-		if (context.getNodeParameter('options.autoSaveHighlightedData', 0, true) !== false) {
-			context.customData.set(getHighlightedInputKey(context.getNode().name), message);
-		}
-
 		if (options.memoryConnection) {
 			const memory = (await context.getInputConnectionData(NodeConnectionTypes.AiMemory, 0)) as
 				| BaseChatMemory
 				| undefined;
 
+			const message = data.json?.chatInput;
+
 			if (memory && message) {
-				await memory.chatHistory.addUserMessage(message);
+				await memory.chatHistory.addUserMessage(message as string);
 			}
 		}
 
@@ -355,11 +348,6 @@ export class Chat implements INodeType {
 		const options = this.getNodeParameter('options', 0, {}) as {
 			memoryConnection?: boolean;
 		};
-
-		if (this.getNodeParameter('options.autoSaveHighlightedData', 0, true) !== false) {
-			const responseText = typeof message === 'string' ? message : message.text;
-			this.customData.set(getHighlightedResponseKey(this.getNode().name), responseText);
-		}
 
 		if (options.memoryConnection) {
 			const memory = (await this.getInputConnectionData(NodeConnectionTypes.AiMemory, 0)) as

@@ -160,7 +160,7 @@ function getNodeTypeByName(name: string): INodeTypeDescription | null {
 
 .button {
 	.split & {
-		height: var(--height--xl);
+		height: var(--spacing--2xl);
 
 		padding-inline-start: var(--spacing--xs);
 		padding-block: 0;
@@ -170,7 +170,7 @@ function getNodeTypeByName(name: string): INodeTypeDescription | null {
 
 	.split &[data-icon-only] {
 		padding-inline-start: 0;
-		width: var(--height--xl);
+		width: var(--spacing--2xl);
 	}
 }
 
@@ -181,7 +181,7 @@ function getNodeTypeByName(name: string): INodeTypeDescription | null {
 
 .chevron {
 	width: 40px;
-	height: var(--height--xl);
+	height: var(--spacing--2xl);
 	border-top-left-radius: 0;
 	border-bottom-left-radius: 0;
 }

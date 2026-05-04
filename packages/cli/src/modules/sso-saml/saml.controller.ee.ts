@@ -1,5 +1,4 @@
 import { SamlAcsDto, SamlPreferences, SamlToggleDto } from '@n8n/api-types';
-import { CREDENTIAL_BLANKING_VALUE } from 'n8n-workflow';
 import { AuthenticatedRequest } from '@n8n/db';
 import { Get, Post, RestController, GlobalScope, Body } from '@n8n/decorators';
 import { Response } from 'express';
@@ -9,20 +8,17 @@ import url from 'url';
 
 import { AuthService } from '@/auth/auth.service';
 import { AuthError } from '@/errors/response-errors/auth.error';
-import { ForbiddenError } from '@/errors/response-errors/forbidden.error';
 import { EventService } from '@/events/event.service';
-import { InstanceSettingsLoaderConfig } from '@n8n/config';
 import { AuthlessRequest } from '@/requests';
 import { sendErrorResponse } from '@/response-helper';
 import { UrlService } from '@/services/url.service';
-import { validateRedirectUrl } from '@/utils/validate-redirect-url';
 import { isSamlLicensedAndEnabled } from '@/sso.ee/sso-helpers';
 
 import {
 	samlLicensedAndEnabledMiddleware,
 	samlLicensedMiddleware,
 } from './middleware/saml-enabled-middleware';
-import { extractTestIdFromRelayState, isConnectionTestRequest } from './saml-helpers';
+import { isConnectionTestRequest } from './saml-helpers';
 import { SamlService } from './saml.service.ee';
 import {
 	getServiceProviderConfigTestReturnUrl,
@@ -39,7 +35,6 @@ export class SamlController {
 		private readonly samlService: SamlService,
 		private readonly urlService: UrlService,
 		private readonly eventService: EventService,
-		private readonly instanceSettingsLoaderConfig: InstanceSettingsLoaderConfig,
 	) {}
 
 	@Get('/metadata', { skipAuth: true })
@@ -57,7 +52,6 @@ export class SamlController {
 		const prefs = this.samlService.samlPreferences;
 		return {
 			...prefs,
-			signingPrivateKey: prefs.signingPrivateKey ? CREDENTIAL_BLANKING_VALUE : undefined,
 			entityID: getServiceProviderEntityId(),
 			returnUrl: getServiceProviderReturnUrl(),
 		};
@@ -69,17 +63,7 @@ export class SamlController {
 	@Post('/config', { middlewares: [samlLicensedMiddleware] })
 	@GlobalScope('saml:manage')
 	async configPost(_req: AuthenticatedRequest, _res: Response, @Body payload: SamlPreferences) {
-		if (this.instanceSettingsLoaderConfig.ssoManagedByEnv) {
-			throw new ForbiddenError(
-				'SSO configuration is managed via environment variables and cannot be modified through the API',
-			);
-		}
-		const result = await this.samlService.setSamlPreferences(payload);
-		if (!result) return;
-		return {
-			...result,
-			signingPrivateKey: result.signingPrivateKey ? CREDENTIAL_BLANKING_VALUE : undefined,
-		};
+		return await this.samlService.setSamlPreferences(payload);
 	}
 
 	/**
@@ -92,11 +76,6 @@ export class SamlController {
 		res: Response,
 		@Body { loginEnabled }: SamlToggleDto,
 	) {
-		if (this.instanceSettingsLoaderConfig.ssoManagedByEnv) {
-			throw new ForbiddenError(
-				'SSO configuration is managed via environment variables and cannot be modified through the API',
-			);
-		}
 		await this.samlService.setSamlPreferences({ loginEnabled });
 		return res.sendStatus(200);
 	}
@@ -129,14 +108,7 @@ export class SamlController {
 		payload: SamlAcsDto = {},
 	) {
 		try {
-			let metadataOverride: string | undefined;
-			if (isConnectionTestRequest(payload)) {
-				const testId = extractTestIdFromRelayState(payload.RelayState);
-				if (testId) {
-					metadataOverride = await this.samlService.consumePendingTestConfig(testId);
-				}
-			}
-			const loginResult = await this.samlService.handleSamlLogin(req, binding, metadataOverride);
+			const loginResult = await this.samlService.handleSamlLogin(req, binding);
 			// if RelayState is set to the test connection Url, this is a test connection
 			if (isConnectionTestRequest(payload)) {
 				if (loginResult.authenticatedUser) {
@@ -162,7 +134,7 @@ export class SamlController {
 						return res.redirect(this.urlService.getInstanceBaseUrl() + '/saml/onboarding');
 					} else {
 						const safeRedirectUrl = payload.RelayState
-							? validateRedirectUrl(payload.RelayState)
+							? this.validateRedirectUrl(payload.RelayState)
 							: '/';
 						return res.redirect(this.urlService.getInstanceBaseUrl() + safeRedirectUrl);
 					}
@@ -214,37 +186,33 @@ export class SamlController {
 			// ignore
 		}
 
-		return await this.handleInitSSO(res, validateRedirectUrl(redirectUrl));
+		return await this.handleInitSSO(res, this.validateRedirectUrl(redirectUrl));
 	}
 
 	/**
 	 * Test SAML config
 	 * Accepts metadata from the request body so testing works without saving first.
-	 * The metadata is cached for the duration of the test round-trip and looked up
-	 * at the ACS endpoint using a token embedded in the RelayState.
 	 * This endpoint is available if SAML is licensed and the requestor is an instance owner.
 	 */
 	@Post('/config/test', { middlewares: [samlLicensedMiddleware] })
 	@GlobalScope('saml:manage')
 	async configTestPost(_req: AuthenticatedRequest, res: Response, @Body payload: SamlPreferences) {
-		let metadata: string | undefined = payload.metadata;
-		if (!metadata && payload.metadataUrl) {
-			metadata =
-				(await this.samlService.fetchMetadataFromUrl(payload.metadataUrl, payload.ignoreSSL)) ??
-				undefined;
-		}
+		return await this.handleInitSSO(res, getServiceProviderConfigTestReturnUrl(), payload);
+	}
 
-		let relayState = getServiceProviderConfigTestReturnUrl();
-		if (metadata) {
-			const testId = await this.samlService.storePendingTestConfig(metadata);
-			const relayStateUrl = new URL(relayState);
-			relayStateUrl.searchParams.set('t', testId);
-			relayState = relayStateUrl.toString();
+	private async handleInitSSO(res: Response, relayState?: string, config?: SamlPreferences) {
+		let metadata: string | undefined;
+		if (config) {
+			metadata = config.metadata;
+			if (!metadata && config.metadataUrl) {
+				metadata =
+					(await this.samlService.fetchMetadataFromUrl(config.metadataUrl, config.ignoreSSL)) ?? '';
+			}
 		}
 
 		const result = await this.samlService.getLoginRequestUrl(
 			relayState,
-			payload.loginBinding,
+			config?.loginBinding,
 			metadata,
 		);
 		if (result?.binding === 'redirect') {
@@ -256,14 +224,25 @@ export class SamlController {
 		}
 	}
 
-	private async handleInitSSO(res: Response, relayState?: string) {
-		const result = await this.samlService.getLoginRequestUrl(relayState);
-		if (result?.binding === 'redirect') {
-			return result.context.context;
-		} else if (result?.binding === 'post') {
-			return res.send(getInitSSOFormView(result.context as PostBindingContext));
-		} else {
-			throw new AuthError('SAML redirect failed, please check your SAML configuration.');
+	/**
+	 * Validates that a redirect URL is safe (relative path only, no external redirects)
+	 */
+	private validateRedirectUrl(redirectUrl: string): string {
+		if (typeof redirectUrl !== 'string' || redirectUrl.trim() === '') {
+			return '/';
 		}
+
+		const trimmed = redirectUrl.trim();
+
+		// Only allow paths starting with /
+		if (!trimmed.startsWith('/')) {
+			return '/';
+		}
+		// Reject protocol-relative URLs (//example.com)
+		if (trimmed.startsWith('//')) {
+			return '/';
+		}
+
+		return trimmed;
 	}
 }

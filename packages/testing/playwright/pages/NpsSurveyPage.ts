@@ -7,24 +7,24 @@ export class NpsSurveyPage extends BasePage {
 		super(page);
 	}
 
-	get container(): Locator {
+	getNpsSurveyModal(): Locator {
 		return this.page.getByTestId('nps-survey-modal');
 	}
 
 	getNpsSurveyRatings(): Locator {
-		return this.container.getByTestId('nps-survey-ratings');
+		return this.page.getByTestId('nps-survey-ratings');
 	}
 
 	getNpsSurveyFeedback(): Locator {
-		return this.container.getByTestId('nps-survey-feedback');
+		return this.page.getByTestId('nps-survey-feedback');
 	}
 
 	getNpsSurveySubmitButton(): Locator {
-		return this.container.getByTestId('nps-survey-feedback-button');
+		return this.page.getByTestId('nps-survey-feedback-button');
 	}
 
 	getNpsSurveyCloseButton(): Locator {
-		return this.container.locator('button.el-drawer__close-btn');
+		return this.getNpsSurveyModal().locator('button.el-drawer__close-btn');
 	}
 
 	getRatingButton(rating: number): Locator {

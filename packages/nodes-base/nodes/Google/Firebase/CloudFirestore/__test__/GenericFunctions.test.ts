@@ -344,10 +344,6 @@ describe('GoogleFirebaseCloudFirestore > GenericFunctions', () => {
 			});
 		});
 
-		it('should convert empty arrays', () => {
-			expect(jsonToDocument([] as any)).toEqual({ arrayValue: { values: [] } });
-		});
-
 		it('should handle edge cases', () => {
 			expect(jsonToDocument(0)).toEqual({ integerValue: 0 });
 			expect(jsonToDocument(NaN as any)).toEqual({});

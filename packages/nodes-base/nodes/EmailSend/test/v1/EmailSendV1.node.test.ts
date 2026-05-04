@@ -18,12 +18,13 @@ describe('Test EmailSendV1', () => {
 			description: {
 				displayName: 'Send Email',
 				name: 'emailSend',
-				icon: 'node:send-mail',
+				icon: 'fa:envelope',
 				group: ['output'],
 				description: 'Sends an Email',
 				version: 1,
 				defaults: {
 					name: 'Send Email',
+					color: '#00bb88',
 				},
 			},
 		} as any);

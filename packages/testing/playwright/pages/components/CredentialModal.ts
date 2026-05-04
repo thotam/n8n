@@ -91,12 +91,15 @@ export class CredentialModal extends BaseModal {
 
 	/**
 	 * Wait for save to fully complete.
-	 * After saving (and optional credential testing), the button shows "Saved" label.
+	 * After saving (and optional credential testing), the button becomes
+	 * disabled (no unsaved changes) and is no longer loading
 	 */
 	async waitForSaveComplete(): Promise<void> {
-		await expect(this.getSaveButton().getByText('Saved', { exact: true })).toBeVisible({
-			timeout: 10000,
-		});
+		const btn = this.getSaveButton().locator('button');
+		await expect(async () => {
+			await expect(btn).toBeDisabled();
+			await expect(btn).not.toHaveAttribute('aria-busy', 'true');
+		}).toPass({ timeout: 10000 });
 	}
 
 	async save(): Promise<void> {
@@ -139,7 +142,7 @@ export class CredentialModal extends BaseModal {
 	}
 
 	get oauthConnectButton() {
-		return this.root.getByTestId('quick-connect-button');
+		return this.root.getByTestId('oauth-connect-button');
 	}
 
 	get oauthConnectSuccessBanner() {

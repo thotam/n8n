@@ -5,7 +5,7 @@ import {
 	N8nHeading,
 	N8nIconButton,
 	N8nInputNumber,
-	N8nSwitch,
+	N8nSwitch2,
 	N8nText,
 	N8nTooltip,
 } from '@n8n/design-system';
@@ -263,8 +263,7 @@ watch(
 						:disabled="props.data.disabled"
 						placement="top"
 					>
-						<N8nSwitch
-							data-test-id="chat-provider-enabled-switch"
+						<N8nSwitch2
 							size="large"
 							:model-value="settings?.enabled ?? false"
 							:disabled="props.data.disabled || loadingSettings"
@@ -317,8 +316,7 @@ watch(
 							:disabled="props.data.disabled"
 							placement="top"
 						>
-							<N8nSwitch
-								data-test-id="chat-provider-limit-models-switch"
+							<N8nSwitch2
 								size="large"
 								:model-value="limitModels"
 								:disabled="props.data.disabled || loadingSettings"
@@ -355,7 +353,7 @@ watch(
 						<N8nText color="text-light" size="small">
 							{{ i18n.baseText('settings.chatHub.providers.modal.edit.responsesApi.description') }}
 						</N8nText>
-						<N8nSwitch
+						<N8nSwitch2
 							size="large"
 							:model-value="settings.responsesApiEnabled ?? true"
 							:disabled="props.data.disabled"

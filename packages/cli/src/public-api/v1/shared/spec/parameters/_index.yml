@@ -10,8 +10,6 @@ TagId:
   $ref: '../../../handlers/tags/spec/schemas/parameters/tagId.yml'
 IncludeData:
   $ref: '../../../handlers/executions/spec/schemas/parameters/includeData.yml'
-RedactExecutionData:
-  $ref: '../../../handlers/executions/spec/schemas/parameters/redactExecutionData.yml'
 UserIdentifier:
   $ref: '../../../handlers/users/spec/schemas/parameters/userIdentifier.yml'
 IncludeRole:
@@ -20,5 +18,3 @@ VariableId:
   $ref: '../../../handlers/variables/spec/schemas/parameters/variableId.yml'
 dataTableId:
   $ref: '../../../handlers/data-tables/spec/schemas/parameters/dataTableId.yml'
-columnId:
-  $ref: '../../../handlers/data-tables/spec/schemas/parameters/columnId.yml'

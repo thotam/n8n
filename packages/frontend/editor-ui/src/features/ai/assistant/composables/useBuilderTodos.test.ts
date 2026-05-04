@@ -451,11 +451,8 @@ describe('useBuilderTodos', () => {
 				'OpenAI GPT-4o-mini': [{ json: { response: 'pinned AI response' } }],
 			});
 
-			// Verify the issue exists in nodeValidationIssues before filtering
-			const workflowDocumentStore = useWorkflowDocumentStore(
-				createWorkflowDocumentId(workflowsStore.workflow.id),
-			);
-			const validationIssues = workflowDocumentStore.nodeValidationIssues;
+			// Verify the issue exists in workflowValidationIssues before filtering
+			const validationIssues = workflowsStore.workflowValidationIssues;
 			expect(validationIssues.some((i) => i.node === 'OpenAI GPT-4o-mini')).toBe(true);
 
 			const { workflowTodos } = useBuilderTodos();
@@ -502,10 +499,7 @@ describe('useBuilderTodos', () => {
 			});
 
 			// Verify validation issue exists for the sub-node
-			const workflowDocumentStore = useWorkflowDocumentStore(
-				createWorkflowDocumentId(workflowsStore.workflow.id),
-			);
-			const validationIssues = workflowDocumentStore.nodeValidationIssues;
+			const validationIssues = workflowsStore.workflowValidationIssues;
 			expect(validationIssues.some((i) => i.node === 'OpenAI GPT-4.1-mini')).toBe(true);
 
 			const { workflowTodos } = useBuilderTodos();
@@ -742,10 +736,7 @@ describe('useBuilderTodos', () => {
 			setPinData({});
 
 			// Verify validation issue exists for the sub-node
-			const workflowDocumentStore = useWorkflowDocumentStore(
-				createWorkflowDocumentId(workflowsStore.workflow.id),
-			);
-			const validationIssues = workflowDocumentStore.nodeValidationIssues;
+			const validationIssues = workflowsStore.workflowValidationIssues;
 			expect(validationIssues.some((i) => i.node === 'OpenAI GPT-4.1-mini')).toBe(true);
 
 			const { workflowTodos } = useBuilderTodos();

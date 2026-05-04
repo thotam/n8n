@@ -1,16 +1,14 @@
+import { getConnectedTools } from '@utils/helpers';
 import {
 	type IDataObject,
 	type IExecuteFunctions,
 	type INodeExecutionData,
 	type INodeProperties,
-	accumulateTokenUsage,
 	jsonParse,
 	updateDisplayOptions,
 	validateNodeParameters,
 } from 'n8n-workflow';
 import zodToJsonSchema from 'zod-to-json-schema';
-
-import { getConnectedTools } from '@utils/helpers';
 
 import type {
 	GenerateContentRequest,
@@ -19,19 +17,12 @@ import type {
 	Tool,
 	GenerateContentGenerationConfig,
 	BuiltInTools,
-	FunctionCallPart,
-	TextPart,
 } from '../../helpers/interfaces';
 import { apiRequest } from '../../transport';
 import { modelRLC } from '../descriptions';
 
 const properties: INodeProperties[] = [
-	{ ...modelRLC('modelSearch'), displayOptions: { show: { '@version': [{ _cnd: { lt: 1.2 } }] } } },
-	{
-		...modelRLC('modelSearch'),
-		default: { mode: 'list', value: 'models/gemini-3-flash-preview' },
-		displayOptions: { show: { '@version': [{ _cnd: { gte: 1.2 } }] } },
-	},
+	modelRLC('modelSearch'),
 	{
 		displayName: 'Messages',
 		name: 'messages',
@@ -349,16 +340,8 @@ const displayOptions = {
 
 export const description = updateDisplayOptions(displayOptions, properties);
 
-function isFunctionCallPart(part: unknown): part is FunctionCallPart {
-	return !!part && typeof part === 'object' && 'functionCall' in part;
-}
-
-function isTextPart(part: unknown): part is TextPart {
-	return !!part && typeof part === 'object' && 'text' in part;
-}
-
 function getToolCalls(response: GenerateContentResponse) {
-	return response.candidates.flatMap((c) => c?.content?.parts ?? []).filter(isFunctionCallPart);
+	return response.candidates.flatMap((c) => c.content.parts).filter((p) => 'functionCall' in p);
 }
 
 export async function execute(this: IExecuteFunctions, i: number): Promise<INodeExecutionData[]> {
@@ -527,21 +510,6 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		body,
 	})) as GenerateContentResponse;
 
-	const captureUsage = () => {
-		const usageMetadata = (response as unknown as Record<string, unknown>).usageMetadata as
-			| { promptTokenCount: number; candidatesTokenCount: number }
-			| undefined;
-		if (usageMetadata) {
-			accumulateTokenUsage(
-				this,
-				usageMetadata.promptTokenCount,
-				usageMetadata.candidatesTokenCount,
-			);
-		}
-	};
-
-	captureUsage();
-
 	const maxToolsIterations = this.getNodeParameter('options.maxToolsIterations', i, 15) as number;
 	const abortSignal = this.getExecutionCancelSignal();
 	let currentIteration = 1;
@@ -554,10 +522,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 			break;
 		}
 
-		contents.push.apply(
-			contents,
-			response.candidates.map((c) => c.content),
-		);
+		contents.push(...response.candidates.map((c) => c.content));
 
 		for (const { functionCall } of toolCalls) {
 			let toolResponse;
@@ -586,7 +551,6 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		response = (await apiRequest.call(this, 'POST', `/v1beta/${model}:generateContent`, {
 			body,
 		})) as GenerateContentResponse;
-		captureUsage();
 		toolCalls = getToolCalls(response);
 		currentIteration++;
 	}
@@ -594,9 +558,9 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	const candidates = options.includeMergedResponse
 		? response.candidates.map((candidate) => ({
 				...candidate,
-				mergedResponse: (candidate?.content?.parts ?? [])
-					.filter(isTextPart)
-					.map((part) => part.text)
+				mergedResponse: candidate.content.parts
+					.filter((part) => 'text' in part)
+					.map((part) => (part as { text: string }).text)
 					.join(''),
 			}))
 		: response.candidates;

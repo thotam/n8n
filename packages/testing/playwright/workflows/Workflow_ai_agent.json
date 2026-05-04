@@ -23,16 +23,10 @@
 		},
 		{
 			"parameters": {
-				"model": {
-					"__rl": true,
-					"mode": "list",
-					"value": "claude-sonnet-4-5-20250929",
-					"cachedResultName": "Claude Sonnet 4.5"
-				},
-				"options": {}
+				"response": "Hello from **e2e** model!!!"
 			},
-			"type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
-			"typeVersion": 1.3,
+			"type": "@n8n/n8n-nodes-langchain.lmChatE2eTest",
+			"typeVersion": 1,
 			"position": [308, 220],
 			"id": "2f239d5b-95ef-4949-92b6-5a7541e1029f",
 			"name": "E2E Chat Model"

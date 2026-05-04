@@ -6,7 +6,7 @@ import type {
 	INodeTypeDescription,
 	IPollFunctions,
 } from 'n8n-workflow';
-import { NodeConnectionTypes, NodeOperationError, sanitizeXmlName } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import Parser from 'rss-parser';
 
 interface PollData {
@@ -18,7 +18,7 @@ export class RssFeedReadTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'RSS Feed Trigger',
 		name: 'rssFeedReadTrigger',
-		icon: 'node:rss-feed-trigger',
+		icon: 'fa:rss',
 		iconColor: 'orange-red',
 		group: ['trigger'],
 		version: 1,
@@ -26,6 +26,7 @@ export class RssFeedReadTrigger implements INodeType {
 		subtitle: '={{$parameter["event"]}}',
 		defaults: {
 			name: 'RSS Feed Trigger',
+			color: '#b02020',
 		},
 		polling: true,
 		inputs: [],
@@ -54,12 +55,7 @@ export class RssFeedReadTrigger implements INodeType {
 			throw new NodeOperationError(this.getNode(), 'The parameter "URL" has to be set!');
 		}
 
-		const parser = new Parser({
-			xml2js: {
-				tagNameProcessors: [sanitizeXmlName],
-				attrNameProcessors: [sanitizeXmlName],
-			},
-		});
+		const parser = new Parser();
 
 		let feed: Parser.Output<IDataObject>;
 		try {

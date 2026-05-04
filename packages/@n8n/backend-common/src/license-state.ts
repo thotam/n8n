@@ -106,10 +106,6 @@ export class LicenseState {
 		return this.isLicensed('feat:aiCredits');
 	}
 
-	isAiGatewayLicensed() {
-		return this.isLicensed('feat:aiGateway');
-	}
-
 	isAdvancedExecutionFiltersLicensed() {
 		return this.isLicensed('feat:advancedExecutionFilters');
 	}
@@ -184,10 +180,6 @@ export class LicenseState {
 
 	isWorkflowDiffsLicensed() {
 		return this.isLicensed('feat:workflowDiffs');
-	}
-
-	isDataRedactionLicensed() {
-		return this.isLicensed(LICENSE_FEATURES.DATA_REDACTION);
 	}
 
 	isProvisioningLicensed() {

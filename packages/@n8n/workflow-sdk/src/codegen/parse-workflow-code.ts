@@ -6,8 +6,7 @@
  */
 import { interpretSDKCode, InterpreterError, SecurityError } from '../ast-interpreter';
 import type { SDKFunctions } from '../ast-interpreter';
-import { expr as exprFn, nodeJson as nodeJsonFn } from '../expression';
-import { isWorkflowBuilder, isWorkflowJSON } from '../typeguards';
+import { expr as exprFn } from '../expression';
 import type { WorkflowJSON, WorkflowBuilder } from '../types/base';
 import { workflow as workflowFn } from '../workflow-builder';
 import { nextBatch as nextBatchFn } from '../workflow-builder/control-flow-builders/next-batch';
@@ -553,7 +552,6 @@ const sdkFunctions: SDKFunctions = {
 	reranker: rerankerFn,
 	fromAi: fromAiFn,
 	expr: exprFn,
-	nodeJson: nodeJsonFn,
 };
 
 /**
@@ -633,8 +631,7 @@ export function parseWorkflowCodeToBuilder(code: string): WorkflowBuilder {
 
 	try {
 		// Use AST interpreter instead of new Function() for security
-		const result = interpretSDKCode(executableCode, sdkFunctions);
-		return asWorkflowBuilder(result);
+		return interpretSDKCode(executableCode, sdkFunctions) as WorkflowBuilder;
 	} catch (error) {
 		if (error instanceof SecurityError) {
 			throw new SyntaxError(
@@ -653,23 +650,4 @@ export function parseWorkflowCodeToBuilder(code: string): WorkflowBuilder {
 		}
 		throw error;
 	}
-}
-
-/**
- * Coerce an interpreter result into a WorkflowBuilder.
- *
- * - If the result is already a WorkflowBuilder (produced by the SDK `workflow()` function), return it directly.
- * - If the result is a plain object that looks like WorkflowJSON (has a `nodes` array), convert it via `workflow.fromJSON()`.
- * - Otherwise, throw with a descriptive error.
- */
-function asWorkflowBuilder(result: unknown): WorkflowBuilder {
-	if (isWorkflowBuilder(result)) {
-		return result;
-	}
-
-	if (isWorkflowJSON(result)) {
-		return workflowFn.fromJSON(result);
-	}
-
-	throw new SyntaxError('Code must export a workflow built with the workflow() SDK function.');
 }

@@ -125,7 +125,7 @@ export function quoteIdentifier(name: string, dbType: DataSourceOptions['type'])
 		case 'postgres':
 		case 'sqlite':
 		default:
-			return `"${name.replace(/"/g, '""')}"`;
+			return `"${name}"`;
 	}
 }
 
@@ -169,7 +169,8 @@ export function extractReturningData(raw: unknown): DataTableRowReturn[] {
 
 export function extractInsertedIds(raw: unknown, dbType: DataSourceOptions['type']): number[] {
 	switch (dbType) {
-		case 'postgres': {
+		case 'postgres':
+		case 'mariadb': {
 			if (!isArrayOf(raw, hasRowId)) {
 				throw new UnexpectedError(
 					`Expected INSERT INTO raw to be { id: number }[] on Postgres. Is '${JSON.stringify(raw)}'`,

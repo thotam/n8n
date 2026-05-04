@@ -1,14 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { useWorkflowDocumentSettings, DEFAULT_SETTINGS } from './useWorkflowDocumentSettings';
 
-vi.mock('../workflows.store', () => ({
-	useWorkflowsStore: vi.fn(() => ({
-		workflowObject: { setSettings: vi.fn() },
-	})),
-}));
-
 function createSettings() {
-	return useWorkflowDocumentSettings({ syncWorkflowObject: vi.fn() });
+	return useWorkflowDocumentSettings();
 }
 
 describe('useWorkflowDocumentSettings', () => {

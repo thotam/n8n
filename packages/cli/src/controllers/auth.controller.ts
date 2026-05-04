@@ -252,7 +252,7 @@ export class AuthController {
 		}
 
 		const inviter = users.find((user) => user.id === inviterId);
-		if (!inviter?.email) {
+		if (!inviter?.email || !inviter?.firstName) {
 			this.logger.error(
 				'Request to resolve signup token failed because inviter does not exist or is not set up',
 				{

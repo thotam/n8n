@@ -1,10 +1,4 @@
-export type DependencyType =
-	| 'credentialId'
-	| 'dataTableId'
-	| 'errorWorkflow'
-	| 'errorWorkflowParent'
-	| 'workflowCall'
-	| 'workflowParent';
+export type DependencyType = 'credentialId' | 'dataTableId' | 'workflowCall' | 'workflowParent';
 
 export type DependencyResourceType = 'workflow' | 'credential' | 'dataTable';
 

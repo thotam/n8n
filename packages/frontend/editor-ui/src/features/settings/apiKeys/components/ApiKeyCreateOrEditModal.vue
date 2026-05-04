@@ -2,6 +2,7 @@
 import ApiKeyScopes from './ApiKeyScopes.vue';
 import CopyInput from '@/app/components/CopyInput.vue';
 import Modal from '@/app/components/Modal.vue';
+import { EnterpriseEditionFeature } from '@/app/constants';
 import { API_KEY_CREATE_OR_EDIT_MODAL_KEY } from '../apiKeys.constants';
 import { computed, onMounted, ref } from 'vue';
 import { useUIStore } from '@/app/stores/ui.store';
@@ -15,6 +16,7 @@ import type { BaseTextKey } from '@n8n/i18n';
 import { DateTime } from 'luxon';
 import type { ApiKey, ApiKeyWithRawValue, CreateApiKeyRequestDto } from '@n8n/api-types';
 import type { ApiKeyScope } from '@n8n/permissions';
+import { useSettingsStore } from '@/app/stores/settings.store';
 
 import { ElDatePicker } from 'element-plus';
 import {
@@ -54,7 +56,12 @@ const showExpirationDateSelector = ref(false);
 const apiKeyCreationDate = ref('');
 const selectedScopes = ref<ApiKeyScope[]>([]);
 
+const settingsStore = useSettingsStore();
 const apiKeyStore = useApiKeysStore();
+
+const apiKeyScopesEnabled = computed(
+	() => settingsStore.isEnterpriseFeatureEnabled[EnterpriseEditionFeature.ApiKeyScopes],
+);
 
 const calculateExpirationDate = (daysFromNow: number) => {
 	const date = DateTime.now()
@@ -105,7 +112,7 @@ const allFormFieldsAreSet = computed(() => {
 
 	return (
 		label.value &&
-		selectedScopes.value.length > 0 &&
+		(!apiKeyScopesEnabled.value ? true : selectedScopes.value.length) &&
 		(props.mode === 'edit' ? true : isExpirationDateSet)
 	);
 });
@@ -123,11 +130,13 @@ onMounted(() => {
 		const apiKey = apiKeysById[props.activeId];
 		label.value = apiKey.label ?? '';
 		apiKeyCreationDate.value = getApiKeyCreationTime(apiKey);
-		selectedScopes.value = apiKey.scopes.filter((scope) =>
-			apiKeyStore.availableScopes.includes(scope),
-		);
-	} else {
-		selectedScopes.value = [...availableScopes];
+		selectedScopes.value = !apiKeyScopesEnabled.value
+			? apiKeyStore.availableScopes
+			: apiKey.scopes.filter((scope) => apiKeyStore.availableScopes.includes(scope));
+	}
+
+	if (props.mode === 'new' && !apiKeyScopesEnabled.value) {
+		selectedScopes.value = availableScopes;
 	}
 });
 
@@ -324,6 +333,7 @@ async function handleEnterKey(event: KeyboardEvent) {
 					<ApiKeyScopes
 						v-model="selectedScopes"
 						:available-scopes="availableScopes"
+						:enabled="apiKeyScopesEnabled"
 						@update:model-value="onScopeSelectionChanged"
 					/>
 				</div>

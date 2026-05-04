@@ -2,7 +2,7 @@ import type { IExecuteFunctions, INodeExecutionData, INodeProperties } from 'n8n
 import { NodeOperationError, updateDisplayOptions } from 'n8n-workflow';
 
 import type { VeoResponse } from '../../helpers/interfaces';
-import { downloadFile, getFilenameFromMimeType } from '../../helpers/utils';
+import { downloadFile } from '../../helpers/utils';
 import { apiRequest } from '../../transport';
 import { modelRLC } from '../descriptions';
 
@@ -188,8 +188,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 						key: credentials.apiKey as string,
 					},
 				);
-				const fileName = getFilenameFromMimeType(mimeType, 'video', 'mp4');
-				const binaryData = await this.helpers.prepareBinaryData(fileContent, fileName, mimeType);
+				const binaryData = await this.helpers.prepareBinaryData(fileContent, 'video.mp4', mimeType);
 				return {
 					binary: { [binaryPropertyOutput]: binaryData },
 					json: {

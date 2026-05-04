@@ -9,7 +9,6 @@ import { MCP_CONNECT_WORKFLOWS_MODAL_KEY } from '@/features/ai/mcpAccess/mcp.con
 import { useMCPStore } from '@/features/ai/mcpAccess/mcp.store';
 import { createWorkflow } from '@/features/ai/mcpAccess/mcp.test.utils';
 import { useTelemetry } from '@/app/composables/useTelemetry';
-import { type Mock } from 'vitest';
 
 vi.mock('@/app/composables/useTelemetry', () => {
 	const track = vi.fn();
@@ -24,7 +23,7 @@ vi.mock('@/app/router', () => ({
 	default: {
 		resolve: vi.fn(({ name, params }) => {
 			if (name === 'NodeViewExisting') {
-				return { fullPath: `/workflows/${params.workflowId}` };
+				return { fullPath: `/workflows/${params.name}` };
 			}
 			if (name === 'ProjectsWorkflows') {
 				return { fullPath: `/projects/${params.projectId}` };
@@ -66,7 +65,7 @@ const telemetry = useTelemetry();
 
 let pinia: ReturnType<typeof createTestingPinia>;
 let mcpStore: MockedStore<typeof useMCPStore>;
-let mockOnEnableMcpAccess: Mock;
+let mockOnEnableMcpAccess: ReturnType<typeof vi.fn>;
 
 describe('MCPConnectWorkflowsModal', () => {
 	beforeEach(() => {

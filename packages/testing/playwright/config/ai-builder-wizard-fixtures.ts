@@ -36,63 +36,31 @@ const scheduleTriggerNode = {
 };
 
 /**
- * Agent node definition reused across node group fixtures.
- */
-const agentNode = {
-	id: 'agent-1',
-	name: 'AI Agent',
-	type: '@n8n/n8n-nodes-langchain.agent',
-	typeVersion: 2,
-	position: [220, 0] as [number, number],
-	parameters: {
-		options: {},
-	},
-};
-
-/**
- * OpenAI Chat Model node connected to the agent via ai_languageModel.
- * Requires openAiApi credential.
- */
-const openAiModelNode = {
-	id: 'openai-model-1',
-	name: 'OpenAI Chat Model',
-	type: '@n8n/n8n-nodes-langchain.lmChatOpenAi',
-	typeVersion: 1.2,
-	position: [220, 200] as [number, number],
-	parameters: {
-		model: 'gpt-4o-mini',
-	},
-};
-
-/**
- * Slack node definition reused across wizard fixtures.
- * Requires slackApi credential. Uses concrete parameter values so that
- * selecting a credential alone completes the card.
- */
-const slackNode = {
-	id: 'slack-1',
-	name: 'Slack',
-	type: 'n8n-nodes-base.slack',
-	typeVersion: 2.2,
-	position: [220, 0] as [number, number],
-	parameters: {
-		resource: 'message',
-		operation: 'send',
-		channelId: {
-			__rl: true,
-			mode: 'id',
-			value: 'C01234567',
-		},
-		messageType: 'text',
-		text: 'Hello from n8n!',
-	},
-};
-
-/**
  * Workflow with a Schedule Trigger (no credentials) and a Slack node (requires slackApi credential).
+ * The Slack node uses concrete parameter values so that selecting a credential alone completes the card.
  */
 const wizardWorkflowNodes = {
-	nodes: [scheduleTriggerNode, slackNode],
+	nodes: [
+		scheduleTriggerNode,
+		{
+			id: 'slack-1',
+			name: 'Slack',
+			type: 'n8n-nodes-base.slack',
+			typeVersion: 2.2,
+			position: [220, 0],
+			parameters: {
+				resource: 'message',
+				operation: 'send',
+				channelId: {
+					__rl: true,
+					mode: 'id',
+					value: 'C01234567',
+				},
+				messageType: 'text',
+				text: 'Hello from n8n!',
+			},
+		},
+	],
 	connections: {
 		'Schedule Trigger': {
 			main: [[{ node: 'Slack', type: 'main', index: 0 }]],
@@ -136,10 +104,10 @@ export function createBuilderStreamingResponse(
 export function createBuilderResponseWithPlaceholderAndTelegram(): string {
 	const workflow = {
 		nodes: [
-			scheduleTriggerNode,
+			wizardWorkflowNodes.nodes[0], // Schedule Trigger
 			{ ...telegramNode, position: [220, 0] as [number, number] },
 			{
-				...slackNode, // Slack (after Telegram in execution order)
+				...wizardWorkflowNodes.nodes[1], // Slack (after Telegram in execution order)
 				position: [440, 0] as [number, number],
 				parameters: {
 					resource: 'message',
@@ -190,9 +158,9 @@ export function createBuilderResponseTwoCards(): string {
 export function createBuilderFollowUpWithInsertedNode(): string {
 	const workflow = {
 		nodes: [
-			scheduleTriggerNode,
+			wizardWorkflowNodes.nodes[0], // Schedule Trigger
 			{ ...telegramNode, position: [220, 0] as [number, number] }, // Telegram (inserted)
-			{ ...slackNode, position: [440, 0] as [number, number] }, // Slack (shifted)
+			{ ...wizardWorkflowNodes.nodes[1], position: [440, 0] as [number, number] }, // Slack (shifted)
 		],
 		connections: {
 			'Schedule Trigger': {
@@ -378,58 +346,6 @@ export function createBuilderResponseBranchingWorkflow(): string {
 	};
 	return createBuilderStreamingResponse(workflow);
 }
-
-// #region Node Group Fixtures
-
-/**
- * Agent workflow: Schedule Trigger → Agent with OpenAI Chat Model sub-node.
- * The model requires openAiApi credential → creates a node group card with 1 section.
- * After trigger filter: 1 card (node group).
- */
-export function createBuilderResponseNodeGroup(): string {
-	const workflow = {
-		nodes: [scheduleTriggerNode, agentNode, openAiModelNode],
-		connections: {
-			'Schedule Trigger': {
-				main: [[{ node: 'AI Agent', type: 'main', index: 0 }]],
-			},
-			'OpenAI Chat Model': {
-				ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]],
-			},
-		},
-	};
-	return createBuilderStreamingResponse(workflow);
-}
-
-/**
- * Agent + Slack: Schedule Trigger → Agent (with OpenAI model) → Slack.
- * Creates 2 wizard cards: node group card (model section) + Slack (regular card).
- * Tests navigation between node group and regular cards.
- */
-export function createBuilderResponseNodeGroupWithSlack(): string {
-	const workflow = {
-		nodes: [
-			scheduleTriggerNode,
-			agentNode,
-			openAiModelNode,
-			{ ...slackNode, position: [440, 0] as [number, number] },
-		],
-		connections: {
-			'Schedule Trigger': {
-				main: [[{ node: 'AI Agent', type: 'main', index: 0 }]],
-			},
-			'OpenAI Chat Model': {
-				ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]],
-			},
-			'AI Agent': {
-				main: [[{ node: 'Slack', type: 'main', index: 0 }]],
-			},
-		},
-	};
-	return createBuilderStreamingResponse(workflow);
-}
-
-// #endregion
 
 // #endregion
 

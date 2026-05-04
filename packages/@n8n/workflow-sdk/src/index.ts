@@ -4,7 +4,6 @@ export type {
 	WorkflowBuilder,
 	WorkflowBuilderStatic,
 	WorkflowBuilderOptions,
-	ToJSONOptions,
 	WorkflowSettings,
 	WorkflowJSON,
 	NodeJSON,
@@ -125,7 +124,6 @@ export type { SwitchCaseTarget } from './workflow-builder/control-flow-builders/
 
 // Split in batches
 export { splitInBatches } from './workflow-builder/control-flow-builders/split-in-batches';
-export type { SplitInBatchesTarget } from './types/base';
 
 // Note: fanOut() removed - use plain arrays for parallel connections
 // Note: fanIn() removed - use multiple .to(node.input(n)) calls instead
@@ -138,7 +136,6 @@ export {
 	parseExpression,
 	isExpression,
 	expr,
-	nodeJson,
 	createFromAIExpression,
 } from './expression';
 
@@ -147,9 +144,6 @@ export { runOnceForAllItems, runOnceForEachItem } from './utils/code-helpers';
 
 // Utility functions
 export { isPlainObject, getProperty, hasProperty } from './utils/safe-access';
-
-// Layout
-export { layoutWorkflowJSON } from './workflow-builder/layout-utils';
 
 // Validation
 export {
@@ -184,22 +178,6 @@ export {
 	type CompositeHandlerPlugin,
 	type SerializerPlugin,
 } from './workflow-builder/plugins';
-
-// Pin data utilities
-export {
-	needsPinData,
-	discoverOutputSchemaForNode,
-	inferSchemasFromRunData,
-	normalizePinData,
-	type IsTriggerNodeFn,
-} from './pin-data-utils';
-
-// Display options matching
-export {
-	matchesDisplayOptions,
-	type DisplayOptions,
-	type DisplayOptionsContext,
-} from './validation/display-options';
 
 // Node type constants
 export {

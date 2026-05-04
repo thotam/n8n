@@ -15,7 +15,7 @@ describe('PKCE Flow', () => {
 		nock.restore();
 	});
 
-	beforeEach(() => vi.clearAllMocks());
+	beforeEach(() => jest.clearAllMocks());
 
 	describe('PKCE Authorization Code Flow', () => {
 		const createPkceClient = (clientSecret?: string) =>

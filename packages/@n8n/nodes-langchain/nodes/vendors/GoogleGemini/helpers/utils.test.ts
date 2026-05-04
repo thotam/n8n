@@ -7,7 +7,6 @@ import {
 	createFileSearchStore,
 	deleteFileSearchStore,
 	downloadFile,
-	getFilenameFromMimeType,
 	listFileSearchStores,
 	transferFile,
 	uploadFile,
@@ -25,26 +24,6 @@ describe('GoogleGemini -> utils', () => {
 	beforeEach(() => {
 		jest.clearAllMocks();
 		jest.useFakeTimers({ advanceTimers: true });
-	});
-
-	describe('getFilenameFromMimeType', () => {
-		it('should derive filename extension from mime type', () => {
-			const fileName = getFilenameFromMimeType('image/jpeg', 'image', 'png');
-
-			expect(fileName).toBe('image.jpg');
-		});
-
-		it('should use fallback extension when mime type is unknown', () => {
-			const fileName = getFilenameFromMimeType('application/unknown', 'file', 'bin');
-
-			expect(fileName).toBe('file.bin');
-		});
-
-		it('should use fallback extension when mime type is undefined', () => {
-			const fileName = getFilenameFromMimeType(undefined, 'video', 'mp4');
-
-			expect(fileName).toBe('video.mp4');
-		});
 	});
 
 	describe('downloadFile', () => {

@@ -1,6 +1,11 @@
-import type { PublicApiCredentialResponse } from '@n8n/api-types';
-import type { User, ICredentialsDb, SharedCredentials } from '@n8n/db';
-import { CredentialsEntity, CredentialsRepository, SharedCredentialsRepository } from '@n8n/db';
+import type { User, ICredentialsDb } from '@n8n/db';
+import {
+	CredentialsEntity,
+	SharedCredentials,
+	CredentialsRepository,
+	ProjectRepository,
+	SharedCredentialsRepository,
+} from '@n8n/db';
 import { Container } from '@n8n/di';
 import { Credentials } from 'n8n-core';
 import {
@@ -19,22 +24,13 @@ import {
 } from '@/credentials/validation';
 import { EventService } from '@/events/event.service';
 import { ExternalHooks } from '@/external-hooks';
-import { ExternalSecretsConfig } from '@/modules/external-secrets.ee/external-secrets.config';
-import { SecretsProviderAccessCheckService } from '@/modules/external-secrets.ee/secret-provider-access-check.service.ee';
+import type { CredentialRequest } from '@/requests';
 
-import { toPublicApiCredentialResponse } from './credentials.mapper';
 import type { IDependency, IJsonSchema } from '../../../types';
+import { SecretsProviderAccessCheckService } from '@/modules/external-secrets.ee/secret-provider-access-check.service.ee';
+import { ExternalSecretsConfig } from '@/modules/external-secrets.ee/external-secrets.config';
 
 export class CredentialsIsNotUpdatableError extends BaseError {}
-
-function isNodePropertyOptions(options: unknown): options is INodePropertyOptions[] {
-	return (
-		Array.isArray(options) &&
-		options.every(
-			(item) => typeof item === 'object' && item !== null && 'value' in item && 'name' in item,
-		)
-	);
-}
 
 /**
  * Shared entry for credential list: project id/name plus sharing role and timestamps.
@@ -67,7 +63,7 @@ export function buildSharedForCredential(
 		}));
 }
 
-export async function getCredential(credentialId: string): Promise<CredentialsEntity | null> {
+export async function getCredential(credentialId: string): Promise<ICredentialsDb | null> {
 	return await Container.get(CredentialsRepository).findOne({
 		where: { id: credentialId },
 		relations: ['shared', 'shared.project'],
@@ -91,17 +87,57 @@ export async function getSharedCredentials(
 	});
 }
 
+export async function createCredential(
+	properties: CredentialRequest.CredentialProperties,
+): Promise<CredentialsEntity> {
+	const newCredential = new CredentialsEntity();
+
+	Object.assign(newCredential, properties);
+
+	return newCredential;
+}
+
 /**
- * Creates a credential via the internal CredentialsService, which handles project
- * resolution, validation, and encryption.
+ * Creats a credential in the personal project of the given user.
  */
 export async function saveCredential(
-	payload: { type: string; name: string; data: ICredentialDataDecryptedObject; projectId?: string },
+	payload: { type: string; name: string; data: ICredentialDataDecryptedObject },
 	user: User,
-): Promise<PublicApiCredentialResponse> {
-	const { scopes: _scopes, ...credential } = await Container.get(
-		CredentialsService,
-	).createUnmanagedCredential({ ...payload, projectId: payload.projectId ?? undefined }, user);
+): Promise<CredentialsEntity> {
+	const credential = await createCredential(payload);
+
+	const projectRepository = Container.get(ProjectRepository);
+	const personalProject = await projectRepository.getPersonalProjectForUserOrFail(user.id);
+
+	await validateExternalSecretsPermissions({
+		user,
+		projectId: personalProject.id,
+		dataToSave: payload.data,
+	});
+
+	const encryptedData = await encryptCredential(credential);
+	Object.assign(credential, encryptedData);
+
+	const { manager: dbManager } = projectRepository;
+	const result = await dbManager.transaction(async (transactionManager) => {
+		const savedCredential = await transactionManager.save<CredentialsEntity>(credential);
+
+		savedCredential.data = credential.data;
+
+		const newSharedCredential = new SharedCredentials();
+
+		Object.assign(newSharedCredential, {
+			role: 'credential:owner',
+			credentials: savedCredential,
+			projectId: personalProject.id,
+		});
+
+		await transactionManager.save<SharedCredentials>(newSharedCredential);
+
+		return savedCredential;
+	});
+
+	await Container.get(ExternalHooks).run('credentials.create', [encryptedData]);
 
 	const project = await Container.get(SharedCredentialsRepository).findCredentialOwningProject(
 		credential.id,
@@ -111,30 +147,17 @@ export async function saveCredential(
 		user,
 		credentialType: credential.type,
 		credentialId: credential.id,
-		publicApi: true,
 		projectId: project?.id,
 		projectType: project?.type,
+		publicApi: true,
 		isDynamic: credential.isResolvable ?? false,
 	});
 
-	const credentialForApi = {
-		id: credential.id,
-		name: credential.name,
-		type: credential.type,
-		isManaged: credential.isManaged,
-		isGlobal: credential.isGlobal,
-		isResolvable: credential.isResolvable,
-		resolvableAllowFallback: credential.resolvableAllowFallback,
-		resolverId: credential.resolverId,
-		createdAt: credential.createdAt,
-		updatedAt: credential.updatedAt,
-	};
-
-	return toPublicApiCredentialResponse(credentialForApi);
+	return result;
 }
 
 export async function updateCredential(
-	existingCredential: ICredentialsDb,
+	credentialId: string,
 	user: User,
 	updateData: {
 		type?: string;
@@ -144,12 +167,15 @@ export async function updateCredential(
 		isResolvable?: boolean;
 		isPartialData?: boolean;
 	},
-): Promise<ICredentialsDb> {
+): Promise<ICredentialsDb | null> {
+	const existingCredential = await getCredential(credentialId);
+	if (!existingCredential) {
+		return null;
+	}
+
 	if (existingCredential.isManaged) {
 		throw new CredentialsIsNotUpdatableError('Managed credentials cannot be updated.');
 	}
-
-	const credentialId = existingCredential.id;
 
 	// Merge the update data with existing credential
 	const credentialData: Partial<CredentialsEntity> = {};
@@ -167,10 +193,7 @@ export async function updateCredential(
 		const credentialsService = Container.get(CredentialsService);
 
 		// Decrypt existing data to access oauthTokenData
-		const decryptedData = await credentialsService.decrypt(
-			existingCredential as CredentialsEntity,
-			true,
-		);
+		const decryptedData = credentialsService.decrypt(existingCredential as CredentialsEntity, true);
 
 		// eslint-disable-next-line @typescript-eslint/no-non-null-asserted-optional-chain -- credential will always have an owner
 		const projectOwningCredential = existingCredential.shared?.find(
@@ -235,8 +258,7 @@ export async function updateCredential(
 
 	await Container.get(CredentialsRepository).update(credentialId, credentialData);
 
-	// credential exists since we just updated it
-	return (await getCredential(credentialId))!;
+	return await getCredential(credentialId);
 }
 
 export async function removeCredential(
@@ -257,7 +279,7 @@ export async function encryptCredential(credential: CredentialsEntity): Promise<
 	const coreCredential = new Credentials({ id: null, name: credential.name }, credential.type);
 
 	// @ts-ignore
-	await coreCredential.setData(credential.data);
+	coreCredential.setData(credential.data);
 
 	return coreCredential.getDataToSave() as ICredentialsDb;
 }
@@ -306,9 +328,7 @@ export function toJsonSchema(properties: INodeProperties[]): IDataObject {
 		.filter((property) => property.type === 'options')
 		.forEach((property) => {
 			Object.assign(optionsValues, {
-				[property.name]: isNodePropertyOptions(property.options)
-					? property.options.map((option) => option.value)
-					: undefined,
+				[property.name]: property.options?.map((option: INodePropertyOptions) => option.value),
 			});
 		});
 
@@ -331,9 +351,7 @@ export function toJsonSchema(properties: INodeProperties[]): IDataObject {
 			Object.assign(jsonSchema.properties, {
 				[property.name]: {
 					type: 'string',
-					enum: isNodePropertyOptions(property.options)
-						? property.options.map((data) => data.value)
-						: undefined,
+					enum: property.options?.map((data: INodePropertyOptions) => data.value),
 				},
 			});
 		} else {

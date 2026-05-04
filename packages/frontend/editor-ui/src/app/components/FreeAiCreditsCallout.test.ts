@@ -75,7 +75,6 @@ describe('FreeAiCreditsCallout', () => {
 		(useSettingsStore as any).mockReturnValue({
 			isAiCreditsEnabled: true,
 			aiCreditsQuota: 100,
-			isAiGatewayEnabled: false,
 		});
 
 		(useCredentialsStore as any).mockReturnValue({
@@ -157,18 +156,6 @@ describe('FreeAiCreditsCallout', () => {
 		(useSettingsStore as any).mockReturnValue({
 			isAiCreditsEnabled: false,
 			aiCreditsQuota: 0,
-		});
-
-		renderComponent(FreeAiCreditsCallout);
-
-		assertUserCannotClaimCredits();
-	});
-
-	it('should not be able to claim credits if AI gateway is enabled', async () => {
-		(useSettingsStore as any).mockReturnValue({
-			isAiCreditsEnabled: true,
-			aiCreditsQuota: 100,
-			isAiGatewayEnabled: true,
 		});
 
 		renderComponent(FreeAiCreditsCallout);

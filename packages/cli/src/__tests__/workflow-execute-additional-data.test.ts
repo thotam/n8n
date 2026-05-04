@@ -1,7 +1,7 @@
 import { mockInstance } from '@n8n/backend-test-utils';
 import { GlobalConfig } from '@n8n/config';
 import type { WorkflowEntity } from '@n8n/db';
-import { ExecutionRepository, WorkflowPublishHistoryRepository, WorkflowRepository } from '@n8n/db';
+import { ExecutionRepository, WorkflowRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
 import { mock } from 'jest-mock-extended';
 import { ExternalSecretsProxy } from 'n8n-core';
@@ -107,7 +107,6 @@ describe('WorkflowExecuteAdditionalData', () => {
 	mockInstance(CredentialsPermissionChecker);
 	mockInstance(SubworkflowPolicyChecker);
 	mockInstance(WorkflowStatisticsService);
-	mockInstance(WorkflowPublishHistoryRepository);
 	mockInstance(DataTableProxyService);
 
 	const urlService = mockInstance(UrlService);
@@ -353,10 +352,8 @@ describe('WorkflowExecuteAdditionalData', () => {
 		});
 
 		it('should return default data', () => {
-			const result = getRunData(workflow);
-			expect(result).toEqual({
+			expect(getRunData(workflow)).toEqual({
 				executionData: createRunExecutionData({
-					resumeToken: result.executionData?.resumeToken,
 					executionData: {
 						contextData: {},
 						metadata: {},
@@ -391,10 +388,8 @@ describe('WorkflowExecuteAdditionalData', () => {
 				executionId: '123',
 				workflowId: '567',
 			};
-			const result = getRunData(workflow, data, parentExecution);
-			expect(result).toEqual({
+			expect(getRunData(workflow, data, parentExecution)).toEqual({
 				executionData: createRunExecutionData({
-					resumeToken: result.executionData?.resumeToken,
 					executionData: {
 						contextData: {},
 						metadata: {},
@@ -682,10 +677,8 @@ describe('WorkflowExecuteAdditionalData', () => {
 	});
 
 	describe('getBase', () => {
-		const mockWebhookBaseUrl = 'https://webhook.example.com/';
-		const mockInstanceBaseUrl = 'https://editor.example.com';
+		const mockWebhookBaseUrl = 'webhook-base-url.com';
 		jest.spyOn(urlService, 'getWebhookBaseUrl').mockReturnValue(mockWebhookBaseUrl);
-		jest.spyOn(urlService, 'getInstanceBaseUrl').mockReturnValue(mockInstanceBaseUrl);
 
 		const globalConfig = mockInstance(GlobalConfig);
 		Container.set(GlobalConfig, globalConfig);
@@ -708,7 +701,7 @@ describe('WorkflowExecuteAdditionalData', () => {
 				credentialsHelper,
 				executeWorkflow: expect.any(Function),
 				restApiUrl: `${mockWebhookBaseUrl}/rest/`,
-				instanceBaseUrl: `${mockInstanceBaseUrl}/`,
+				instanceBaseUrl: mockWebhookBaseUrl,
 				formWaitingBaseUrl: `${mockWebhookBaseUrl}/form-waiting/`,
 				webhookBaseUrl: `${mockWebhookBaseUrl}/webhook/`,
 				webhookWaitingBaseUrl: `${mockWebhookBaseUrl}/webhook-waiting/`,

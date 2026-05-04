@@ -1,5 +1,5 @@
 import { SecurityConfig } from '@n8n/config';
-import { CredentialsRepository, ExecutionDataRepository } from '@n8n/db';
+import { CredentialsRepository, ExecutionDataRepository, ExecutionRepository } from '@n8n/db';
 import { Service } from '@n8n/di';
 import type { IWorkflowBase } from 'n8n-workflow';
 
@@ -10,6 +10,7 @@ import type { RiskReporter, Risk } from '@/security-audit/types';
 export class CredentialsRiskReporter implements RiskReporter {
 	constructor(
 		private readonly credentialsRepository: CredentialsRepository,
+		private readonly executionRepository: ExecutionRepository,
 		private readonly executionDataRepository: ExecutionDataRepository,
 		private readonly securityConfig: SecurityConfig,
 	) {}
@@ -117,7 +118,9 @@ export class CredentialsRiskReporter implements RiskReporter {
 
 		date.setDate(date.getDate() - days);
 
-		return await this.executionDataRepository.getWorkflowsExecutedSince(date);
+		const executionIds = await this.executionRepository.getIdsSince(date);
+
+		return await this.executionDataRepository.findByExecutionIds(executionIds);
 	}
 
 	/**

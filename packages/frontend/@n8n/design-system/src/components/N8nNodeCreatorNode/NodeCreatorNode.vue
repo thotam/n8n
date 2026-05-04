@@ -3,7 +3,6 @@ import { ElTag } from 'element-plus';
 
 import { useI18n } from '../../composables/useI18n';
 import type { NodeCreatorTag } from '../../types/node-creator-node';
-import N8nActionPill from '../N8nActionPill/ActionPill.vue';
 import N8nBadge from '../N8nBadge';
 import N8nIcon from '../N8nIcon';
 
@@ -45,9 +44,8 @@ const { t } = useI18n();
 		<div>
 			<div :class="$style.details">
 				<span :class="$style.name" data-test-id="node-creator-item-name" v-text="title" />
-				<N8nActionPill v-if="tag?.pill" size="small" :text="tag.text" />
 				<ElTag
-					v-else-if="tag"
+					v-if="tag"
 					:class="$style.tag"
 					disable-transitions
 					size="small"

@@ -95,7 +95,7 @@ describe('DeleteUserModal', () => {
 		usersStore = mockedStore(useUsersStore);
 
 		const projectsStore = mockedStore(useProjectsStore);
-		projectsStore.searchShareableProjects.mockResolvedValue({
+		projectsStore.searchProjects.mockResolvedValue({
 			count: initialState[STORES.PROJECTS].projects.length,
 			data: initialState[STORES.PROJECTS].projects,
 		});

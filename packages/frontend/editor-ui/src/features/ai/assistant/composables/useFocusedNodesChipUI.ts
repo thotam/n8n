@@ -20,7 +20,9 @@ export function useFocusedNodesChipUI() {
 	const nodeTypesStore = useNodeTypesStore();
 	const workflowsStore = useWorkflowsStore();
 	const workflowDocumentStore = computed(() =>
-		useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+		workflowsStore.workflowId
+			? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+			: undefined,
 	);
 
 	const confirmedNodes = computed(() => focusedNodesStore.confirmedNodes);
@@ -31,16 +33,16 @@ export function useFocusedNodesChipUI() {
 	const allNodesConfirmed = computed(
 		() =>
 			confirmedCount.value > 0 &&
-			workflowDocumentStore.value.allNodes.length > 0 &&
-			confirmedCount.value >= workflowDocumentStore.value.allNodes.length,
+			(workflowDocumentStore.value?.allNodes ?? []).length > 0 &&
+			confirmedCount.value >= (workflowDocumentStore.value?.allNodes ?? []).length,
 	);
 
 	const allNodesUnconfirmed = computed(
 		() =>
 			confirmedCount.value === 0 &&
 			unconfirmedCount.value > 0 &&
-			workflowDocumentStore.value.allNodes.length > 0 &&
-			unconfirmedCount.value >= workflowDocumentStore.value.allNodes.length,
+			(workflowDocumentStore.value?.allNodes ?? []).length > 0 &&
+			unconfirmedCount.value >= (workflowDocumentStore.value?.allNodes ?? []).length,
 	);
 
 	const shouldBundleConfirmed = computed(() => confirmedCount.value >= CHIP_BUNDLE_THRESHOLD);

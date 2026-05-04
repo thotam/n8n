@@ -55,7 +55,10 @@ export const createSearchWorkflowNodesTool = (
 		};
 
 		try {
-			const result = await workflowBuilderToolsService.searchNodes(queries);
+			const { createCodeBuilderSearchTool } = await import('@n8n/ai-workflow-builder');
+			const nodeTypeParser = workflowBuilderToolsService.getNodeTypeParser();
+			const searchTool = createCodeBuilderSearchTool(nodeTypeParser);
+			const result = await searchTool.invoke({ queries });
 
 			telemetryPayload.results = { success: true, data: { queryCount: queries.length } };
 			telemetry.track(USER_CALLED_MCP_TOOL_EVENT, telemetryPayload);

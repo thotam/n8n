@@ -1,7 +1,5 @@
 {
 	"compilerOptions": {
-		"ignoreDeprecations": "6.0",
-		"noUncheckedSideEffectImports": false,
 		"esModuleInterop": true,
 		"skipLibCheck": true,
 		"target": "es2022",

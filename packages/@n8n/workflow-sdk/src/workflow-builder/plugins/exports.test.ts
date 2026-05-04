@@ -1,13 +1,7 @@
 /**
  * Test that the public API exports are accessible
  */
-import {
-	PluginRegistry,
-	nodeJson,
-	pluginRegistry,
-	registerDefaultPlugins,
-	workflow,
-} from '../../index';
+import { PluginRegistry, pluginRegistry, registerDefaultPlugins, workflow } from '../../index';
 import type {
 	ValidationIssue,
 	PluginContext,
@@ -19,13 +13,6 @@ import type {
 } from '../../index';
 
 describe('Public API exports', () => {
-	describe('Expression helper exports', () => {
-		it('exports nodeJson function', () => {
-			expect(nodeJson).toBeDefined();
-			expect(typeof nodeJson).toBe('function');
-		});
-	});
-
 	describe('Registry exports', () => {
 		it('exports PluginRegistry class', () => {
 			expect(PluginRegistry).toBeDefined();

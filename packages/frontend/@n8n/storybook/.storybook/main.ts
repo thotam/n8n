@@ -1,7 +1,6 @@
 import type { StorybookConfig } from '@storybook/vue3-vite';
 
 import { dirname } from 'path';
-import remarkGfm from 'remark-gfm';
 
 import { fileURLToPath } from 'url';
 
@@ -17,24 +16,13 @@ const config: StorybookConfig = {
 		'../../design-system/src/**/*.stories.@(js|jsx|mjs|ts|tsx)',
 		'../../chat/src/**/*.stories.@(js|jsx|mjs|ts|tsx)',
 		'../../../editor-ui/src/**/*.stories.@(js|jsx|mjs|ts|tsx)',
-		'../../design-system/src/**/*.mdx',
 	],
 	addons: [
 		getAbsolutePath('@chromatic-com/storybook'),
 		getAbsolutePath('@storybook/addon-vitest'),
 		getAbsolutePath('@storybook/addon-a11y'),
-		{
-			name: getAbsolutePath('@storybook/addon-docs'),
-			options: {
-				mdxPluginOptions: {
-					mdxCompileOptions: {
-						remarkPlugins: [remarkGfm],
-					},
-				},
-			},
-		},
+		getAbsolutePath('@storybook/addon-docs'),
 		getAbsolutePath('@storybook/addon-themes'),
-		getAbsolutePath('storybook-addon-vue-mdx'),
 	],
 	framework: getAbsolutePath('@storybook/vue3-vite'),
 	staticDirs: ['../../design-system/assets'],

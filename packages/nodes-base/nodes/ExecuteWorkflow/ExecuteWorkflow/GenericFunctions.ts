@@ -3,11 +3,16 @@ import { NodeOperationError, jsonParse } from 'n8n-workflow';
 import type {
 	IExecuteFunctions,
 	IExecuteWorkflowInfo,
+	ILoadOptionsFunctions,
 	INodeParameterResourceLocator,
 	IRequestOptions,
 } from 'n8n-workflow';
 
-export async function getWorkflowInfo(this: IExecuteFunctions, source: string, itemIndex = 0) {
+export async function getWorkflowInfo(
+	this: ILoadOptionsFunctions | IExecuteFunctions,
+	source: string,
+	itemIndex = 0,
+) {
 	const workflowInfo: IExecuteWorkflowInfo = {};
 	const nodeVersion = this.getNode().typeVersion;
 	if (source === 'database') {
@@ -26,28 +31,19 @@ export async function getWorkflowInfo(this: IExecuteFunctions, source: string, i
 		// Read workflow from filesystem
 		const workflowPath = this.getNodeParameter('workflowPath', itemIndex) as string;
 
-		const handleFileError = (error: unknown): never => {
-			if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+		let workflowJson;
+		try {
+			workflowJson = await fsReadFile(workflowPath, { encoding: 'utf8' });
+		} catch (error) {
+			if (error.code === 'ENOENT') {
 				throw new NodeOperationError(
 					this.getNode(),
 					`The file "${workflowPath}" could not be found, [item ${itemIndex}]`,
 				);
 			}
+
 			throw error;
-		};
-
-		const resolvedPath = await this.helpers.resolvePath(workflowPath).catch(handleFileError);
-
-		if (this.helpers.isFilePathBlocked(resolvedPath)) {
-			throw new NodeOperationError(
-				this.getNode(),
-				'Access to the workflow file path is not allowed',
-			);
 		}
-
-		const workflowJson = await fsReadFile(resolvedPath, { encoding: 'utf8' }).catch(
-			handleFileError,
-		);
 
 		workflowInfo.code = jsonParse(workflowJson, {
 			errorMessage: 'The file content is not valid JSON', // pass a custom error message to not expose the file contents

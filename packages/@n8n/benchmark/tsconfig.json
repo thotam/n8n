@@ -4,8 +4,10 @@
 		"@n8n/typescript-config/tsconfig.backend.json"
 	],
 	"compilerOptions": {
+		"rootDir": ".",
+		"baseUrl": "src",
 		"paths": {
-			"@/*": ["./src/*"]
+			"@/*": ["./*"]
 		}
 	},
 	"include": ["src/**/*.ts"]

@@ -1,10 +1,5 @@
 import { createCanvasGraphNode } from '@/features/workflows/canvas/__tests__/utils';
-import {
-	createTestNode,
-	createTestNodeProperties,
-	createTestWorkflow,
-	mockNodeTypeDescription,
-} from '@/__tests__/mocks';
+import { createTestNode, createTestWorkflow, mockNodeTypeDescription } from '@/__tests__/mocks';
 import { createComponentRenderer } from '@/__tests__/render';
 import { mockedStore } from '@/__tests__/utils';
 import { SET_NODE_TYPE } from '@/app/constants';
@@ -49,22 +44,22 @@ describe('FocusSidebar', () => {
 		},
 	});
 
-	const parameter0: INodeProperties = createTestNodeProperties({
+	const parameter0: INodeProperties = {
 		displayName: 'P0',
 		name: 'p0',
 		type: 'string',
 		default: '',
 		description: '',
 		validateType: 'string',
-	});
-	const parameter1: INodeProperties = createTestNodeProperties({
+	};
+	const parameter1: INodeProperties = {
 		displayName: 'P1',
 		name: 'p1',
 		type: 'string',
 		default: '',
 		description: '',
 		validateType: 'string',
-	});
+	};
 
 	let experimentalNdvStore: ReturnType<typeof mockedStore<typeof useExperimentalNdvStore>>;
 	let focusPanelStore: ReturnType<typeof useFocusPanelStore>;
@@ -90,7 +85,7 @@ describe('FocusSidebar', () => {
 			}),
 		]);
 		workflowsStore = useWorkflowsStore(pinia);
-		workflowsStore.workflow = createTestWorkflow({ id: 'w0' });
+		workflowsStore.setWorkflow(createTestWorkflow({ id: 'w0' }));
 
 		workflowDocumentStore = useWorkflowDocumentStore(createWorkflowDocumentId('w0'));
 		workflowDocumentStore.setNodes(testNodes);

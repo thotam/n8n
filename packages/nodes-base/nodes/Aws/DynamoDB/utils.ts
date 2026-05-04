@@ -37,7 +37,7 @@ export function adjustExpressionAttributeName(eanUi: IAttributeNameUi[]) {
 	return ean;
 }
 
-export function adjustPutItem(putItemUi: PutItemUi, autoParseNumbers = true) {
+export function adjustPutItem(putItemUi: PutItemUi) {
 	const adjustedPutItem: AdjustedPutItem = {};
 
 	Object.entries(putItemUi).forEach(([attribute, value]) => {
@@ -47,10 +47,10 @@ export function adjustPutItem(putItemUi: PutItemUi, autoParseNumbers = true) {
 			type = 'BOOL';
 		} else if (typeof value === 'object' && !Array.isArray(value) && value !== null) {
 			type = 'M';
-		} else if (autoParseNumbers ? !isNaN(Number(value)) : typeof value === 'number') {
-			type = 'N';
-		} else {
+		} else if (isNaN(Number(value))) {
 			type = 'S';
+		} else {
+			type = 'N';
 		}
 
 		adjustedPutItem[attribute] = { [type]: value.toString() };

@@ -26,8 +26,6 @@ interface AuthJwtPayload {
 	browserId?: string;
 	/** This indicates if mfa was used during the creation of this token */
 	usedMfa?: boolean;
-	/** This indicates if the session originated from an embed login (cross-site cookie required) */
-	isEmbed?: boolean;
 }
 
 interface IssuedJWT extends AuthJwtPayload {
@@ -92,9 +90,6 @@ export class AuthService {
 
 			// Skip browser ID check for chat hub attachments
 			`/${restEndpoint}/chat/conversations/:sessionId/messages/:messageId/attachments/:index`,
-
-			// Skip browser ID check for Instance AI SSE endpoint — EventSource can't send custom headers
-			`/${restEndpoint}/instance-ai/events/:threadId`,
 		];
 	}
 
@@ -206,14 +201,7 @@ export class AuthService {
 		}
 	}
 
-	issueCookie(
-		res: Response,
-		user: User,
-		usedMfa: boolean,
-		browserId?: string,
-		isEmbed?: boolean,
-		cookieOverrides?: { sameSite?: 'strict' | 'lax' | 'none'; secure?: boolean },
-	) {
+	issueCookie(res: Response, user: User, usedMfa: boolean, browserId?: string) {
 		// TODO: move this check to the login endpoint in AuthController
 		// If the instance has exceeded its user quota, prevent non-owners from logging in
 		const isWithinUsersLimit = this.license.isWithinUsersLimit();
@@ -221,23 +209,22 @@ export class AuthService {
 			throw new ForbiddenError(RESPONSE_ERROR_MESSAGES.USERS_QUOTA_REACHED);
 		}
 
-		const token = this.issueJWT(user, usedMfa, browserId, isEmbed);
+		const token = this.issueJWT(user, usedMfa, browserId);
 		const { samesite, secure } = this.globalConfig.auth.cookie;
 		res.cookie(AUTH_COOKIE_NAME, token, {
 			maxAge: this.jwtExpiration * Time.seconds.toMilliseconds,
 			httpOnly: true,
-			sameSite: cookieOverrides?.sameSite ?? samesite,
-			secure: cookieOverrides?.secure ?? secure,
+			sameSite: samesite,
+			secure,
 		});
 	}
 
-	issueJWT(user: User, usedMfa: boolean = false, browserId?: string, isEmbed?: boolean) {
+	issueJWT(user: User, usedMfa: boolean = false, browserId?: string) {
 		const payload: AuthJwtPayload = {
 			id: user.id,
 			hash: this.createJWTHash(user),
 			browserId: browserId && this.hash(browserId),
 			usedMfa,
-			...(isEmbed && { isEmbed }),
 		};
 		return this.jwtService.sign(payload, {
 			expiresIn: this.jwtExpiration,
@@ -348,17 +335,7 @@ export class AuthService {
 
 		if (jwtPayload.exp * 1000 - Date.now() < this.jwtRefreshTimeout) {
 			this.logger.debug('JWT about to expire. Will be refreshed');
-			const embedCookieOverrides = jwtPayload.isEmbed
-				? ({ sameSite: 'none' as const, secure: true } as const)
-				: undefined;
-			this.issueCookie(
-				res,
-				user,
-				jwtPayload.usedMfa ?? false,
-				browserId,
-				jwtPayload.isEmbed,
-				embedCookieOverrides,
-			);
+			this.issueCookie(res, user, jwtPayload.usedMfa ?? false, browserId);
 		}
 
 		return [user, { usedMfa: jwtPayload.usedMfa ?? false }];

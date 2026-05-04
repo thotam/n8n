@@ -7,13 +7,12 @@ import {
 	type PropertyDeclaration,
 } from 'ts-morph';
 
-export { Project };
+export const loadSingleSourceFile = (path: string) => {
+	const project = new Project({
+		skipFileDependencyResolution: true,
+	});
 
-export const createProject = () => new Project({ skipFileDependencyResolution: true });
-
-export const loadSingleSourceFile = (path: string, project?: Project) => {
-	const p = project ?? createProject();
-	return p.addSourceFileAtPath(path);
+	return project.addSourceFileAtPath(path);
 };
 
 const setStringInitializer = (prop: PropertyAssignment | PropertyDeclaration, value: string) => {

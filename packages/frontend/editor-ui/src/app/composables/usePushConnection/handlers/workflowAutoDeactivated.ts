@@ -9,7 +9,7 @@ import { useCanvasOperations } from '@/app/composables/useCanvasOperations';
 export async function workflowAutoDeactivated({ data }: WorkflowAutoDeactivated) {
 	const workflowsStore = useWorkflowsStore();
 	const workflowsListStore = useWorkflowsListStore();
-	const workflowDocumentStore = injectWorkflowDocumentStore();
+	const documentStore = injectWorkflowDocumentStore();
 	const { initializeWorkspace } = useCanvasOperations();
 	const bannersStore = useBannersStore();
 	const uiStore = useUIStore();
@@ -26,7 +26,7 @@ export async function workflowAutoDeactivated({ data }: WorkflowAutoDeactivated)
 			// initializeWorkspace calls initState which sets the document store
 			await initializeWorkspace(updatedWorkflow);
 		} else {
-			workflowDocumentStore?.value?.setActiveState({ activeVersionId: null, activeVersion: null });
+			documentStore?.value?.setActiveState({ activeVersionId: null, activeVersion: null });
 		}
 
 		bannersStore.pushBannerToStack('WORKFLOW_AUTO_DEACTIVATED');

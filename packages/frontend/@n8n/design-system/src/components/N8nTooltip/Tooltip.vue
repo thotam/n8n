@@ -5,6 +5,7 @@ import {
 	TooltipTrigger,
 	TooltipContent,
 	TooltipPortal,
+	TooltipArrow,
 } from 'reka-ui';
 import { computed, ref, watch } from 'vue';
 
@@ -32,6 +33,7 @@ const props = withDefaults(defineProps<N8nTooltipProps>(), {
 const injectedAppendTo = useInjectTooltipAppendTo();
 const appendTo = computed(() => injectedAppendTo.value ?? 'body');
 
+// Convert Element+ placement to Reka UI side + align
 type Side = 'top' | 'bottom' | 'left' | 'right';
 type Align = 'start' | 'end' | 'center';
 
@@ -109,6 +111,7 @@ const handleOpenChange = (open: boolean) => {
 							v-bind="{ ...button.attrs, ...button.listeners }"
 						/>
 					</div>
+					<TooltipArrow :class="$style.arrow" :width="11" :height="5" />
 				</TooltipContent>
 			</TooltipPortal>
 		</TooltipRoot>
@@ -116,6 +119,10 @@ const handleOpenChange = (open: boolean) => {
 </template>
 
 <style lang="scss" module>
+.arrow {
+	fill: currentColor;
+}
+
 .buttons {
 	display: flex;
 	align-items: center;
@@ -133,32 +140,18 @@ const handleOpenChange = (open: boolean) => {
 
 // Global styles for teleported tooltip content
 :global(.n8n-tooltip) {
+	z-index: 2100; // Above header and other fixed elements
 	max-width: 180px;
-	padding: var(--spacing--4xs) var(--spacing--3xs);
-	min-height: var(--height--sm);
-	max-height: var(--reka-tooltip-content-available-height);
-	font-size: var(--font-size--xs);
-	font-weight: var(--font-weight--medium);
+	padding: 10px;
+	font-size: 12px;
 	line-height: var(--line-height--md);
-	border-radius: var(--radius--xs);
-	background: var(--color--neutral-black);
-	color: var(--color--neutral-100);
-	box-shadow: var(--shadow--sm);
+	border-radius: 4px;
+	background: var(--color--background--shade-2);
+	color: var(--color--foreground--tint-2);
 	word-wrap: break-word;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	flex-direction: column;
-	transform-origin: var(--reka-tooltip-content-transform-origin);
-	text-wrap: pretty;
 
 	svg {
-		fill: currentColor;
-		opacity: 0.7;
+		fill: var(--color--background--shade-2);
 	}
-}
-
-:global(.n8n-tooltip[data-state='closed']) {
-	animation: none;
 }
 </style>

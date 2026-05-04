@@ -178,11 +178,6 @@ describe('usePinnedData', () => {
 	});
 
 	describe('canPinData()', () => {
-		beforeEach(() => {
-			const workflowsStore = useWorkflowsStore();
-			workflowsStore.workflow.id = 'test-workflow';
-		});
-
 		afterEach(() => {
 			vi.clearAllMocks();
 		});

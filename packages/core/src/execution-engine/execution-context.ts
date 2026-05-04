@@ -109,7 +109,7 @@ import { ExecutionContextService } from './execution-context.service';
 export const establishExecutionContext = async (
 	workflow: Workflow,
 	runExecutionData: IRunExecutionData,
-	additionalData: IWorkflowExecuteAdditionalData | undefined,
+	additionalData: IWorkflowExecuteAdditionalData,
 	mode: WorkflowExecuteMode,
 ): Promise<void> => {
 	assertExecutionDataExists(runExecutionData.executionData, workflow, additionalData, mode);

@@ -303,29 +303,16 @@ export class SessionManagerService {
 		const stored = await this.storage.getSession(threadId);
 		if (!stored || stored.messages.length === 0) return [];
 
-		let { messages } = stored;
-
-		// If a restore was active, truncate messages at the restore point
-		// so the LLM doesn't see collapsed messages from after the restore.
-		if (stored.activeVersionCardId) {
-			const restoreIdx = messages.findIndex(
-				(msg) => msg.additional_kwargs?.messageId === stored.activeVersionCardId,
-			);
-			if (restoreIdx !== -1) {
-				messages = messages.slice(0, restoreIdx);
-			}
-		}
-
 		// Strip cache_control markers from historical messages to prevent exceeding
 		// Anthropic's 4 cache_control block limit when combined with new system prompts
-		stripAllCacheControlMarkers(messages);
+		stripAllCacheControlMarkers(stored.messages);
 
 		this.logger?.debug('Loaded session messages from storage', {
 			threadId,
-			messageCount: messages.length,
+			messageCount: stored.messages.length,
 		});
 
-		return messages;
+		return stored.messages;
 	}
 
 	/**
@@ -474,8 +461,6 @@ export class SessionManagerService {
 					sessionId: threadId,
 					messages: formattedMessages,
 					lastUpdated: stored.updatedAt.toISOString(),
-					activeVersionCardId: stored.activeVersionCardId,
-					resumeAfterRestoreMessageId: stored.resumeAfterRestoreMessageId,
 				});
 
 				return { sessions };
@@ -566,7 +551,6 @@ export class SessionManagerService {
 		userId: string | undefined,
 		messageId: string,
 		agentType?: 'code-builder',
-		versionCardId?: string,
 	): Promise<boolean> {
 		const threadId = SessionManagerService.generateThreadId(workflowId, userId, agentType);
 
@@ -587,24 +571,19 @@ export class SessionManagerService {
 				return false;
 			}
 
-			// Keep messages before the target message (for LLM context)
+			// Keep messages before the target message
 			const truncatedMessages = messages.slice(0, msgIndex);
 
-			// Update persistent storage with FULL messages + restore markers.
-			// The DB keeps all messages so the frontend can render collapsed versions.
-			// Only the LLM checkpointer is truncated.
+			// Update persistent storage if available
 			if (this.storage) {
 				await this.storage.saveSession(threadId, {
-					messages,
+					messages: truncatedMessages,
 					previousSummary,
 					updatedAt: new Date(),
-					activeVersionCardId: versionCardId ?? null,
-					resumeAfterRestoreMessageId: null,
 				});
 			}
 
-			// Update the in-memory checkpointer with truncated messages
-			// so the LLM doesn't see collapsed messages
+			// Also update the in-memory checkpointer
 			const threadConfig: RunnableConfig = {
 				configurable: { thread_id: threadId },
 			};

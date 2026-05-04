@@ -64,7 +64,6 @@ describe('WorkerServer', () => {
 			},
 		});
 		jest.restoreAllMocks();
-		jest.clearAllMocks();
 	});
 
 	describe('constructor', () => {
@@ -92,7 +91,7 @@ describe('WorkerServer', () => {
 
 			jest.spyOn(http, 'createServer').mockReturnValue(server);
 
-			server.on.mockImplementation((event: string, callback: (...args: unknown[]) => void) => {
+			server.on.mockImplementation((event: string, callback: (arg?: unknown) => void) => {
 				if (event === 'error') callback(addressInUseError());
 				return server;
 			});

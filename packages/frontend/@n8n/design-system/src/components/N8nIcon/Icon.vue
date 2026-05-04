@@ -1,15 +1,14 @@
 <script lang="ts" setup>
-import { computed, shallowRef, useCssModule, watch } from 'vue';
+import { computed, useCssModule } from 'vue';
 
+import type { IconName } from './icons';
 import { deprecatedIconSet, updatedIconSet } from './icons';
-import type { IconName, NodeIconName } from './icons';
-import type { nodeIconSet as NodeIconSetType } from './node-icons';
 import type { IconSize, IconColor } from '../../types/icon';
 
 interface IconProps {
 	// component supports both deprecated and updated icon set to support project icons
 	// but only allow new icon names to be used in the future
-	icon: IconName | NodeIconName;
+	icon: IconName;
 	size?: IconSize | number;
 	spin?: boolean;
 	color?: IconColor;
@@ -87,32 +86,18 @@ const styles = computed(() => {
 
 	return stylesToApply;
 });
-
-const nodeIconSetRef = shallowRef<typeof NodeIconSetType | null>(null);
-
-watch(
-	() => props.icon,
-	async (icon) => {
-		if (typeof icon === 'string' && icon.startsWith('node:') && !nodeIconSetRef.value) {
-			const { nodeIconSet } = await import('./node-icons');
-			nodeIconSetRef.value = nodeIconSet;
-		}
-	},
-	{ immediate: true },
-);
-
-const resolvedComponent = computed(
-	() =>
-		nodeIconSetRef.value?.[props.icon as keyof typeof NodeIconSetType] ??
-		updatedIconSet[props.icon as keyof typeof updatedIconSet] ??
-		deprecatedIconSet[props.icon as keyof typeof deprecatedIconSet],
-);
 </script>
 
 <template>
 	<Component
-		:is="resolvedComponent"
-		v-if="resolvedComponent"
+		:is="
+			updatedIconSet[icon as keyof typeof updatedIconSet] ??
+			deprecatedIconSet[icon as keyof typeof deprecatedIconSet]
+		"
+		v-if="
+			updatedIconSet[icon as keyof typeof updatedIconSet] ??
+			deprecatedIconSet[icon as keyof typeof deprecatedIconSet]
+		"
 		:class="classes"
 		aria-hidden="true"
 		focusable="false"

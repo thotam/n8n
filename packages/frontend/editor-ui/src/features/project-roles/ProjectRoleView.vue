@@ -358,16 +358,9 @@ const displayNameValidationRules = [
 			{{ backButtonText }}
 		</N8nButton>
 		<div class="mb-xl" :class="$style.headerContainer">
-			<div :class="$style.headingContainer">
-				<N8nHeading tag="h1" size="2xlarge" :class="$style.heading">
-					<template v-if="roleSlug"
-						>Role "<N8nTooltip :content="form.displayName" placement="bottom"
-							><span>{{ form.displayName }}</span></N8nTooltip
-						>"</template
-					>
-					<template v-else>{{ i18n.baseText('projectRoles.newRole') }}</template>
-				</N8nHeading>
-			</div>
+			<N8nHeading tag="h1" size="2xlarge">
+				{{ roleSlug ? `Role "${form.displayName}"` : i18n.baseText('projectRoles.newRole') }}
+			</N8nHeading>
 			<div v-if="initialState && !isReadOnly && !isLoading" :class="$style.headerActions">
 				<N8nButton variant="subtle" :disabled="!hasUnsavedChanges" @click="resetForm(initialState)">
 					{{ i18n.baseText('projectRoles.discardChanges') }}
@@ -569,16 +562,6 @@ const displayNameValidationRules = [
 	justify-content: space-between;
 	align-items: flex-start;
 	gap: var(--spacing--sm);
-}
-
-.headingContainer {
-	min-width: 0;
-}
-
-.heading {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .headerActions {

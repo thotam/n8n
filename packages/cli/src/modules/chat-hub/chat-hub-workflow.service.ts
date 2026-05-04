@@ -30,8 +30,6 @@ import {
 	AGENT_LANGCHAIN_NODE_TYPE,
 	CHAT_TRIGGER_NODE_TYPE,
 	createRunExecutionData,
-	getHighlightedInputKey,
-	HIGHLIGHTED_SESSION_KEY,
 	DOCUMENT_DEFAULT_DATA_LOADER_NODE_TYPE,
 	IConnections,
 	IExecuteData,
@@ -424,7 +422,7 @@ export class ChatHubWorkflowService {
 		const nodeNames = new Set(nodes.map((node) => node.name));
 		const distinctTools = tools.map((tool, i) => {
 			// Spread out the tool nodes so that they don't overlap on the canvas
-			const position: [number, number] = [
+			const position = [
 				700 + Math.floor(i / 3) * 60 + (i % 3) * 120,
 				300 + Math.floor(i / 3) * 120 - (i % 3) * 30,
 			];
@@ -528,7 +526,7 @@ export class ChatHubWorkflowService {
 				: {}),
 		};
 
-		const nodeExecutionStack = await this.prepareExecutionData(
+		const nodeExecutionStack = this.prepareExecutionData(
 			chatTriggerNode,
 			sessionId,
 			humanMessage,
@@ -539,13 +537,6 @@ export class ChatHubWorkflowService {
 		const executionData = createRunExecutionData({
 			executionData: {
 				nodeExecutionStack,
-			},
-			resultData: {
-				metadata: ChatHubWorkflowService.buildHighlightedDataMetadata(
-					chatTriggerNode.name,
-					humanMessage,
-					sessionId,
-				),
 			},
 			manualData: {
 				userId,
@@ -1154,14 +1145,14 @@ Respond the title only:`,
 		return 'file';
 	}
 
-	async prepareExecutionData(
+	prepareExecutionData(
 		triggerNode: INode,
 		sessionId: string,
 		message: string,
 		attachments: IBinaryData[],
 		executionMetadata: ChatHubAuthenticationMetadata,
-	): Promise<IExecuteData[]> {
-		const encryptedMetadata = await this.cipher.encryptV2(executionMetadata);
+	): IExecuteData[] {
+		const encryptedMetadata = this.cipher.encrypt(executionMetadata);
 		// Attachments are already processed (id field populated) by the caller
 		return [
 			{
@@ -1201,17 +1192,6 @@ Respond the title only:`,
 				source: null,
 			},
 		];
-	}
-
-	private static buildHighlightedDataMetadata(
-		triggerNodeName: string,
-		message: string,
-		sessionId: string,
-	): Record<string, string> {
-		return {
-			[getHighlightedInputKey(triggerNodeName)]: message,
-			[HIGHLIGHTED_SESSION_KEY]: sessionId,
-		};
 	}
 
 	async prepareReplyWorkflow(
@@ -1461,7 +1441,7 @@ Respond the title only:`,
 			);
 		}
 
-		const nodeExecutionStack = await this.prepareExecutionData(
+		const nodeExecutionStack = this.prepareExecutionData(
 			chatTrigger,
 			sessionId,
 			message,
@@ -1469,21 +1449,10 @@ Respond the title only:`,
 			executionMetadata,
 		);
 
-		const autoSaveHighlightedData = chatTriggerParams.options?.autoSaveHighlightedData !== false;
-
 		const executionData = createRunExecutionData({
 			executionData: {
 				nodeExecutionStack,
 			},
-			resultData: autoSaveHighlightedData
-				? {
-						metadata: ChatHubWorkflowService.buildHighlightedDataMetadata(
-							chatTrigger.name,
-							message,
-							sessionId,
-						),
-					}
-				: undefined,
 			manualData: {
 				userId: user.id,
 			},

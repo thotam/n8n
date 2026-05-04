@@ -34,7 +34,6 @@ describe('useAskModeCoachmark', () => {
 	let settingsStore: ReturnType<typeof mockedStore<typeof useSettingsStore>>;
 
 	beforeEach(() => {
-		vi.useFakeTimers();
 		vi.clearAllMocks();
 
 		setActivePinia(
@@ -58,10 +57,6 @@ describe('useAskModeCoachmark', () => {
 		// Default store states - both modes enabled
 		settingsStore.isAiAssistantEnabled = true;
 		builderStore.isAIBuilderEnabled = true;
-	});
-
-	afterEach(() => {
-		vi.useRealTimers();
 	});
 
 	describe('shouldShowCoachmark', () => {

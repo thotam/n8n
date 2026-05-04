@@ -53,7 +53,6 @@ export class WorkflowHistoryService {
 				'updatedAt',
 				'name',
 				'description',
-				'autosaved',
 			],
 			relations: ['workflowPublishHistory'],
 			order: { createdAt: 'DESC' },

@@ -1,7 +1,6 @@
 import { mockInstance } from '@n8n/backend-test-utils';
 import { User } from '@n8n/db';
 
-import { CollaborationService } from '@/collaboration/collaboration.service';
 import { Telemetry } from '@/telemetry';
 import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 import { WorkflowService } from '@/workflows/workflow.service';
@@ -14,17 +13,12 @@ describe('unpublish-workflow MCP tool', () => {
 	let workflowFinderService: WorkflowFinderService;
 	let workflowService: WorkflowService;
 	let telemetry: Telemetry;
-	let collaborationService: CollaborationService;
 
 	beforeEach(() => {
 		workflowFinderService = mockInstance(WorkflowFinderService);
 		workflowService = mockInstance(WorkflowService);
 		telemetry = mockInstance(Telemetry, {
 			track: jest.fn(),
-		});
-		collaborationService = mockInstance(CollaborationService, {
-			ensureWorkflowEditable: jest.fn().mockResolvedValue(undefined),
-			broadcastWorkflowUpdate: jest.fn().mockResolvedValue(undefined),
 		});
 	});
 
@@ -35,7 +29,6 @@ describe('unpublish-workflow MCP tool', () => {
 				workflowFinderService,
 				workflowService,
 				telemetry,
-				collaborationService,
 			);
 
 			expect(tool.name).toBe('unpublish_workflow');
@@ -58,7 +51,6 @@ describe('unpublish-workflow MCP tool', () => {
 					workflowFinderService,
 					workflowService,
 					telemetry,
-					collaborationService,
 				);
 
 				const result = await tool.handler(
@@ -71,35 +63,6 @@ describe('unpublish-workflow MCP tool', () => {
 					workflowId: 'any-workflow',
 					error: expect.any(String),
 				});
-			});
-		});
-
-		describe('write lock', () => {
-			test('returns error when workflow has active write lock', async () => {
-				const workflow = createWorkflow({ settings: { availableInMCP: true } });
-				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
-				(collaborationService.ensureWorkflowEditable as jest.Mock).mockRejectedValue(
-					new Error('Cannot modify workflow while it is being edited by a user in the editor.'),
-				);
-
-				const tool = createUnpublishWorkflowTool(
-					user,
-					workflowFinderService,
-					workflowService,
-					telemetry,
-					collaborationService,
-				);
-
-				const result = await tool.handler(
-					{ workflowId: 'wf-1' },
-					{} as Parameters<typeof tool.handler>[1],
-				);
-
-				expect(result.structuredContent).toMatchObject({
-					success: false,
-					error: expect.stringContaining('being edited by a user'),
-				});
-				expect(workflowService.deactivateWorkflow).not.toHaveBeenCalled();
 			});
 		});
 
@@ -116,7 +79,6 @@ describe('unpublish-workflow MCP tool', () => {
 					workflowFinderService,
 					workflowService,
 					telemetry,
-					collaborationService,
 				);
 
 				const result = await tool.handler(
@@ -129,11 +91,7 @@ describe('unpublish-workflow MCP tool', () => {
 					workflowId: 'wf-1',
 				});
 
-				expect(workflowService.deactivateWorkflow).toHaveBeenCalledWith(user, 'wf-1', {
-					source: 'n8n-mcp',
-				});
-
-				expect(collaborationService.broadcastWorkflowUpdate).toHaveBeenCalledWith('wf-1', user.id);
+				expect(workflowService.deactivateWorkflow).toHaveBeenCalledWith(user, 'wf-1');
 			});
 		});
 
@@ -150,7 +108,6 @@ describe('unpublish-workflow MCP tool', () => {
 					workflowFinderService,
 					workflowService,
 					telemetry,
-					collaborationService,
 				);
 
 				await tool.handler({ workflowId: 'wf-1' }, {} as Parameters<typeof tool.handler>[1]);
@@ -179,7 +136,6 @@ describe('unpublish-workflow MCP tool', () => {
 					workflowFinderService,
 					workflowService,
 					telemetry,
-					collaborationService,
 				);
 
 				await tool.handler(
@@ -216,7 +172,6 @@ describe('unpublish-workflow MCP tool', () => {
 					workflowFinderService,
 					workflowService,
 					telemetry,
-					collaborationService,
 				);
 
 				const result = await tool.handler(

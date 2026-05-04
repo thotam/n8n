@@ -22,7 +22,6 @@ import {
 	DataTableInsertRowsResult,
 	DataTableRowReturnWithState,
 	DataTableRawRowReturn,
-	UserError,
 } from 'n8n-workflow';
 
 import { DataTableColumn } from './data-table-column.entity';
@@ -31,7 +30,6 @@ import {
 	escapeLikeSpecials,
 	extractInsertedIds,
 	extractReturningData,
-	isValidColumnName,
 	normalizeRows,
 	normalizeValueForDatabase,
 	quoteIdentifier,
@@ -215,7 +213,7 @@ export class DataTableRowsRepository {
 		return await withTransaction(this.dataSource.manager, trx, async (em) => {
 			const inserted: Array<Pick<DataTableRowReturn, 'id'>> = [];
 			const dbType = this.dataSource.options.type;
-			const useReturning = dbType === 'postgres';
+			const useReturning = dbType === 'postgres' || dbType === 'mariadb';
 
 			const table = toTableName(dataTableId);
 			const escapedColumns = columns.map((c) => this.dataSource.driver.escape(c.name));
@@ -691,8 +689,6 @@ export class DataTableRowsRepository {
 
 	private applySortingByField(query: QueryBuilder, field: string, direction: 'DESC' | 'ASC'): void {
 		const dbType = this.dataSource.options.type;
-		if (!isValidColumnName(field)) throw new UserError('Incorrect column format');
-
 		const quotedField = `${quoteIdentifier('dataTable', dbType)}.${quoteIdentifier(field, dbType)}`;
 		query.orderBy(quotedField, direction);
 	}

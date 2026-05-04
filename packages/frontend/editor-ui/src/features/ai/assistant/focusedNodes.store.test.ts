@@ -5,10 +5,6 @@ import { nextTick } from 'vue';
 
 import { useFocusedNodesStore } from './focusedNodes.store';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
-import {
-	useWorkflowDocumentStore,
-	createWorkflowDocumentId,
-} from '@/app/stores/workflowDocument.store';
 import { useChatPanelStateStore } from './chatPanelState.store';
 import { useNDVStore } from '@/features/ndv/shared/ndv.store';
 import { mockedStore } from '@/__tests__/utils';
@@ -75,17 +71,14 @@ describe('useFocusedNodesStore', () => {
 		);
 
 		workflowsStore = mockedStore(useWorkflowsStore);
-		workflowsStore.workflowId = 'wf-1';
-		workflowsStore.workflow.connections = {};
-
-		const workflowDocumentStore = useWorkflowDocumentStore(
-			createWorkflowDocumentId(workflowsStore.workflowId),
-		);
-		workflowDocumentStore.setNodes([
+		workflowsStore.allNodes = [
 			createMockNode('node-1', 'HTTP Request', 'n8n-nodes-base.httpRequest'),
 			createMockNode('node-2', 'Code', 'n8n-nodes-base.code'),
 			createMockNode('node-3', 'Set', 'n8n-nodes-base.set'),
-		]);
+		];
+		workflowsStore.workflowId = 'wf-1';
+		workflowsStore.connectionsByDestinationNode = {};
+		workflowsStore.connectionsBySourceNode = {};
 
 		focusedNodesStore = useFocusedNodesStore();
 		track.mockReset();
@@ -266,10 +259,7 @@ describe('useFocusedNodesStore', () => {
 					state: 'unconfirmed',
 				};
 			}
-			const workflowDocumentStore = useWorkflowDocumentStore(
-				createWorkflowDocumentId(workflowsStore.workflowId),
-			);
-			workflowDocumentStore.setNodes(manyNodes);
+			workflowsStore.allNodes = manyNodes;
 			focusedNodesStore.focusedNodesMap = map;
 
 			expect(focusedNodesStore.tooManyUnconfirmed).toBe(true);
@@ -768,10 +758,12 @@ describe('useFocusedNodesStore', () => {
 		});
 
 		it('should include connections (deduplicated)', () => {
-			workflowsStore.workflow.connections = {
-				Trigger: {
-					main: [[{ node: 'HTTP Request', type: 'main', index: 0 }]],
+			workflowsStore.connectionsByDestinationNode = {
+				'HTTP Request': {
+					main: [[{ node: 'Trigger', type: 'main', index: 0 }]],
 				},
+			};
+			workflowsStore.connectionsBySourceNode = {
 				'HTTP Request': {
 					main: [[{ node: 'Code', type: 'main', index: 0 }]],
 				},
@@ -798,10 +790,7 @@ describe('useFocusedNodesStore', () => {
 					httpBasicAuth: ['Credentials not set'],
 				},
 			};
-			const workflowDocumentStore = useWorkflowDocumentStore(
-				createWorkflowDocumentId(workflowsStore.workflowId),
-			);
-			workflowDocumentStore.setNodes([nodeWithIssues]);
+			workflowsStore.allNodes = [nodeWithIssues];
 
 			focusedNodesStore.confirmNodes(['node-1'], 'context_menu');
 			track.mockReset();
@@ -863,14 +852,11 @@ describe('useFocusedNodesStore', () => {
 			focusedNodesStore.confirmNodes(['node-1', 'node-2'], 'context_menu');
 			track.mockReset();
 
-			const workflowDocumentStore = useWorkflowDocumentStore(
-				createWorkflowDocumentId(workflowsStore.workflowId),
-			);
 			// Remove node-1 from workflow
-			workflowDocumentStore.setNodes([
+			workflowsStore.allNodes = [
 				createMockNode('node-2', 'Code', 'n8n-nodes-base.code'),
 				createMockNode('node-3', 'Set', 'n8n-nodes-base.set'),
-			]);
+			];
 			await nextTick();
 
 			expect(focusedNodesStore.focusedNodesMap['node-1']).toBeUndefined();
@@ -892,13 +878,10 @@ describe('useFocusedNodesStore', () => {
 				},
 			};
 
-			const workflowDocumentStore = useWorkflowDocumentStore(
-				createWorkflowDocumentId(workflowsStore.workflowId),
-			);
-			workflowDocumentStore.setNodes([
+			workflowsStore.allNodes = [
 				createMockNode('node-2', 'Code', 'n8n-nodes-base.code'),
 				createMockNode('node-3', 'Set', 'n8n-nodes-base.set'),
-			]);
+			];
 			await nextTick();
 
 			expect(track).not.toHaveBeenCalled();
@@ -908,14 +891,11 @@ describe('useFocusedNodesStore', () => {
 			focusedNodesStore.confirmNodes(['node-1'], 'context_menu');
 			track.mockReset();
 
-			const workflowDocumentStore = useWorkflowDocumentStore(
-				createWorkflowDocumentId(workflowsStore.workflowId),
-			);
-			workflowDocumentStore.setNodes([
+			workflowsStore.allNodes = [
 				createMockNode('node-1', 'My HTTP Request', 'n8n-nodes-base.httpRequest'),
 				createMockNode('node-2', 'Code', 'n8n-nodes-base.code'),
 				createMockNode('node-3', 'Set', 'n8n-nodes-base.set'),
-			]);
+			];
 			await nextTick();
 
 			expect(focusedNodesStore.focusedNodesMap['node-1'].nodeName).toBe('My HTTP Request');

@@ -33,13 +33,6 @@ export function getSanitizedI18nConfig(config: Record<string, string>): Record<s
 
 	return sanitized;
 }
-export function getSanitizedCustomCss(customCss: string): string {
-	// Strip any sequence that could close the <style> context.
-	// Browsers treat </style followed by /, space, tab, or > as a closing tag,
-	// so we remove all </style variants (case-insensitive) to prevent breakout.
-	return customCss.replace(/<\/style/gi, '');
-}
-
 export function createPage({
 	instanceId,
 	webhookUrl,
@@ -85,7 +78,10 @@ export function createPage({
 	const sanitizedShowWelcomeScreen = !!showWelcomeScreen;
 	const sanitizedAllowFileUploads = !!allowFileUploads;
 	const sanitizedAllowedFilesMimeTypes = sanitizeUserInput(allowedFilesMimeTypes?.toString() ?? '');
-	const sanitizedCustomCss = getSanitizedCustomCss(customCss?.toString() ?? '');
+	const sanitizedCustomCss = sanitizeHtml(`<style>${customCss?.toString() ?? ''}</style>`, {
+		allowedTags: ['style'],
+		allowedAttributes: false,
+	});
 
 	const sanitizedLoadPreviousSession = validLoadPreviousSessionOptions.includes(
 		loadPreviousSession as LoadPreviousSessionChatOption,
@@ -112,7 +108,7 @@ export function createPage({
 					height: 100%;
 				}
 			</style>
-			<style>${sanitizedCustomCss}</style>
+			${sanitizedCustomCss}
 		</head>
 		<body>
 			<script type="module">

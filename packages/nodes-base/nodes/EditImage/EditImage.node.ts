@@ -765,13 +765,14 @@ export class EditImage implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Edit Image',
 		name: 'editImage',
-		icon: 'node:edit-image',
+		icon: 'fa:image',
 		iconColor: 'purple',
 		group: ['transform'],
 		version: 1,
 		description: 'Edits an image like blur, resize or adding border and text',
 		defaults: {
 			name: 'Edit Image',
+			color: '#553399',
 		},
 		inputs: [NodeConnectionTypes.Main],
 		outputs: [NodeConnectionTypes.Main],
@@ -1082,8 +1083,6 @@ export class EditImage implements INodeType {
 					);
 					gmInstance = gm(binaryDataBuffer);
 					gmInstance = gmInstance.background('transparent');
-					gmInstance = gmInstance.autoOrient();
-					gmInstance = gmInstance.out('-orient', 'TopLeft');
 				}
 
 				const newItem: INodeExecutionData = {

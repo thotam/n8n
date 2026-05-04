@@ -16,10 +16,10 @@ import type {
 } from '@n8n/client-oauth2';
 import { ClientOAuth2 } from '@n8n/client-oauth2';
 import { Container } from '@n8n/di';
-import type { AxiosError, AxiosHeaders, AxiosRequestConfig } from 'axios';
+import type { AxiosError, AxiosHeaders, AxiosRequestConfig, AxiosResponse } from 'axios';
 import axios from 'axios';
 import crypto, { createHmac } from 'crypto';
-import type FormData from 'form-data';
+import FormData from 'form-data';
 import { IncomingMessage } from 'http';
 import { type AgentOptions } from 'https';
 import get from 'lodash/get';
@@ -44,6 +44,7 @@ import type {
 	IDataObject,
 	IExecuteData,
 	IExecuteFunctions,
+	IgnoreStatusErrorConfig,
 	IHttpRequestOptions,
 	IN8nHttpFullResponse,
 	IN8nHttpResponse,
@@ -67,28 +68,165 @@ import { stringify } from 'qs';
 import { Readable } from 'stream';
 
 import type { SsrfBridge } from '@/execution-engine';
-import { callEvalMockHandler, normalizeLegacyRequest } from '@/execution-engine/eval-mock-helpers';
+import { createHttpProxyAgent, createHttpsProxyAgent } from '@/http-proxy';
 import type { IResponseError } from '@/interfaces';
 
 import { binaryToString } from './binary-helper-functions';
-import { applyDefaultOutboundUserAgent } from './outbound-user-agent';
 import { parseIncomingMessage } from './parse-incoming-message';
 // Imported for side effects: sets axios defaults and registers the request interceptor
 import './request-helpers/axios-config';
 import {
 	buildTargetUrl,
-	createFormDataObject,
-	digestAuthAxiosConfig,
-	generateContentLengthHeader,
-	getBeforeRedirectFn,
-	getHostFromRequestObject,
-	isFormDataInstance,
-	isIgnoreStatusErrorConfig,
-	searchForHeader,
+	getUrlFromProxyConfig,
 	setAxiosAgents,
 	tryParseUrl,
-} from './request-helpers';
-import { throwIfDomainNotAllowed } from './request-helpers/axios-utils';
+} from './request-helpers/utils';
+
+function validateUrl(url?: string): boolean {
+	if (!url) return false;
+
+	return tryParseUrl(url) !== null;
+}
+
+function isIgnoreStatusErrorConfig(
+	ignoreHttpStatusErrors: unknown,
+): ignoreHttpStatusErrors is IgnoreStatusErrorConfig {
+	return (
+		typeof ignoreHttpStatusErrors === 'object' &&
+		ignoreHttpStatusErrors !== null &&
+		'ignore' in ignoreHttpStatusErrors &&
+		ignoreHttpStatusErrors.ignore === true
+	);
+}
+
+function searchForHeader(config: AxiosRequestConfig, headerName: string) {
+	if (config.headers === undefined) {
+		return undefined;
+	}
+
+	const headerNames = Object.keys(config.headers);
+	headerName = headerName.toLowerCase();
+	return headerNames.find((thisHeader) => thisHeader.toLowerCase() === headerName);
+}
+
+const getHostFromRequestObject = (
+	requestObject: Partial<{
+		url: string;
+		uri: string;
+		baseURL: string;
+	}>,
+): string | null => {
+	try {
+		const url = (requestObject.url ?? requestObject.uri) as string;
+		return new URL(url, requestObject.baseURL).hostname;
+	} catch (error) {
+		return null;
+	}
+};
+
+const getBeforeRedirectFn =
+	(
+		agentOptions: AgentOptions,
+		axiosConfig: AxiosRequestConfig,
+		proxyConfig: IHttpRequestOptions['proxy'] | string | undefined,
+		sendCredentialsOnCrossOriginRedirect: boolean,
+		ssrfBridge?: SsrfBridge,
+	) =>
+	(redirectedRequest: Record<string, any>) => {
+		// SSRF: validate redirect target synchronously for direct-IP URIs.
+		// Hostname-based redirect targets are caught by secureLookup on the agent.
+		if (ssrfBridge) {
+			ssrfBridge.validateRedirectSync(redirectedRequest.href);
+		}
+
+		const redirectAgentOptions: AgentOptions = {
+			...agentOptions,
+			servername: redirectedRequest.hostname,
+		};
+		const customProxyUrl = getUrlFromProxyConfig(proxyConfig);
+
+		// Inject secureLookup into redirect agents for non-proxy paths
+		const effectiveRedirectOptions =
+			ssrfBridge && !customProxyUrl
+				? { ...redirectAgentOptions, lookup: ssrfBridge.createSecureLookup() }
+				: redirectAgentOptions;
+
+		// Create both agents and set them
+		const targetUrl = redirectedRequest.href;
+		const httpAgent = createHttpProxyAgent(customProxyUrl, targetUrl, effectiveRedirectOptions);
+		const httpsAgent = createHttpsProxyAgent(customProxyUrl, targetUrl, effectiveRedirectOptions);
+
+		redirectedRequest.agent = redirectedRequest.href.startsWith('https://')
+			? httpsAgent
+			: httpAgent;
+		redirectedRequest.agents = { http: httpAgent, https: httpsAgent };
+
+		const originalUrl = axiosConfig.baseURL
+			? new URL(axiosConfig.url ?? '', axiosConfig.baseURL)
+			: new URL(axiosConfig.url ?? '');
+		const originalOrigin = originalUrl.origin;
+		const targetOrigin = new URL(targetUrl).origin;
+		// Copy auth headers
+		if (originalOrigin === targetOrigin || sendCredentialsOnCrossOriginRedirect) {
+			if (axiosConfig.headers?.Authorization) {
+				redirectedRequest.headers.Authorization = axiosConfig.headers.Authorization;
+			}
+			if (axiosConfig.auth) {
+				redirectedRequest.auth = `${axiosConfig.auth.username}:${axiosConfig.auth.password}`;
+			}
+		}
+	};
+
+function digestAuthAxiosConfig(
+	axiosConfig: AxiosRequestConfig,
+	response: AxiosResponse,
+	auth: AxiosRequestConfig['auth'],
+): AxiosRequestConfig {
+	const authDetails = response.headers['www-authenticate']
+		.split(',')
+		.map((v: string) => v.split('='));
+	if (authDetails) {
+		const nonceCount = '000000001';
+		const cnonce = crypto.randomBytes(24).toString('hex');
+		const realm: string = authDetails
+			.find((el: any) => el[0].toLowerCase().indexOf('realm') > -1)[1]
+			.replace(/"/g, '');
+		// If authDetails does not have opaque, we should not add it to authorization.
+		const opaqueKV = authDetails.find((el: any) => el[0].toLowerCase().indexOf('opaque') > -1);
+		const opaque: string = opaqueKV ? opaqueKV[1].replace(/"/g, '') : undefined;
+		const nonce: string = authDetails
+			.find((el: any) => el[0].toLowerCase().indexOf('nonce') > -1)[1]
+			.replace(/"/g, '');
+		const ha1 = crypto
+			.createHash('md5')
+			.update(`${auth?.username as string}:${realm}:${auth?.password as string}`)
+			.digest('hex');
+		const url = new URL(axios.getUri(axiosConfig));
+		const path = url.pathname + url.search;
+		const ha2 = crypto
+			.createHash('md5')
+			.update(`${axiosConfig.method ?? 'GET'}:${path}`)
+			.digest('hex');
+		const response = crypto
+			.createHash('md5')
+			.update(`${ha1}:${nonce}:${nonceCount}:${cnonce}:auth:${ha2}`)
+			.digest('hex');
+		let authorization =
+			`Digest username="${auth?.username as string}",realm="${realm}",` +
+			`nonce="${nonce}",uri="${path}",qop="auth",algorithm="MD5",` +
+			`response="${response}",nc="${nonceCount}",cnonce="${cnonce}"`;
+		// Only when opaque exists, add it to authorization.
+		if (opaque) {
+			authorization += `,opaque="${opaque}"`;
+		}
+		if (axiosConfig.headers) {
+			axiosConfig.headers.authorization = authorization;
+		} else {
+			axiosConfig.headers = { authorization };
+		}
+	}
+	return axiosConfig;
+}
 
 export async function invokeAxios(
 	axiosConfig: AxiosRequestConfig,
@@ -107,6 +245,51 @@ export async function invokeAxios(
 		delete axiosConfig.auth;
 		axiosConfig = digestAuthAxiosConfig(axiosConfig, response, auth);
 		return await axios(axiosConfig);
+	}
+}
+
+const pushFormDataValue = (form: FormData, key: string, value: any) => {
+	if (value?.hasOwnProperty('value') && value.hasOwnProperty('options')) {
+		form.append(key, value.value, value.options);
+	} else {
+		form.append(key, value);
+	}
+};
+
+export const createFormDataObject = (data: Record<string, unknown>) => {
+	const formData = new FormData();
+	const keys = Object.keys(data);
+	keys.forEach((key) => {
+		const formField = data[key];
+
+		if (formField instanceof Array) {
+			formField.forEach((item) => {
+				pushFormDataValue(formData, key, item);
+			});
+		} else {
+			pushFormDataValue(formData, key, formField);
+		}
+	});
+	return formData;
+};
+
+async function generateContentLengthHeader(config: AxiosRequestConfig) {
+	if (!(config.data instanceof FormData)) {
+		return;
+	}
+	try {
+		const length = await new Promise<number>((res, rej) => {
+			config.data.getLength((error: Error | null, dataLength: number) => {
+				if (error) rej(error);
+				else res(dataLength);
+			});
+		});
+		config.headers = {
+			...config.headers,
+			'content-length': length,
+		};
+	} catch (error) {
+		Container.get(Logger).error('Unable to calculate form data length', { error });
 	}
 }
 
@@ -160,7 +343,7 @@ export async function parseRequestObject(requestObject: IRequestOptions, ssrfBri
 			}
 		}
 	} else if (contentType?.includes('multipart/form-data')) {
-		if (requestObject.formData !== undefined && isFormDataInstance(requestObject.formData)) {
+		if (requestObject.formData !== undefined && requestObject.formData instanceof FormData) {
 			axiosConfig.data = requestObject.formData;
 		} else {
 			const allData: Partial<FormData> = {
@@ -208,7 +391,7 @@ export async function parseRequestObject(requestObject: IRequestOptions, ssrfBri
 				});
 			}
 
-			if (isFormDataInstance(requestObject.formData)) {
+			if (requestObject.formData instanceof FormData) {
 				axiosConfig.data = requestObject.formData;
 			} else {
 				axiosConfig.data = createFormDataObject(requestObject.formData as Record<string, unknown>);
@@ -361,7 +544,6 @@ export async function parseRequestObject(requestObject: IRequestOptions, ssrfBri
 		axiosConfig,
 		requestObject.proxy,
 		requestObject.sendCredentialsOnCrossOriginRedirect ?? true,
-		requestObject.allowedDomains,
 		ssrfBridge,
 	);
 
@@ -401,8 +583,6 @@ export async function parseRequestObject(requestObject: IRequestOptions, ssrfBri
 		axiosConfig.validateStatus = () => true;
 	}
 
-	applyDefaultOutboundUserAgent(axiosConfig);
-
 	/**
 	 * Missing properties:
 	 * encoding (need testing)
@@ -438,7 +618,6 @@ export async function proxyRequestToAxios(
 	await validateUrlSsrf(url, ssrfBridge);
 
 	axiosConfig = Object.assign(axiosConfig, await parseRequestObject(configObject, ssrfBridge));
-	throwIfDomainNotAllowed(axiosConfig, configObject.allowedDomains);
 
 	try {
 		const response = await invokeAxios(axiosConfig, configObject.auth);
@@ -544,7 +723,7 @@ export function convertN8nRequestToAxios(
 	}
 
 	const host = getHostFromRequestObject(n8nRequest);
-	const agentOptions: AgentOptions = { ...n8nRequest.agentOptions };
+	const agentOptions: AgentOptions = {};
 	if (host) {
 		agentOptions.servername = host;
 	}
@@ -559,7 +738,6 @@ export function convertN8nRequestToAxios(
 		axiosRequest,
 		n8nRequest.proxy,
 		n8nRequest.sendCredentialsOnCrossOriginRedirect ?? true,
-		n8nRequest.allowedDomains,
 		ssrfBridge,
 	);
 
@@ -577,7 +755,7 @@ export function convertN8nRequestToAxios(
 			axiosRequest.headers = axiosRequest.headers || {};
 			// We are only setting content type headers if the user did
 			// not set it already manually. We're not overriding, even if it's wrong.
-			if (isFormDataInstance(body)) {
+			if (body instanceof FormData) {
 				axiosRequest.headers = {
 					...axiosRequest.headers,
 					...body.getHeaders(),
@@ -610,7 +788,15 @@ export function convertN8nRequestToAxios(
 		}
 	}
 
-	applyDefaultOutboundUserAgent(axiosRequest);
+	const userAgentHeader = searchForHeader(axiosRequest, 'user-agent');
+	// If key exists, then the user has set both accept
+	// header and the json flag. Header should take precedence.
+	if (!userAgentHeader) {
+		axiosRequest.headers = {
+			...axiosRequest.headers,
+			'User-Agent': 'n8n',
+		};
+	}
 
 	if (n8nRequest.ignoreHttpStatusErrors) {
 		const ignoreHttpStatusErrors = n8nRequest.ignoreHttpStatusErrors;
@@ -672,8 +858,6 @@ export async function httpRequest(
 		delete axiosRequest.data;
 	}
 
-	throwIfDomainNotAllowed(axiosRequest, requestOptions.allowedDomains);
-
 	const result = await invokeAxios(axiosRequest, requestOptions.auth);
 
 	if (requestOptions.returnFullResponse) {
@@ -709,16 +893,11 @@ export function applyPaginationRequestData(
 }
 
 function createOAuth2Client(credentials: OAuth2CredentialData): ClientOAuth2 {
-	// Split and trim scopes; empty scope tokens are not RFC 6749-compliant and may be rejected by authorization servers
-	const scopes = credentials.scope
-		?.split(' ')
-		.map((s) => s.trim())
-		.filter(Boolean);
 	return new ClientOAuth2({
 		clientId: credentials.clientId,
 		clientSecret: credentials.clientSecret,
 		accessTokenUri: credentials.accessTokenUrl,
-		scopes: scopes?.length ? scopes : undefined,
+		scopes: (credentials.scope ?? '').split(' '),
 		ignoreSSLIssues: credentials.ignoreSSLIssues,
 		authentication: credentials.authentication ?? 'header',
 		...(credentials.additionalBodyProperties && {
@@ -729,23 +908,6 @@ function createOAuth2Client(credentials: OAuth2CredentialData): ClientOAuth2 {
 	});
 }
 
-function buildSigningToken(
-	client: ClientOAuth2,
-	tokenData: ClientOAuth2TokenData,
-	oAuth2Options?: IOAuth2Options,
-): ClientOAuth2Token {
-	const accessToken = get(tokenData, oAuth2Options?.property as string) || tokenData.accessToken;
-	const refreshToken = tokenData.refreshToken;
-	return client.createToken(
-		{
-			...tokenData,
-			...(accessToken ? { access_token: accessToken } : {}),
-			...(refreshToken ? { refresh_token: refreshToken } : {}),
-		},
-		oAuth2Options?.tokenType || tokenData.tokenType,
-	);
-}
-
 interface RefreshOAuth2TokenContext {
 	credentials: OAuth2CredentialData;
 	token: ClientOAuth2Token;
@@ -754,20 +916,10 @@ interface RefreshOAuth2TokenContext {
 	additionalData: IWorkflowExecuteAdditionalData;
 	oAuth2Options?: IOAuth2Options;
 	logger: WorkflowLogger;
-	helpers: IAllExecuteFunctions['helpers'];
 }
 
 async function refreshOrFetchToken(ctx: RefreshOAuth2TokenContext): Promise<ClientOAuth2Token> {
-	const {
-		credentials,
-		token,
-		credentialsType,
-		node,
-		additionalData,
-		oAuth2Options,
-		logger,
-		helpers,
-	} = ctx;
+	const { credentials, token, credentialsType, node, additionalData, oAuth2Options, logger } = ctx;
 	const tokenRefreshOptions: IDataObject = {};
 	if (oAuth2Options?.includeCredentialsOnRefreshOnBody) {
 		const body: IDataObject = {
@@ -796,26 +948,6 @@ async function refreshOrFetchToken(ctx: RefreshOAuth2TokenContext): Promise<Clie
 	);
 
 	credentials.oauthTokenData = newToken.data;
-
-	// Apply preAuthentication so custom credential types extending oAuth2Api can transform
-	// refreshed token data (e.g. extracting a claim from a decrypted JWE/JWT) before signing.
-	// runPreAuthentication runs on every refresh without persisting — the transformed
-	// oauthTokenData is persisted by the updateCredentialsOauthTokenData call below.
-	const preAuthData = await additionalData.credentialsHelper.runPreAuthentication(
-		{ helpers },
-		credentials as unknown as ICredentialDataDecryptedObject,
-		credentialsType,
-	);
-	let signingToken = newToken;
-	if (preAuthData) {
-		Object.assign(credentials, preAuthData);
-		signingToken = buildSigningToken(
-			token.client,
-			credentials.oauthTokenData as ClientOAuth2TokenData,
-			oAuth2Options,
-		);
-	}
-
 	if (!node.credentials?.[credentialsType]) {
 		throw new ApplicationError('Node does not have credential type', {
 			extra: { nodeName: node.name, credentialType: credentialsType },
@@ -830,7 +962,7 @@ async function refreshOrFetchToken(ctx: RefreshOAuth2TokenContext): Promise<Clie
 		additionalData,
 	);
 
-	return signingToken;
+	return newToken;
 }
 
 function resolveTokenExpiredStatusCode(
@@ -871,16 +1003,7 @@ export async function requestOAuth2(
 			Object.keys(oauthTokenData).length === 0 ||
 			oauthTokenData.access_token === '') // stub
 	) {
-		let tokenResult: Awaited<ReturnType<typeof oAuthClient.credentials.getToken>>;
-		try {
-			tokenResult = await oAuthClient.credentials.getToken();
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			throw new ApplicationError(`Failed to acquire OAuth2 access token: ${message}`, {
-				cause: error,
-			});
-		}
-		const { data } = tokenResult;
+		const { data } = await oAuthClient.credentials.getToken();
 		// Find the credentials
 		if (!node.credentials?.[credentialsType]) {
 			throw new ApplicationError('Node does not have credential type', {
@@ -903,20 +1026,17 @@ export async function requestOAuth2(
 		oauthTokenData = data;
 	}
 
-	// Apply preAuthentication for custom OAuth2 credential types extending oAuth2Api.
-	// Enables transforming token data on every request (e.g. extracting a claim from a
-	// decrypted JWE/JWT) as a pure in-memory transform — no DB write per request.
-	const preAuthData = await additionalData.credentialsHelper.runPreAuthentication(
-		{ helpers: this.helpers },
-		credentials as unknown as ICredentialDataDecryptedObject,
-		credentialsType,
+	const accessToken =
+		get(oauthTokenData, oAuth2Options?.property as string) || oauthTokenData.accessToken;
+	const refreshToken = oauthTokenData.refreshToken;
+	const token = oAuthClient.createToken(
+		{
+			...oauthTokenData,
+			...(accessToken ? { access_token: accessToken } : {}),
+			...(refreshToken ? { refresh_token: refreshToken } : {}),
+		},
+		oAuth2Options?.tokenType || oauthTokenData.tokenType,
 	);
-	if (preAuthData) {
-		Object.assign(credentials, preAuthData);
-		oauthTokenData = credentials.oauthTokenData as ClientOAuth2TokenData;
-	}
-
-	const token = buildSigningToken(oAuthClient, oauthTokenData, oAuth2Options);
 
 	(requestOptions as IRequestOptions).rejectUnauthorized = !credentials.ignoreSSLIssues;
 
@@ -934,7 +1054,6 @@ export async function requestOAuth2(
 		});
 	}
 	const tokenExpiredStatusCode = resolveTokenExpiredStatusCode(oAuth2Options, credentials);
-	const shouldSkipTokenRefresh = oAuth2Options?.skipTokenRefresh === true;
 
 	const refreshCtx: RefreshOAuth2TokenContext = {
 		credentials,
@@ -944,7 +1063,6 @@ export async function requestOAuth2(
 		additionalData,
 		oAuth2Options,
 		logger: this.logger,
-		helpers: this.helpers,
 	};
 
 	const retryWithNewToken = async (
@@ -963,7 +1081,7 @@ export async function requestOAuth2(
 
 	if (isN8nRequest) {
 		return await this.helpers.httpRequest(newRequestOptions).catch(async (error: AxiosError) => {
-			if (!shouldSkipTokenRefresh && error.response?.status === tokenExpiredStatusCode) {
+			if (error.response?.status === tokenExpiredStatusCode) {
 				return await retryWithNewToken(async (opts) => await this.helpers.httpRequest(opts));
 			}
 			throw error;
@@ -975,7 +1093,6 @@ export async function requestOAuth2(
 		.then((response) => {
 			const requestOptions = newRequestOptions as any;
 			if (
-				!shouldSkipTokenRefresh &&
 				requestOptions.resolveWithFullResponse === true &&
 				requestOptions.simple === false &&
 				response.statusCode === tokenExpiredStatusCode
@@ -985,7 +1102,7 @@ export async function requestOAuth2(
 			return response;
 		})
 		.catch(async (error: IResponseError) => {
-			if (!shouldSkipTokenRefresh && error.statusCode === tokenExpiredStatusCode) {
+			if (error.statusCode === tokenExpiredStatusCode) {
 				return await retryWithNewToken(
 					async (opts) => await this.helpers.request(opts as IRequestOptions),
 				);
@@ -1083,7 +1200,17 @@ export async function refreshOAuth2Token(
 
 	const oAuthClient = createOAuth2Client(credentials);
 	const oauthTokenData = credentials.oauthTokenData as ClientOAuth2TokenData;
-	const token = buildSigningToken(oAuthClient, oauthTokenData, oAuth2Options);
+	const accessToken =
+		get(oauthTokenData, oAuth2Options?.property as string) || oauthTokenData.accessToken;
+	const refreshToken = oauthTokenData.refreshToken;
+	const token = oAuthClient.createToken(
+		{
+			...oauthTokenData,
+			...(accessToken ? { access_token: accessToken } : {}),
+			...(refreshToken ? { refresh_token: refreshToken } : {}),
+		},
+		oAuth2Options?.tokenType || oauthTokenData.tokenType,
+	);
 
 	const newToken = await refreshOrFetchToken({
 		credentials,
@@ -1093,7 +1220,6 @@ export async function refreshOAuth2Token(
 		additionalData,
 		oAuth2Options,
 		logger: this.logger,
-		helpers: this.helpers,
 	});
 
 	return newToken.data;
@@ -1116,18 +1242,6 @@ export async function httpRequestWithAuthentication(
 	}
 
 	let credentialsDecrypted: ICredentialDataDecryptedObject | undefined;
-
-	// Eval LLM mock: intercept before credential auth and OAuth signing
-	if (additionalData.evalLlmMockHandler) {
-		const evalMockResponse = await callEvalMockHandler(
-			additionalData.evalLlmMockHandler,
-			requestOptions,
-			node,
-			requestOptions.returnFullResponse,
-		);
-		if (evalMockResponse !== undefined) return evalMockResponse;
-	}
-
 	try {
 		const parentTypes = additionalData.credentialsHelper.getParentTypes(credentialsType);
 
@@ -1215,6 +1329,7 @@ export async function httpRequestWithAuthentication(
 						node,
 					);
 				}
+				// retry the request
 				return await httpRequest(requestOptions, additionalData.ssrfBridge);
 			} catch (error) {
 				throw new NodeApiError(this.getNode(), error);
@@ -1239,18 +1354,6 @@ export async function requestWithAuthentication(
 	removeEmptyBody(requestOptions);
 
 	let credentialsDecrypted: ICredentialDataDecryptedObject | undefined;
-
-	// Eval LLM mock: intercept before credential auth and OAuth signing (legacy path)
-	if (additionalData.evalLlmMockHandler) {
-		const evalMockResponse = await callEvalMockHandler(
-			additionalData.evalLlmMockHandler,
-			normalizeLegacyRequest(requestOptions),
-			node,
-			requestOptions.resolveWithFullResponse,
-			'legacy',
-		);
-		if (evalMockResponse !== undefined) return evalMockResponse;
-	}
 
 	try {
 		const parentTypes = additionalData.credentialsHelper.getParentTypes(credentialsType);
@@ -1332,6 +1435,7 @@ export async function requestWithAuthentication(
 						workflow,
 						node,
 					)) as IRequestOptions;
+					// retry the request
 					return await proxyRequestToAxios(workflow, additionalData, node, requestOptions);
 				}
 			}
@@ -1434,7 +1538,7 @@ export const getRequestHelperFunctions = (
 
 			const tempRequestOptions = applyPaginationRequestData(requestOptions, paginateRequestData);
 
-			if (!tryParseUrl(tempRequestOptions.uri as string)) {
+			if (!validateUrl(tempRequestOptions.uri as string)) {
 				throw new NodeOperationError(node, `'${paginateRequestData.url}' is not a valid URL.`, {
 					itemIndex,
 					runIndex,
@@ -1595,30 +1699,9 @@ export const getRequestHelperFunctions = (
 		return responseData;
 	}
 
-	// Eval LLM mock handler: extract once for use in direct helpers below
-	const evalLlmMock = additionalData.evalLlmMockHandler;
-
 	return {
-		httpRequest: async (requestOptions: IHttpRequestOptions) => {
-			if (evalLlmMock) {
-				const evalMockResponse = await callEvalMockHandler(
-					evalLlmMock,
-					requestOptions,
-					node,
-					requestOptions.returnFullResponse,
-				);
-				if (evalMockResponse !== undefined) return evalMockResponse;
-			}
-			if (additionalData.otel?.injectTraceHeaders) {
-				requestOptions.headers ??= {};
-				additionalData.otel.injectTraceHeaders(
-					additionalData.executionId!,
-					node.name,
-					requestOptions.headers as Record<string, string>,
-				);
-			}
-			return await httpRequest(requestOptions, additionalData.ssrfBridge);
-		},
+		httpRequest: async (requestOptions: IHttpRequestOptions) =>
+			await httpRequest(requestOptions, additionalData.ssrfBridge),
 		requestWithAuthenticationPaginated,
 		async httpRequestWithAuthentication(
 			this,
@@ -1651,29 +1734,8 @@ export const getRequestHelperFunctions = (
 			);
 		},
 
-		request: async (uriOrObject, options) => {
-			if (evalLlmMock) {
-				const wantsFull = typeof uriOrObject !== 'string' && uriOrObject.resolveWithFullResponse;
-				const evalMockResponse = await callEvalMockHandler(
-					evalLlmMock,
-					normalizeLegacyRequest(uriOrObject, options),
-					node,
-					wantsFull,
-					'legacy',
-				);
-				if (evalMockResponse !== undefined) return evalMockResponse;
-			}
-			if (additionalData.otel?.injectTraceHeaders) {
-				const target = typeof uriOrObject === 'string' ? (options ??= {}) : uriOrObject;
-				target.headers ??= {};
-				additionalData.otel.injectTraceHeaders(
-					additionalData.executionId!,
-					node.name,
-					target.headers as Record<string, string>,
-				);
-			}
-			return await proxyRequestToAxios(workflow, additionalData, node, uriOrObject, options);
-		},
+		request: async (uriOrObject, options) =>
+			await proxyRequestToAxios(workflow, additionalData, node, uriOrObject, options),
 
 		async requestWithAuthentication(
 			this,
@@ -1699,16 +1761,6 @@ export const getRequestHelperFunctions = (
 			credentialsType: string,
 			requestOptions: IRequestOptions,
 		): Promise<any> {
-			if (evalLlmMock) {
-				const evalMockResponse = await callEvalMockHandler(
-					evalLlmMock,
-					normalizeLegacyRequest(requestOptions),
-					node,
-					requestOptions.resolveWithFullResponse,
-					'legacy',
-				);
-				if (evalMockResponse !== undefined) return evalMockResponse;
-			}
 			return await requestOAuth1.call(this, credentialsType, requestOptions);
 		},
 
@@ -1718,16 +1770,6 @@ export const getRequestHelperFunctions = (
 			requestOptions: IRequestOptions,
 			oAuth2Options?: IOAuth2Options,
 		): Promise<any> {
-			if (evalLlmMock) {
-				const evalMockResponse = await callEvalMockHandler(
-					evalLlmMock,
-					normalizeLegacyRequest(requestOptions),
-					node,
-					requestOptions.resolveWithFullResponse,
-					'legacy',
-				);
-				if (evalMockResponse !== undefined) return evalMockResponse;
-			}
 			return await requestOAuth2.call(
 				this,
 				credentialsType,

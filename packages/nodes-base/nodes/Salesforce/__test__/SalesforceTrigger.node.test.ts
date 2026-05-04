@@ -175,7 +175,6 @@ describe('SalesforceTrigger', () => {
 				}),
 				'Account',
 				true,
-				0,
 			);
 			expect(salesforceApiRequestAllItemsSpy).toHaveBeenCalledWith(
 				'records',
@@ -235,7 +234,6 @@ describe('SalesforceTrigger', () => {
 				}),
 				'Account',
 				true,
-				0,
 			);
 
 			expect(result).toBeDefined();
@@ -266,7 +264,7 @@ describe('SalesforceTrigger', () => {
 
 			const result = await trigger.poll.call(mockPollFunctions);
 
-			expect(getQuerySpy).toHaveBeenCalledWith(expect.any(Object), 'CustomObject__c', true, 0);
+			expect(getQuerySpy).toHaveBeenCalledWith(expect.any(Object), 'CustomObject__c', true);
 
 			expect(result).toBeDefined();
 			expect(result![0]).toHaveLength(1);
@@ -533,7 +531,6 @@ describe('SalesforceTrigger', () => {
 				}),
 				'', // Empty resource name
 				true,
-				0,
 			);
 		});
 	});

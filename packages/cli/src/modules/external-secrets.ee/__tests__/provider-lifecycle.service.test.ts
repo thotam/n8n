@@ -92,7 +92,7 @@ describe('ProviderLifecycle', () => {
 			const originalConnect = provider.connect.bind(provider);
 			jest.spyOn(provider, 'connect').mockImplementation(async function (this: DummyProvider) {
 				stateBeforeConnect = this.state;
-				return await originalConnect();
+				return originalConnect();
 			});
 
 			await lifecycle.connect(provider);

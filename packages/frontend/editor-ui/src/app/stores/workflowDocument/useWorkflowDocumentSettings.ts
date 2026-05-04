@@ -16,11 +16,7 @@ export const DEFAULT_SETTINGS = {
 	binaryMode: BINARY_MODE_SEPARATE,
 } satisfies IWorkflowSettings;
 
-export interface WorkflowDocumentSettingsDeps {
-	syncWorkflowObject: (settings: IWorkflowSettings) => void;
-}
-
-export function useWorkflowDocumentSettings(deps: WorkflowDocumentSettingsDeps) {
+export function useWorkflowDocumentSettings() {
 	const settings = ref<IWorkflowSettings>({ ...DEFAULT_SETTINGS });
 
 	const onSettingsChange = createEventHook<SettingsChangeEvent>();
@@ -30,7 +26,6 @@ export function useWorkflowDocumentSettings(deps: WorkflowDocumentSettingsDeps) 
 		action: ChangeAction = CHANGE_ACTION.UPDATE,
 	) {
 		settings.value = newSettings;
-		deps.syncWorkflowObject(newSettings);
 		void onSettingsChange.trigger({ action, payload: { settings: newSettings } });
 	}
 

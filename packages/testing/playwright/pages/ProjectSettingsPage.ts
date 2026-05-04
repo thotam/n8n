@@ -4,10 +4,6 @@ import { expect } from '@playwright/test';
 import { BasePage } from './BasePage';
 
 export class ProjectSettingsPage extends BasePage {
-	async goto(projectId: string) {
-		await this.page.goto(`/projects/${projectId}/settings`);
-	}
-
 	async fillProjectName(name: string) {
 		await this.page.getByTestId('project-settings-name-input').locator('input').fill(name);
 	}
@@ -46,11 +42,6 @@ export class ProjectSettingsPage extends BasePage {
 		return this.page.getByPlaceholder('Add users...');
 	}
 
-	async searchForMember(query: string) {
-		await this.getMembersSearchInput().click();
-		await this.page.keyboard.type(query, { delay: 50 });
-	}
-
 	getRoleDropdownFor(email: string) {
 		return this.getMembersTable()
 			.locator('tr')
@@ -62,9 +53,15 @@ export class ProjectSettingsPage extends BasePage {
 		return this.page.getByTestId('project-members-table');
 	}
 
+	async getMemberRowCount() {
+		const table = this.getMembersTable();
+		const rows = table.locator('tbody tr');
+		return await rows.count();
+	}
+
 	async expectTableHasMemberCount(expectedCount: number) {
-		const rows = this.getMembersTable().locator('tbody tr');
-		await expect(rows).toHaveCount(expectedCount);
+		const actualCount = await this.getMemberRowCount();
+		expect(actualCount).toBe(expectedCount);
 	}
 
 	getTitle() {

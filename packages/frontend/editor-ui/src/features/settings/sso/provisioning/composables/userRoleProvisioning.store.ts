@@ -2,10 +2,7 @@ import { ref, readonly } from 'vue';
 import { defineStore } from 'pinia';
 import { useRootStore } from '@n8n/stores/useRootStore';
 import * as provisioningApi from '@n8n/rest-api-client/api/provisioning';
-import type {
-	ProvisioningConfig,
-	ProvisioningConfigPatch,
-} from '@n8n/rest-api-client/api/provisioning';
+import type { ProvisioningConfig } from '@n8n/rest-api-client/api/provisioning';
 
 /**
  * Composable to load and save provisioning config
@@ -26,7 +23,7 @@ export const useUserRoleProvisioningStore = defineStore('userRoleProvisioning', 
 		}
 	};
 
-	const saveProvisioningConfig = async (config: ProvisioningConfigPatch) => {
+	const saveProvisioningConfig = async (config: Partial<ProvisioningConfig>) => {
 		try {
 			const updatedConfig = await provisioningApi.saveProvisioningConfig(
 				rootStore.restApiContext,

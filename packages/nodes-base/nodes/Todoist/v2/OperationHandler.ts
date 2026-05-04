@@ -869,9 +869,7 @@ export class QuickAddHandler implements OperationHandler {
 			body.auto_reminder = options.auto_reminder;
 		}
 
-		const nodeVersion = ctx.getNode().typeVersion;
-		const quickAddEndpoint = nodeVersion >= 2.2 ? '/tasks/quick' : '/quick/add';
-		const data = await todoistSyncRequest.call(ctx, body, {}, quickAddEndpoint);
+		const data = await todoistSyncRequest.call(ctx, body, {}, '/quick/add');
 
 		return {
 			data,

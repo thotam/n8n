@@ -148,9 +148,14 @@ export class WorkflowBuilderService {
 		await this.loadNodesAndCredentials.postProcessLoaders();
 		const { nodes: nodeTypeDescriptions } = await this.loadNodesAndCredentials.collectTypes();
 
+		// Use persistent session storage if feature flag is enabled
+		const sessionStorage = this.config.ai.persistBuilderSessions
+			? this.sessionRepository
+			: undefined;
+
 		this.service = new AiWorkflowBuilderService(
 			nodeTypeDescriptions,
-			this.sessionRepository,
+			sessionStorage,
 			this.client,
 			this.logger,
 			this.instanceSettings.instanceId,
@@ -187,9 +192,9 @@ export class WorkflowBuilderService {
 		yield* service.chat(payload, user, abortSignal);
 	}
 
-	async getSessions(workflowId: string | undefined, user: IUser) {
+	async getSessions(workflowId: string | undefined, user: IUser, codeBuilder?: boolean) {
 		const service = await this.getService();
-		const sessions = await service.getSessions(workflowId, user);
+		const sessions = await service.getSessions(workflowId, user, codeBuilder);
 		return sessions;
 	}
 
@@ -207,9 +212,9 @@ export class WorkflowBuilderService {
 		workflowId: string,
 		user: IUser,
 		messageId: string,
-		versionCardId?: string,
+		codeBuilder?: boolean,
 	): Promise<boolean> {
 		const service = await this.getService();
-		return await service.truncateMessagesAfter(workflowId, user, messageId, versionCardId);
+		return await service.truncateMessagesAfter(workflowId, user, messageId, codeBuilder);
 	}
 }

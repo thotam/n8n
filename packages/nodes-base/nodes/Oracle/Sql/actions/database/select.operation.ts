@@ -129,8 +129,7 @@ export async function execute(
 		// Handle LIMIT / pagination
 		const returnAll = this.getNodeParameter('returnAll', i, false);
 		if (!returnAll) {
-			const limitParam = this.getNodeParameter('limit', i, 50);
-			const limit = Number.isFinite(Number(limitParam)) ? Math.trunc(Number(limitParam)) : 0;
+			const limit = this.getNodeParameter('limit', i, 50);
 
 			if (isCDBSupported) {
 				// Oracle 12c+ (FETCH FIRST)

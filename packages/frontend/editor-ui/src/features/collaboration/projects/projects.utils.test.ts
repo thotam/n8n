@@ -1,10 +1,4 @@
-import { createPinia, setActivePinia } from 'pinia';
-import {
-	splitName,
-	useRemoteProjectSearch,
-	DEFAULT_PROJECT_SEARCH_PAGE_SIZE,
-} from './projects.utils';
-import { useProjectsStore } from './projects.store';
+import { splitName } from './projects.utils';
 
 describe('splitName', () => {
 	test.each([
@@ -80,26 +74,5 @@ describe('splitName', () => {
 		],
 	])('should split a name in the format "First Last <email@domain.com>"', (input, result) => {
 		expect(splitName(input)).toEqual(result);
-	});
-});
-
-describe('useRemoteProjectSearch', () => {
-	beforeEach(() => {
-		setActivePinia(createPinia());
-	});
-
-	it('routes to the sharing-candidates endpoint via store.searchShareableProjects', async () => {
-		const store = useProjectsStore();
-		const spy = vi
-			.spyOn(store, 'searchShareableProjects')
-			.mockResolvedValue({ count: 0, data: [] });
-
-		const search = useRemoteProjectSearch();
-		await search('alice');
-
-		expect(spy).toHaveBeenCalledWith({
-			search: 'alice',
-			take: DEFAULT_PROJECT_SEARCH_PAGE_SIZE,
-		});
 	});
 });

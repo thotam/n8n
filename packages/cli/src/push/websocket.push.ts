@@ -54,15 +54,11 @@ export class WebSocketPush extends AbstractPush<WebSocket> {
 			}
 		};
 
-		// Makes sure to remove the session if the connection is closed.
-		// Only remove if this connection is still the active one for this pushRef —
-		// a newer connection may have already replaced it via add().
+		// Makes sure to remove the session if the connection is closed
 		connection.once('close', () => {
 			connection.off('pong', heartbeat);
 			connection.off('message', onMessage);
-			if (this.getConnection(pushRef) === connection) {
-				this.remove(pushRef);
-			}
+			this.remove(pushRef);
 		});
 
 		connection.on('message', onMessage);

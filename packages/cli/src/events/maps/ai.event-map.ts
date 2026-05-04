@@ -16,8 +16,6 @@ export type AiEventMap = {
 
 	'ai-documents-retrieved': AiEventPayload;
 
-	'ai-document-reranked': AiEventPayload;
-
 	'ai-document-embedded': AiEventPayload;
 
 	'ai-query-embedded': AiEventPayload;

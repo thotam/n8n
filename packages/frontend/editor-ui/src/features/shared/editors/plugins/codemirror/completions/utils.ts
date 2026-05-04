@@ -17,10 +17,6 @@ import type { SyntaxNode, Tree } from '@lezer/common';
 import type { DocMetadata } from 'n8n-workflow';
 import { escapeMappingString } from '@/app/utils/mappingUtils';
 import type { TargetNodeParameterContext } from '@/Interface';
-import {
-	createWorkflowDocumentId,
-	useWorkflowDocumentStore,
-} from '@/app/stores/workflowDocument.store';
 
 /**
  * Split user input into base (to resolve) and tail (to filter).
@@ -231,47 +227,26 @@ export const isInHttpNodePagination = (targetNodeParameterContext?: TargetNodePa
 	return nodeType === HTTP_REQUEST_NODE_TYPE && path.startsWith('parameters.options.pagination');
 };
 
-export const hasActiveNode = (targetNodeParameterContext?: TargetNodeParameterContext) => {
-	if (useNDVStore().activeNode?.name !== undefined) {
-		return true;
-	}
+export const hasActiveNode = (targetNodeParameterContext?: TargetNodeParameterContext) =>
+	(targetNodeParameterContext !== undefined &&
+		useWorkflowsStore().getNodeByName(targetNodeParameterContext.nodeName) !== null) ||
+	useNDVStore().activeNode?.name !== undefined;
 
-	if (targetNodeParameterContext === undefined) {
-		return false;
-	}
-
-	const workflowsStore = useWorkflowsStore();
-	const workflowDocumentStore = useWorkflowDocumentStore(
-		createWorkflowDocumentId(workflowsStore.workflowId),
-	);
-
-	return workflowDocumentStore.getNodeByName(targetNodeParameterContext.nodeName) !== null;
-};
-
-export const isSplitInBatchesAbsent = () => {
-	const workflowsStore = useWorkflowsStore();
-	const workflowDocumentStore = useWorkflowDocumentStore(
-		createWorkflowDocumentId(workflowsStore.workflowId),
-	);
-
-	return !workflowDocumentStore.allNodes.some((node) => node.type === SPLIT_IN_BATCHES_NODE_TYPE);
-};
+export const isSplitInBatchesAbsent = () =>
+	!useWorkflowsStore().workflow.nodes.some((node) => node.type === SPLIT_IN_BATCHES_NODE_TYPE);
 
 export function autocompletableNodeNames(targetNodeParameterContext?: TargetNodeParameterContext) {
-	const workflowsStore = useWorkflowsStore();
-	const workflowDocumentStore = useWorkflowDocumentStore(
-		createWorkflowDocumentId(workflowsStore.workflowId),
-	);
 	const activeNode =
 		targetNodeParameterContext === undefined
 			? useNDVStore().activeNode
-			: workflowDocumentStore.getNodeByName(targetNodeParameterContext.nodeName);
+			: useWorkflowsStore().getNodeByName(targetNodeParameterContext.nodeName);
 
 	if (!activeNode) return [];
 
 	const activeNodeName = activeNode.name;
 
-	const nonMainChildren = workflowDocumentStore.getChildNodes(activeNodeName, 'ALL_NON_MAIN');
+	const workflowObject = useWorkflowsStore().workflowObject;
+	const nonMainChildren = workflowObject.getChildNodes(activeNodeName, 'ALL_NON_MAIN');
 
 	// This is a tool node, look for the nearest node with main connections
 	if (nonMainChildren.length > 0) {
@@ -282,11 +257,8 @@ export function autocompletableNodeNames(targetNodeParameterContext?: TargetNode
 }
 
 export function getPreviousNodes(nodeName: string) {
-	const workflowsStore = useWorkflowsStore();
-	const workflowDocumentStore = useWorkflowDocumentStore(
-		createWorkflowDocumentId(workflowsStore.workflowId),
-	);
-	return workflowDocumentStore
+	const workflowObject = useWorkflowsStore().workflowObject;
+	return workflowObject
 		.getParentNodesByDepth(nodeName)
 		.map((node) => node.name)
 		.filter((name) => name !== nodeName);

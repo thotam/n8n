@@ -223,10 +223,7 @@ export class CommunityNodeTypesService {
 		return { ...nodeType, isInstalled: isInstalled(nodeType.name) };
 	}
 
-	async findVetted(packageName: string) {
-		if (this.updateRequired()) {
-			await this.fetchNodeTypes();
-		}
+	findVetted(packageName: string) {
 		const vettedTypes = Array.from(this.communityNodeTypes.values());
 		return vettedTypes.find((nodeType) => nodeType.packageName === packageName);
 	}

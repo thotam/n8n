@@ -99,35 +99,10 @@ export class MicrosoftSql implements INodeType {
 					},
 				},
 				default: '',
-				placeholder: 'SELECT id, name FROM product WHERE quantity > $1 AND price <= $2',
+
+				placeholder: 'SELECT id, name FROM product WHERE id < 40',
 				required: true,
-				description:
-					"The SQL query to execute. You can use n8n expressions and $1, $2, $3, etc to refer to the 'Query Parameters' set in options below.",
-				hint: 'Consider using query parameters to prevent SQL injection attacks. Add them in the options below',
-			},
-			{
-				displayName: 'Options',
-				name: 'options',
-				type: 'collection',
-				placeholder: 'Add option',
-				default: {},
-				displayOptions: {
-					show: {
-						operation: ['executeQuery'],
-					},
-				},
-				options: [
-					{
-						displayName: 'Query Parameters',
-						name: 'queryReplacement',
-						type: 'string',
-						default: '',
-						placeholder: 'e.g. value1,value2,value3',
-						description:
-							'Comma-separated list of values to use as query parameters. Reference them in the query as $1, $2, $3, etc. You can drag values from the input panel on the left.',
-						hint: 'Comma-separated list of values: reference them in your query as $1, $2, $3…',
-					},
-				],
+				description: 'The SQL query to execute',
 			},
 
 			// ----------------------------------
@@ -304,25 +279,7 @@ export class MicrosoftSql implements INodeType {
 							() => this.evaluateExpression(resolvable, i) as string,
 						);
 					}
-
-					let queryValues: Array<string | number | IDataObject> = [];
-					let queryReplacement = this.getNodeParameter('options.queryReplacement', i, '') as
-						| string
-						| string[];
-
-					if (typeof queryReplacement === 'string' && queryReplacement) {
-						queryReplacement = queryReplacement.split(',').map((entry) => entry.trim());
-					}
-					if (queryReplacement !== '' && !Array.isArray(queryReplacement)) {
-						// convert non-string single expression values to arrays
-						queryReplacement = [queryReplacement];
-					}
-
-					if (Array.isArray(queryReplacement)) {
-						queryValues = queryReplacement;
-					}
-
-					const results = await executeSqlQueryAndPrepareResults(pool, rawQuery, i, queryValues);
+					const results = await executeSqlQueryAndPrepareResults(pool, rawQuery, i);
 					returnData = returnData.concat(results);
 				} catch (error) {
 					if (this.continueOnFail()) {

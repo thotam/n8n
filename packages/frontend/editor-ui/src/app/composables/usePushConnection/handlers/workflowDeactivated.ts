@@ -9,7 +9,7 @@ export async function workflowDeactivated({ data }: WorkflowDeactivated) {
 	const { initializeWorkspace } = useCanvasOperations();
 	const workflowsStore = useWorkflowsStore();
 	const workflowsListStore = useWorkflowsListStore();
-	const workflowDocumentStore = injectWorkflowDocumentStore();
+	const documentStore = injectWorkflowDocumentStore();
 	const uiStore = useUIStore();
 
 	if (workflowsStore.workflowId === data.workflowId) {
@@ -22,7 +22,7 @@ export async function workflowDeactivated({ data }: WorkflowDeactivated) {
 			// initializeWorkspace calls initState which sets the document store
 			await initializeWorkspace(updatedWorkflow);
 		} else {
-			workflowDocumentStore?.value?.setActiveState({ activeVersionId: null, activeVersion: null });
+			documentStore?.value?.setActiveState({ activeVersionId: null, activeVersion: null });
 		}
 	}
 }

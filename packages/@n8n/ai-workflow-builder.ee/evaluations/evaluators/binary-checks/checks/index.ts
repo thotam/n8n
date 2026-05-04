@@ -2,7 +2,6 @@ import type { BinaryCheck } from '../types';
 import { allNodesConnected } from './all-nodes-connected';
 import { expressionsReferenceExistingNodes } from './expressions-reference-existing-nodes';
 import { hasStartNode } from './has-start-node';
-import { noCodeImports } from './no-code-imports';
 import { noEmptySetNodes } from './no-empty-set-nodes';
 import { noUnnecessaryCodeNodes } from './no-unnecessary-code-nodes';
 import { noUnreachableNodes } from './no-unreachable-nodes';
@@ -33,7 +32,6 @@ export const DETERMINISTIC_CHECKS: BinaryCheck[] = [
 	hasStartNode,
 	noHardcodedCredentials,
 	noUnnecessaryCodeNodes,
-	noCodeImports,
 	expressionsReferenceExistingNodes,
 	validRequiredParameters,
 	validOptionsValues,

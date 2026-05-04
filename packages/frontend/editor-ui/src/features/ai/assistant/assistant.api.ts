@@ -9,7 +9,6 @@ import type {
 } from '@/features/ai/assistant/assistant.types';
 import { makeRestApiRequest, streamRequest } from '@n8n/rest-api-client';
 import { getObjectSizeInKB } from '@/app/utils/objectUtils';
-import type { AiGatewayConfigDto, AiGatewayUsageResponse } from '@n8n/api-types';
 import type { IDataObject } from 'n8n-workflow';
 
 export function chatWithBuilder(
@@ -111,8 +110,6 @@ export async function getAiSessions(
 		sessionId: string;
 		messages: ChatRequest.MessageResponse[];
 		lastUpdated: string;
-		activeVersionCardId?: string | null;
-		resumeAfterRestoreMessageId?: string | null;
 	}>;
 }> {
 	const body: IDataObject = {
@@ -129,25 +126,6 @@ export async function getBuilderCredits(ctx: IRestApiContext): Promise<{
 	return await makeRestApiRequest(ctx, 'GET', '/ai/build/credits');
 }
 
-export async function getGatewayConfig(ctx: IRestApiContext): Promise<AiGatewayConfigDto> {
-	return await makeRestApiRequest(ctx, 'GET', '/ai/gateway/config');
-}
-
-export async function getGatewayWallet(ctx: IRestApiContext): Promise<{
-	budget: number;
-	balance: number;
-}> {
-	return await makeRestApiRequest(ctx, 'GET', '/ai/gateway/wallet');
-}
-
-export async function getGatewayUsage(
-	ctx: IRestApiContext,
-	offset = 0,
-	limit = 50,
-): Promise<AiGatewayUsageResponse> {
-	return await makeRestApiRequest(ctx, 'GET', `/ai/gateway/usage?offset=${offset}&limit=${limit}`);
-}
-
 export async function clearBuilderSession(
 	ctx: IRestApiContext,
 	workflowId: string,
@@ -161,13 +139,11 @@ export async function truncateBuilderMessages(
 	ctx: IRestApiContext,
 	workflowId: string,
 	messageId: string,
-	versionCardId?: string,
 	codeBuilder?: boolean,
 ): Promise<{ success: boolean }> {
 	return await makeRestApiRequest(ctx, 'POST', '/ai/build/truncate-messages', {
 		workflowId,
 		messageId,
-		versionCardId,
 		codeBuilder,
 	});
 }

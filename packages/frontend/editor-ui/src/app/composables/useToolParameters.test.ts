@@ -10,17 +10,13 @@ import { useNodeTypesStore } from '../stores/nodeTypes.store';
 import { useAgentRequestStore } from '@n8n/stores/useAgentRequestStore';
 import { mockedStore, type MockedStore } from '@/__tests__/utils';
 import { NodeConnectionTypes } from 'n8n-workflow';
-import type { INode, INodeTypeDescription } from 'n8n-workflow';
+import type { INode, INodeTypeDescription, Workflow } from 'n8n-workflow';
 import { AI_MCP_TOOL_NODE_TYPE } from '../constants';
+import { mock } from 'vitest-mock-extended';
 
 const { mockWorkflowDocumentStore } = vi.hoisted(() => ({
 	mockWorkflowDocumentStore: {
 		getNodeByName: vi.fn(),
-		getParentNodes: vi.fn().mockReturnValue([]),
-		allNodes: [],
-		name: '',
-		settings: {},
-		getPinDataSnapshot: () => ({}),
 	},
 }));
 
@@ -388,7 +384,11 @@ describe('useToolParameters', () => {
 				},
 			};
 
-			mockWorkflowDocumentStore.getParentNodes.mockReturnValue(['Connected Tool']);
+			const mockWorkflow = mock<Workflow>({
+				getParentNodes: vi.fn().mockReturnValue(['Connected Tool']),
+			});
+
+			workflowsStore.workflowObject = mockWorkflow;
 			mockWorkflowDocumentStore.getNodeByName.mockImplementation((name: string) => {
 				if (name === 'Connected Tool') return connectedTool;
 				return null;
@@ -437,7 +437,11 @@ describe('useToolParameters', () => {
 				parameters: {},
 			};
 
-			mockWorkflowDocumentStore.getParentNodes.mockReturnValue(['Connected Tool']);
+			const mockWorkflow = mock<Workflow>({
+				getParentNodes: vi.fn().mockReturnValue(['Connected Tool']),
+			});
+
+			workflowsStore.workflowObject = mockWorkflow;
 			mockWorkflowDocumentStore.getNodeByName.mockImplementation((name: string) => {
 				if (name === 'Connected Tool') return connectedTool;
 				return null;

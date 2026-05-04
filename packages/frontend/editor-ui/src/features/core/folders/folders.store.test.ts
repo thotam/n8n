@@ -36,7 +36,6 @@ describe('folders.store', () => {
 	let rootStore: ReturnType<typeof useRootStore>;
 
 	beforeEach(() => {
-		vi.restoreAllMocks();
 		setActivePinia(createPinia());
 		rootStore = useRootStore();
 		foldersStore = useFoldersStore();

@@ -2,11 +2,9 @@ import { z } from 'zod';
 
 import { booleanFromString } from '../../schemas/boolean-from-string';
 
-const booleanFromStringOrBoolean = z.union([booleanFromString, z.boolean()]);
-
 export const ExecutionRedactionQueryDtoSchema = z
 	.object({
-		redactExecutionData: booleanFromStringOrBoolean.optional(),
+		redactExecutionData: booleanFromString.optional(),
 	})
 	.passthrough();
 

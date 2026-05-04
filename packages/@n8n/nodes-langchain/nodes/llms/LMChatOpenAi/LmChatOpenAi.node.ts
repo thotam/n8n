@@ -34,11 +34,6 @@ const INCLUDE_JSON_WARNING: INodeProperties = {
 	default: '',
 };
 
-const OPENAI_MODEL_BUILDER_HINT = {
-	message:
-		'Prefer the GPT-5.4 family: the flagship variant (e.g. `gpt-5.4`) for general use, a `-mini` / `-nano` variant when the task explicitly calls for cost-efficiency, or `-pro` only when the user asks for maximum capability. Never use gpt-4o, gpt-4-turbo, gpt-4, gpt-3.5, or earlier — those are superseded by the GPT-5 family and are not valid choices.',
-};
-
 const completionsResponseFormat: INodeProperties = {
 	displayName: 'Response Format',
 	name: 'responseFormat',
@@ -196,7 +191,7 @@ export class LmChatOpenAi implements INodeType {
 					},
 				},
 				default: 'gpt-5-mini',
-				builderHint: OPENAI_MODEL_BUILDER_HINT,
+				builderHint: { message: 'Always default to latest mini model gpt-5-mini' },
 				displayOptions: {
 					hide: {
 						'@version': [{ _cnd: { gte: 1.2 } }],
@@ -208,7 +203,7 @@ export class LmChatOpenAi implements INodeType {
 				name: 'model',
 				type: 'resourceLocator',
 				default: { mode: 'list', value: 'gpt-5-mini' },
-				builderHint: OPENAI_MODEL_BUILDER_HINT,
+				builderHint: { message: 'Always default to latest mini model gpt-5-mini' },
 				required: true,
 				modes: [
 					{

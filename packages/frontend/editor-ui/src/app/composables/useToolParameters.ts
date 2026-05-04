@@ -36,7 +36,9 @@ export function useToolParameters({ node }: GetToolParametersProps) {
 	const agentRequestStore = useAgentRequestStore();
 
 	const workflowDocumentStore = computed(() =>
-		useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+		workflowsStore.workflowId
+			? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+			: undefined,
 	);
 
 	const selectedToolMap = reactive<Record<string, string | undefined>>({});
@@ -199,13 +201,13 @@ export function useToolParameters({ node }: GetToolParametersProps) {
 
 	const getHitlToolParameters = async (newNode: INode): Promise<IFormInput[]> => {
 		const result: IFormInput[] = [];
-		const connectedToolNodeNames = workflowDocumentStore.value.getParentNodes(
+		const connectedToolNodeNames = workflowsStore.workflowObject.getParentNodes(
 			newNode.name,
 			'ALL_NON_MAIN',
 			1,
 		);
 		const connectedTools = connectedToolNodeNames
-			.map((nodeName) => workflowDocumentStore.value.getNodeByName(nodeName) ?? null)
+			.map((nodeName) => workflowDocumentStore.value?.getNodeByName(nodeName) ?? null)
 			.filter((tool): tool is INode => !!tool);
 
 		const ignoredFields = ['tool', 'toolParameters'];

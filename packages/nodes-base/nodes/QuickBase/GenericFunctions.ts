@@ -33,6 +33,7 @@ export async function quickbaseApiRequest(
 		const options: IRequestOptions = {
 			headers: {
 				'QB-Realm-Hostname': credentials.hostname,
+				'User-Agent': 'n8n',
 				Authorization: `QB-USER-TOKEN ${credentials.userToken}`,
 				'Content-Type': 'application/json',
 			},

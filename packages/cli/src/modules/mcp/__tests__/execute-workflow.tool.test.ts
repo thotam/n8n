@@ -7,6 +7,7 @@ import {
 	WEBHOOK_NODE_TYPE,
 	type INode,
 	type IWorkflowExecutionDataProcess,
+	UnexpectedError,
 } from 'n8n-workflow';
 import { v4 as uuid } from 'uuid';
 
@@ -14,6 +15,7 @@ import { createWorkflow } from './mock.utils';
 import { WorkflowAccessError } from '../mcp.errors';
 import { createExecuteWorkflowTool, executeWorkflow } from '../tools/execute-workflow.tool';
 
+import { ActiveExecutions } from '@/active-executions';
 import { McpService } from '@/modules/mcp/mcp.service';
 import { Telemetry } from '@/telemetry';
 import { WorkflowRunner } from '@/workflow-runner';
@@ -22,12 +24,14 @@ import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 describe('execute-workflow MCP tool', () => {
 	const user = Object.assign(new User(), { id: 'user-1' });
 	let workflowFinderService: WorkflowFinderService;
+	let activeExecutions: ActiveExecutions;
 	let workflowRunner: WorkflowRunner;
 	let telemetry: Telemetry;
 	let mcpService: McpService;
 
 	beforeEach(() => {
 		workflowFinderService = mockInstance(WorkflowFinderService);
+		activeExecutions = mockInstance(ActiveExecutions);
 		workflowRunner = mockInstance(WorkflowRunner);
 		telemetry = mockInstance(Telemetry, {
 			track: jest.fn(),
@@ -42,6 +46,7 @@ describe('execute-workflow MCP tool', () => {
 			const tool = createExecuteWorkflowTool(
 				user,
 				workflowFinderService,
+				activeExecutions,
 				workflowRunner,
 				telemetry,
 				mcpService,
@@ -51,7 +56,7 @@ describe('execute-workflow MCP tool', () => {
 			expect(tool.config).toBeDefined();
 			expect(typeof tool.config.description).toBe('string');
 			expect(tool.config.description).toBe(
-				'Execute a workflow by ID. Returns the execution ID immediately without waiting for completion. Before executing always ensure you know the input schema by first using the get_workflow_details tool and consulting workflow description',
+				'Execute a workflow by ID. Returns execution ID and status. To get the full execution results, use the get_execution tool with the returned execution ID. Before executing always ensure you know the input schema by first using the get_workflow_details tool and consulting workflow description',
 			);
 			expect(tool.config.inputSchema).toBeDefined();
 			expect(tool.config.outputSchema).toBeDefined();
@@ -68,6 +73,7 @@ describe('execute-workflow MCP tool', () => {
 					executeWorkflow(
 						user,
 						workflowFinderService,
+						activeExecutions,
 						workflowRunner,
 						mcpService,
 						'any-workflow',
@@ -87,6 +93,7 @@ describe('execute-workflow MCP tool', () => {
 					executeWorkflow(
 						user,
 						workflowFinderService,
+						activeExecutions,
 						workflowRunner,
 						mcpService,
 						'unpublished-workflow',
@@ -105,10 +112,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('execution-id');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: { runData: {} } },
+				});
 
 				const result = await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'unpublished-workflow',
@@ -116,7 +128,7 @@ describe('execute-workflow MCP tool', () => {
 					'manual',
 				);
 
-				expect(result.status).toBe('started');
+				expect(result.status).toBe('success');
 				expect(result.executionId).toBe('execution-id');
 			});
 
@@ -138,10 +150,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('execution-id');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: { runData: {} } },
+				});
 
 				const result = await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'manual-trigger-workflow',
@@ -149,7 +166,7 @@ describe('execute-workflow MCP tool', () => {
 					'manual',
 				);
 
-				expect(result.status).toBe('started');
+				expect(result.status).toBe('success');
 				expect(result.executionId).toBe('execution-id');
 				expect(workflowRunner.run).toHaveBeenCalledWith(
 					expect.objectContaining({
@@ -182,10 +199,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('execution-id');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: { runData: {} } },
+				});
 
 				await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'manual-workflow-with-pindata',
@@ -225,10 +247,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('execution-id');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: { runData: {} } },
+				});
 
 				await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'production-workflow-with-pindata',
@@ -266,6 +293,7 @@ describe('execute-workflow MCP tool', () => {
 					executeWorkflow(
 						user,
 						workflowFinderService,
+						activeExecutions,
 						workflowRunner,
 						mcpService,
 						'unsupported-trigger',
@@ -277,6 +305,7 @@ describe('execute-workflow MCP tool', () => {
 					executeWorkflow(
 						user,
 						workflowFinderService,
+						activeExecutions,
 						workflowRunner,
 						mcpService,
 						'unsupported-trigger',
@@ -306,6 +335,7 @@ describe('execute-workflow MCP tool', () => {
 					executeWorkflow(
 						user,
 						workflowFinderService,
+						activeExecutions,
 						workflowRunner,
 						mcpService,
 						'unsupported-trigger',
@@ -337,6 +367,7 @@ describe('execute-workflow MCP tool', () => {
 					executeWorkflow(
 						user,
 						workflowFinderService,
+						activeExecutions,
 						workflowRunner,
 						mcpService,
 						'disabled-trigger',
@@ -364,10 +395,21 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-123');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: {
+						resultData: {
+							runData: {
+								WebhookNode: [{ data: { main: [[{ json: { result: 'webhook success' } }]] } }],
+							},
+						},
+					},
+				});
 
 				const result = await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'webhook-workflow',
@@ -383,7 +425,7 @@ describe('execute-workflow MCP tool', () => {
 				);
 
 				expect(result).toMatchObject({
-					status: 'started',
+					status: 'success',
 					executionId: 'exec-123',
 				});
 
@@ -421,10 +463,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-456');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: {} },
+				});
 
 				await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'webhook-workflow',
@@ -471,10 +518,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-789');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: {} },
+				});
 
 				const result = await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'chat-workflow',
@@ -485,7 +537,7 @@ describe('execute-workflow MCP tool', () => {
 				);
 
 				expect(result).toMatchObject({
-					status: 'started',
+					status: 'success',
 					executionId: 'exec-789',
 				});
 
@@ -524,10 +576,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-101');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: {} },
+				});
 
 				const result = await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'form-workflow',
@@ -542,7 +599,7 @@ describe('execute-workflow MCP tool', () => {
 				);
 
 				expect(result).toMatchObject({
-					status: 'started',
+					status: 'success',
 					executionId: 'exec-101',
 				});
 
@@ -565,8 +622,8 @@ describe('execute-workflow MCP tool', () => {
 			});
 		});
 
-		describe('execution start', () => {
-			test('returns started status with execution ID', async () => {
+		describe('execution results handling', () => {
+			test('handles successful execution', async () => {
 				const workflow = createWorkflow({
 					activeVersionId: uuid(),
 					nodes: [
@@ -583,10 +640,21 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-success');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: {
+						resultData: {
+							runData: {
+								WebhookNode: [{ data: { main: [[{ json: { output: 'success' } }]] } }],
+							},
+						},
+					},
+				});
 
 				const result = await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'success-workflow',
@@ -594,10 +662,145 @@ describe('execute-workflow MCP tool', () => {
 				);
 
 				expect(result).toMatchObject({
-					status: 'started',
+					status: 'success',
 					executionId: 'exec-success',
 				});
-				expect(result.error).toBeUndefined();
+			});
+
+			test('handles execution with error status', async () => {
+				const workflow = createWorkflow({
+					activeVersionId: uuid(),
+					nodes: [
+						{
+							id: 'node-1',
+							name: 'WebhookNode',
+							type: WEBHOOK_NODE_TYPE,
+							typeVersion: 1,
+							position: [0, 0],
+							disabled: false,
+							parameters: {},
+						} as INode,
+					],
+				});
+				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-error');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'error',
+					data: {
+						resultData: {
+							error: {
+								message: 'Workflow execution failed',
+								name: 'ExecutionError',
+							},
+						},
+					},
+				});
+
+				const result = await executeWorkflow(
+					user,
+					workflowFinderService,
+					activeExecutions,
+					workflowRunner,
+					mcpService,
+					'error-workflow',
+					undefined,
+				);
+
+				expect(result).toMatchObject({
+					status: 'error',
+					executionId: 'exec-error',
+					error: 'Workflow execution failed',
+				});
+			});
+
+			test('handles execution with result data error', async () => {
+				const workflow = createWorkflow({
+					activeVersionId: uuid(),
+					nodes: [
+						{
+							id: 'node-1',
+							name: 'WebhookNode',
+							type: WEBHOOK_NODE_TYPE,
+							typeVersion: 1,
+							position: [0, 0],
+							disabled: false,
+							parameters: {},
+						} as INode,
+					],
+				});
+				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-data-error');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: {
+						resultData: {
+							error: {
+								message: 'Node execution failed',
+								name: 'NodeExecutionError',
+							},
+						},
+					},
+				});
+
+				const result = await executeWorkflow(
+					user,
+					workflowFinderService,
+					activeExecutions,
+					workflowRunner,
+					mcpService,
+					'data-error-workflow',
+					undefined,
+				);
+
+				expect(result).toMatchObject({
+					status: 'error',
+					executionId: 'exec-data-error',
+					error: 'Node execution failed',
+				});
+			});
+
+			test('handles workflow returning undefined data', async () => {
+				const workflow = createWorkflow({
+					activeVersionId: uuid(),
+					nodes: [
+						{
+							id: 'node-1',
+							name: 'WebhookNode',
+							type: WEBHOOK_NODE_TYPE,
+							typeVersion: 1,
+							position: [0, 0],
+							disabled: false,
+							parameters: {},
+						} as INode,
+					],
+				});
+				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-no-data');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue(undefined);
+
+				await expect(
+					executeWorkflow(
+						user,
+						workflowFinderService,
+						activeExecutions,
+						workflowRunner,
+						mcpService,
+						'no-data-workflow',
+						undefined,
+					),
+				).rejects.toThrow(UnexpectedError);
+
+				await expect(
+					executeWorkflow(
+						user,
+						workflowFinderService,
+						activeExecutions,
+						workflowRunner,
+						mcpService,
+						'no-data-workflow',
+						undefined,
+					),
+				).rejects.toThrow('Workflow did not return any data');
 			});
 		});
 
@@ -619,10 +822,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-no-inputs');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: {} },
+				});
 
 				await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'no-inputs-workflow',
@@ -663,10 +871,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-telemetry');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: {} },
+				});
 
 				const tool = createExecuteWorkflowTool(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					telemetry,
 					mcpService,
@@ -696,7 +909,7 @@ describe('execute-workflow MCP tool', () => {
 							success: true,
 							data: {
 								executionId: 'exec-telemetry',
-								status: 'started',
+								status: 'success',
 							},
 						},
 					}),
@@ -709,6 +922,7 @@ describe('execute-workflow MCP tool', () => {
 				const tool = createExecuteWorkflowTool(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					telemetry,
 					mcpService,
@@ -746,6 +960,7 @@ describe('execute-workflow MCP tool', () => {
 				const tool = createExecuteWorkflowTool(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					telemetry,
 					mcpService,
@@ -814,10 +1029,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-multi');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: {} },
+				});
 
 				await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'multi-trigger-workflow',
@@ -839,6 +1059,50 @@ describe('execute-workflow MCP tool', () => {
 			beforeEach(() => {
 				queueModeMcpService = mockInstance(McpService, {
 					isQueueMode: true,
+					createPendingResponse: jest.fn().mockReturnValue({
+						promise: Promise.resolve({
+							status: 'success',
+							data: { resultData: { runData: {} } },
+						}),
+						resolve: jest.fn(),
+						reject: jest.fn(),
+					}),
+				});
+			});
+
+			test('uses pending response promise in queue mode', async () => {
+				const workflow = createWorkflow({
+					activeVersionId: uuid(),
+					nodes: [
+						{
+							id: 'node-1',
+							name: 'WebhookNode',
+							type: WEBHOOK_NODE_TYPE,
+							typeVersion: 1,
+							position: [0, 0],
+							disabled: false,
+							parameters: {},
+						} as INode,
+					],
+				});
+				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-queue');
+
+				const result = await executeWorkflow(
+					user,
+					workflowFinderService,
+					activeExecutions,
+					workflowRunner,
+					queueModeMcpService,
+					'queue-workflow',
+					undefined,
+				);
+
+				expect(queueModeMcpService.createPendingResponse).toHaveBeenCalledWith('exec-queue');
+				expect(activeExecutions.getPostExecutePromise).not.toHaveBeenCalled();
+				expect(result).toMatchObject({
+					status: 'success',
+					executionId: 'exec-queue',
 				});
 			});
 
@@ -863,6 +1127,7 @@ describe('execute-workflow MCP tool', () => {
 				await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					queueModeMcpService,
 					'mcp-meta-workflow',
@@ -894,10 +1159,15 @@ describe('execute-workflow MCP tool', () => {
 				});
 				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
 				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-regular');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: {} },
+				});
 
 				await executeWorkflow(
 					user,
 					workflowFinderService,
+					activeExecutions,
 					workflowRunner,
 					mcpService,
 					'regular-workflow',
@@ -909,6 +1179,41 @@ describe('execute-workflow MCP tool', () => {
 				// isMcpExecution should be false in regular mode - this is the key flag that
 				// determines whether queue mode MCP handling is applied
 				expect(runCall.isMcpExecution).toBe(false);
+			});
+
+			test('uses activeExecutions.getPostExecutePromise in regular mode', async () => {
+				const workflow = createWorkflow({
+					activeVersionId: uuid(),
+					nodes: [
+						{
+							id: 'node-1',
+							name: 'WebhookNode',
+							type: WEBHOOK_NODE_TYPE,
+							typeVersion: 1,
+							position: [0, 0],
+							disabled: false,
+							parameters: {},
+						} as INode,
+					],
+				});
+				(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+				(workflowRunner.run as jest.Mock).mockResolvedValue('exec-regular-2');
+				(activeExecutions.getPostExecutePromise as jest.Mock).mockResolvedValue({
+					status: 'success',
+					data: { resultData: {} },
+				});
+
+				await executeWorkflow(
+					user,
+					workflowFinderService,
+					activeExecutions,
+					workflowRunner,
+					mcpService,
+					'regular-workflow-2',
+					undefined,
+				);
+
+				expect(activeExecutions.getPostExecutePromise).toHaveBeenCalledWith('exec-regular-2');
 			});
 		});
 	});

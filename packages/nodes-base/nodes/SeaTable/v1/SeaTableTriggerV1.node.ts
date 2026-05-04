@@ -10,13 +10,7 @@ import {
 	type INodeTypeBaseDescription,
 } from 'n8n-workflow';
 
-import {
-	escapeSqlIdentifier,
-	getColumns,
-	rowFormatColumns,
-	seaTableApiRequest,
-	simplify,
-} from './GenericFunctions';
+import { getColumns, rowFormatColumns, seaTableApiRequest, simplify } from './GenericFunctions';
 import type { ICtx, IRow, IRowResponse } from './Interfaces';
 
 export class SeaTableTriggerV1 implements INodeType {
@@ -127,11 +121,11 @@ export class SeaTableTriggerV1 implements INodeType {
 
 		if (this.getMode() === 'manual') {
 			rows = (await seaTableApiRequest.call(this, ctx, 'POST', endpoint, {
-				sql: `SELECT * FROM \`${escapeSqlIdentifier(tableName)}\` LIMIT 1`,
+				sql: `SELECT * FROM ${tableName} LIMIT 1`,
 			})) as IRowResponse;
 		} else {
 			rows = (await seaTableApiRequest.call(this, ctx, 'POST', endpoint, {
-				sql: `SELECT * FROM \`${escapeSqlIdentifier(tableName)}\`
+				sql: `SELECT * FROM ${tableName}
 					WHERE ${filterField} BETWEEN "${moment(startDate).tz(timezone).format('YYYY-MM-D HH:mm:ss')}"
 					AND "${moment(endDate).tz(timezone).format('YYYY-MM-D HH:mm:ss')}"`,
 			})) as IRowResponse;

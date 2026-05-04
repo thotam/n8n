@@ -3,24 +3,12 @@ import type {
 	ListOAuthClientsResponseDto,
 	DeleteOAuthClientResponseDto,
 } from '@n8n/api-types';
-import type { WorkflowListItem } from '@/Interface';
+import type { IWorkflowSettings, WorkflowListItem } from '@/Interface';
 import type { IRestApiContext } from '@n8n/rest-api-client';
 import { makeRestApiRequest, getFullApiResponse } from '@n8n/rest-api-client';
 
 export type McpSettingsResponse = {
 	mcpAccessEnabled: boolean;
-};
-
-export type ToggleWorkflowsMcpAccessTarget =
-	| { workflowIds: string[] }
-	| { projectId: string }
-	| { folderId: string };
-
-export type ToggleWorkflowsMcpAccessResponse = {
-	updatedCount: number;
-	skippedCount: number;
-	failedCount: number;
-	updatedIds?: string[];
 };
 
 export async function getMcpSettings(context: IRestApiContext): Promise<McpSettingsResponse> {
@@ -44,19 +32,19 @@ export async function rotateApiKey(context: IRestApiContext): Promise<ApiKey> {
 	return await makeRestApiRequest(context, 'POST', '/mcp/api-key/rotate');
 }
 
-/**
- * Bulk-toggles MCP availability for a set of workflows scoped by either an
- * explicit id list, a project, or a folder (+ its descendants).
- */
-export async function toggleWorkflowsMcpAccessApi(
+export async function toggleWorkflowMcpAccessApi(
 	context: IRestApiContext,
-	target: ToggleWorkflowsMcpAccessTarget,
+	workflowId: string,
 	availableInMCP: boolean,
-): Promise<ToggleWorkflowsMcpAccessResponse> {
-	return await makeRestApiRequest(context, 'PATCH', '/mcp/workflows/toggle-access', {
-		availableInMCP,
-		...target,
-	});
+): Promise<{ id: string; settings: IWorkflowSettings | undefined; versionId: string }> {
+	return await makeRestApiRequest(
+		context,
+		'PATCH',
+		`/mcp/workflows/${encodeURIComponent(workflowId)}/toggle-access`,
+		{
+			availableInMCP,
+		},
+	);
 }
 
 export async function fetchOAuthClients(

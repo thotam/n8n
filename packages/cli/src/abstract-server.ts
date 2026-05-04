@@ -16,7 +16,7 @@ import { ExternalHooks } from '@/external-hooks';
 import { rawBodyReader, bodyParser, corsMiddleware } from '@/middlewares';
 import { send, sendErrorResponse } from '@/response-helper';
 import { createHandlebarsEngine } from '@/utils/handlebars.util';
-import { resolveBackendHealthEndpointPath } from '@/utils/health-endpoint.util';
+import { resolveHealthEndpointPath } from '@/utils/health-endpoint.util';
 import { LiveWebhooks } from '@/webhooks/live-webhooks';
 import { TestWebhooks } from '@/webhooks/test-webhooks';
 import { WaitingForms } from '@/webhooks/waiting-forms';
@@ -67,6 +67,8 @@ export abstract class AbstractServer {
 
 	private fullyReady = false;
 
+	readonly uniqueInstanceId: string;
+
 	constructor() {
 		this.app = express();
 		this.app.disable('x-powered-by');
@@ -95,7 +97,7 @@ export abstract class AbstractServer {
 		this.endpointMcp = endpoints.mcp;
 		this.endpointMcpTest = endpoints.mcpTest;
 
-		this.endpointHealth = resolveBackendHealthEndpointPath(this.globalConfig);
+		this.endpointHealth = resolveHealthEndpointPath(this.globalConfig);
 
 		this.logger = Container.get(Logger);
 	}
@@ -135,16 +137,14 @@ export abstract class AbstractServer {
 		const healthPath = this.endpointHealth;
 		const readinessPath = `${healthPath}/readiness`;
 
-		const healthMiddlewares = inDevelopment ? [corsMiddleware] : [];
-
 		// main health check should not care about DB connections
-		this.app.get(healthPath, ...healthMiddlewares, (_req, res) => {
+		this.app.get(healthPath, (_req, res) => {
 			res.send({ status: 'ok' });
 		});
 
 		const { connectionState } = this.dbConnection;
 
-		this.app.get(readinessPath, ...healthMiddlewares, (_req, res) => {
+		this.app.get(readinessPath, (_req, res) => {
 			const { connected, migrated } = connectionState;
 			if (connected && migrated && this.fullyReady) {
 				res.status(200).send({ status: 'ok' });
@@ -230,16 +230,12 @@ export abstract class AbstractServer {
 
 		// Setup webhook handlers before bodyParser, to let the Webhook node handle binary data in requests
 		if (this.webhooksEnabled) {
-			const liveWebhooks = Container.get(LiveWebhooks);
-
+			const liveWebhooksRequestHandler = createWebhookHandlerFor(Container.get(LiveWebhooks));
 			// Register a handler for live forms
-			this.app.all(`/${this.endpointForm}/*path`, createWebhookHandlerFor(liveWebhooks, 'form'));
+			this.app.all(`/${this.endpointForm}/*path`, liveWebhooksRequestHandler);
 
 			// Register a handler for live webhooks
-			this.app.all(
-				`/${this.endpointWebhook}/*path`,
-				createWebhookHandlerFor(liveWebhooks, 'webhook'),
-			);
+			this.app.all(`/${this.endpointWebhook}/*path`, liveWebhooksRequestHandler);
 
 			// Register a handler for waiting forms
 			this.app.all(
@@ -254,23 +250,18 @@ export abstract class AbstractServer {
 			);
 
 			// Register a handler for live MCP servers
-			this.app.all(`/${this.endpointMcp}/*path`, createWebhookHandlerFor(liveWebhooks, 'mcp'));
+			this.app.all(`/${this.endpointMcp}/*path`, liveWebhooksRequestHandler);
 		}
 
 		if (this.testWebhooksEnabled) {
-			const testWebhooks = Container.get(TestWebhooks);
+			const testWebhooksRequestHandler = createWebhookHandlerFor(Container.get(TestWebhooks));
 
-			this.app.all(
-				`/${this.endpointFormTest}/*path`,
-				createWebhookHandlerFor(testWebhooks, 'form'),
-			);
-			this.app.all(
-				`/${this.endpointWebhookTest}/*path`,
-				createWebhookHandlerFor(testWebhooks, 'webhook'),
-			);
+			// Register a handler
+			this.app.all(`/${this.endpointFormTest}/*path`, testWebhooksRequestHandler);
+			this.app.all(`/${this.endpointWebhookTest}/*path`, testWebhooksRequestHandler);
 
 			// Register a handler for test MCP servers
-			this.app.all(`/${this.endpointMcpTest}/*path`, createWebhookHandlerFor(testWebhooks, 'mcp'));
+			this.app.all(`/${this.endpointMcpTest}/*path`, testWebhooksRequestHandler);
 		}
 
 		// Block bots from scanning the application

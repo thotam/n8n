@@ -9,7 +9,7 @@ export class ToolWorkflow extends VersionedNodeType {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'Call n8n Sub-Workflow Tool',
 			name: 'toolWorkflow',
-			icon: 'node:call-n8n-sub-workflow-tool',
+			icon: 'fa:network-wired',
 			iconColor: 'black',
 			group: ['transform'],
 			description:

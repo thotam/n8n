@@ -119,8 +119,6 @@ const trailingProps = computed(() => ({
 	class: $style['item-trailing'],
 }));
 
-const titleAttr = computed(() => (props.label.length >= 20 ? props.label : undefined));
-
 const handleSelect = (value: T) => {
 	emit('select', value);
 };
@@ -184,7 +182,6 @@ watch(
 				<slot name="item-label" :item="props" :ui="labelProps">
 					<N8nText
 						:class="$style['item-label']"
-						:title="titleAttr"
 						size="medium"
 						:color="disabled ? 'text-light' : 'text-dark'"
 					>
@@ -285,7 +282,6 @@ watch(
 			<slot name="item-label" :item="props" :ui="labelProps">
 				<N8nText
 					:class="$style['item-label']"
-					:title="titleAttr"
 					size="medium"
 					:color="disabled ? 'text-light' : 'text-dark'"
 				>

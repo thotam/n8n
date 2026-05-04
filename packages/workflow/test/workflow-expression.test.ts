@@ -23,13 +23,6 @@ describe('WorkflowExpression', () => {
 		});
 		const expression = workflow.expression;
 
-		beforeAll(async () => {
-			await expression.acquireIsolate();
-		});
-		afterAll(async () => {
-			await expression.releaseIsolate();
-		});
-
 		const evaluate = (value: NodeParameterValueType) =>
 			expression.getParameterValue(value, null, 0, 0, 'node', [], 'manual', {});
 

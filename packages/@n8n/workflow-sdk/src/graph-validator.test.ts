@@ -1100,11 +1100,7 @@ describe('graph validation', () => {
 				config: {
 					name: 'Store Data',
 					parameters: {
-						assignments: {
-							assignments: [
-								{ id: 'api-key-assignment', name: 'api_key', value: 'secret123', type: 'string' },
-							],
-						},
+						assignments: { assignments: [{ name: 'api_key', value: 'secret123' }] },
 					},
 				},
 			});
@@ -1114,11 +1110,7 @@ describe('graph validation', () => {
 				config: {
 					name: 'Store Data',
 					parameters: {
-						assignments: {
-							assignments: [
-								{ id: 'password-assignment', name: 'password', value: 'secret456', type: 'string' },
-							],
-						},
+						assignments: { assignments: [{ name: 'password', value: 'secret456' }] },
 					},
 				},
 			});

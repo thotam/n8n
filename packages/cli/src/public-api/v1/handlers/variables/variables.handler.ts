@@ -1,18 +1,20 @@
 import { CreateVariableRequestDto, UpdateVariableRequestDto } from '@n8n/api-types';
 import type { AuthenticatedRequest } from '@n8n/db';
+import { VariablesRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
+// eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
+import { IsNull } from '@n8n/typeorm';
 import type { Response } from 'express';
-
-import { VariablesController } from '@/environments.ee/variables/variables.controller.ee';
-import { VariablesService } from '@/environments.ee/variables/variables.service.ee';
-import type { VariablesRequest } from '@/requests';
 
 import {
 	apiKeyHasScopeWithGlobalScopeFallback,
 	isLicensed,
 	validCursor,
 } from '../../shared/middlewares/global.middleware';
-import { paginateArray } from '../../shared/services/pagination.service';
+import { encodeNextCursor } from '../../shared/services/pagination.service';
+
+import { VariablesController } from '@/environments.ee/variables/variables.controller.ee';
+import type { VariablesRequest } from '@/requests';
 
 export = {
 	createVariable: [
@@ -57,12 +59,24 @@ export = {
 		async (req: VariablesRequest.GetAll, res: Response) => {
 			const { offset = 0, limit = 100, projectId, state } = req.query;
 
-			const variables = await Container.get(VariablesService).getAllForUser(req.user, {
-				state,
-				projectId: projectId === 'null' ? null : projectId,
+			const [variables, count] = await Container.get(VariablesRepository).findAndCount({
+				skip: offset,
+				take: limit,
+				where: {
+					project: projectId === 'null' ? IsNull() : { id: projectId },
+					value: state === 'empty' ? '' : undefined,
+				},
+				relations: ['project'],
 			});
 
-			return res.json(paginateArray(variables, { offset, limit }));
+			return res.json({
+				data: variables,
+				nextCursor: encodeNextCursor({
+					offset,
+					limit,
+					numberOfTotalRecords: count,
+				}),
+			});
 		},
 	],
 };

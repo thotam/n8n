@@ -15,7 +15,7 @@ export class RetrieverVectorStore implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Vector Store Retriever',
 		name: 'retrieverVectorStore',
-		icon: 'node:vector-store-retriever',
+		icon: 'fa:box-open',
 		iconColor: 'black',
 		group: ['transform'],
 		version: 1,

@@ -34,7 +34,7 @@ export class TextSplitterRecursiveCharacterTextSplitter implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Recursive Character Text Splitter',
 		name: 'textSplitterRecursiveCharacterTextSplitter',
-		icon: 'node:recursive-character-text-splitter',
+		icon: 'fa:grip-lines-vertical',
 		iconColor: 'black',
 		group: ['transform'],
 		version: 1,

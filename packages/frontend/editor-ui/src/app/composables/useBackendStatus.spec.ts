@@ -6,7 +6,6 @@ import merge from 'lodash/merge';
 import { useBackendStatus } from './useBackendStatus';
 import { useBackendConnectionStore } from '@/app/stores/backendConnection.store';
 import { useSettingsStore } from '@/app/stores/settings.store';
-import { useRootStore } from '@n8n/stores/useRootStore';
 import { defaultSettings } from '@/__tests__/defaults';
 
 const mockStartHeartbeat = vi.fn();
@@ -58,10 +57,7 @@ describe('useBackendStatus', () => {
 	};
 
 	it('should check backend connection and set online status on mount', async () => {
-		mockFetch.mockResolvedValueOnce({
-			ok: true,
-			json: async () => ({ status: 'ok' }),
-		});
+		mockFetch.mockResolvedValueOnce({ ok: true });
 
 		const wrapper = createWrapper();
 
@@ -95,27 +91,6 @@ describe('useBackendStatus', () => {
 		wrapper.unmount();
 
 		expect(mockStopHeartbeat).toHaveBeenCalled();
-	});
-
-	it('should prepend backend origin to health URL when baseUrl is a full URL', async () => {
-		const rootStore = useRootStore();
-		vi.spyOn(rootStore, 'baseUrl', 'get').mockReturnValue('http://localhost:5678/');
-
-		mockFetch.mockResolvedValueOnce({
-			ok: true,
-			json: async () => ({ status: 'ok' }),
-		});
-
-		const wrapper = createWrapper();
-
-		await vi.waitFor(() => {
-			expect(mockFetch).toHaveBeenCalledWith('http://localhost:5678/internal/health', {
-				cache: 'no-store',
-				signal: expect.any(AbortSignal),
-			});
-		});
-
-		wrapper.unmount();
 	});
 
 	it('should skip health checks in preview mode', async () => {

@@ -15,8 +15,7 @@ export interface ApiKey {
 	expiresAt: string | null;
 }
 
-/** Default scopes for test API keys - covers most common operations.
- * These scopes are owner-level; pass explicit scopes for member API keys. */
+/** Default scopes for test API keys - covers most common operations */
 const DEFAULT_API_KEY_SCOPES: ApiKeyScope[] = [
 	'user:read',
 	'user:list',
@@ -30,9 +29,6 @@ const DEFAULT_API_KEY_SCOPES: ApiKeyScope[] = [
 	'credential:create',
 	'credential:update',
 	'credential:delete',
-	'tag:create',
-	'tag:read',
-	'tag:list',
 	'project:create',
 	'project:update',
 	'project:delete',

@@ -13,10 +13,10 @@ import type {
 	ExecutionError,
 	INodeTypeBaseDescription,
 	INodeExecutionData,
+	Workflow,
 	IWorkflowDataProxyAdditionalKeys,
 } from 'n8n-workflow';
 import type { INodeUi, IWorkflowDb } from '@/Interface';
-import type { WorkflowObjectAccessors } from '@/app/types/workflow';
 import type {
 	ExecutionFilterType,
 	ExecutionPreviewNodeSchema,
@@ -185,41 +185,31 @@ export async function displayForm({
 	}
 }
 
-export const waitingNodeTooltip = (
-	node: INodeUi | null | undefined,
-	workflow?: WorkflowObjectAccessors,
-	metadata?: { resumeUrl?: string; resumeFormUrl?: string },
-) => {
+export const waitingNodeTooltip = (node: INodeUi | null | undefined, workflow?: Workflow) => {
 	if (!node) return '';
 	try {
-		const waitingNodeTooltipFromNodeType = useNodeTypesStore().getNodeType(
-			node.type,
-		)?.waitingNodeTooltip;
-		if (waitingNodeTooltipFromNodeType) {
+		const waitingNodeTooltip = useNodeTypesStore().getNodeType(node.type)?.waitingNodeTooltip;
+		if (waitingNodeTooltip) {
 			const activeExecutionId = useWorkflowsStore().activeExecutionId as string;
-			// Use signed URLs from metadata if available
-			// otherwise fall back to constructing URLs without token
 			const additionalData: IWorkflowDataProxyAdditionalKeys = {
 				$execution: {
 					id: activeExecutionId,
 					mode: 'test',
-					resumeUrl:
-						metadata?.resumeUrl ?? `${useRootStore().webhookWaitingUrl}/${activeExecutionId}`,
-					resumeFormUrl:
-						metadata?.resumeFormUrl ?? `${useRootStore().formWaitingUrl}/${activeExecutionId}`,
+					resumeUrl: `${useRootStore().webhookWaitingUrl}/${activeExecutionId}`,
+					resumeFormUrl: `${useRootStore().formWaitingUrl}/${activeExecutionId}`,
 				},
 			};
 			if (workflow) {
 				const tooltip = workflow.expression.getSimpleParameterValue(
 					node,
-					waitingNodeTooltipFromNodeType,
+					waitingNodeTooltip,
 					'internal',
 					additionalData,
 				);
 
 				return String(tooltip);
-			} else if (waitingNodeTooltipFromNodeType) {
-				return waitingNodeTooltipFromNodeType;
+			} else if (waitingNodeTooltip) {
+				return waitingNodeTooltip;
 			}
 		}
 	} catch (error) {

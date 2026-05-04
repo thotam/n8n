@@ -12,8 +12,7 @@ export class Guardrails extends VersionedNodeType {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'Guardrails',
 			name: 'guardrails',
-			icon: 'node:guardrails',
-			iconColor: 'sky-blue',
+			icon: 'file:guardrails.svg',
 			group: ['transform'],
 			defaultVersion: 2,
 			description:

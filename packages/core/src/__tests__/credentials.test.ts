@@ -4,10 +4,7 @@ import type { CredentialInformation } from 'n8n-workflow';
 import { AssertionError } from 'node:assert';
 
 import { CREDENTIAL_ERRORS } from '@/constants';
-import { CipherAes256CBC } from '@/encryption/aes-256-cbc';
-import { CipherAes256GCM } from '@/encryption/aes-256-gcm';
 import { Cipher } from '@/encryption/cipher';
-import { EncryptionKeyProxy } from '@/encryption/encryption-key-proxy';
 import type { InstanceSettings } from '@/instance-settings';
 
 import { Credentials } from '../credentials';
@@ -16,38 +13,33 @@ describe('Credentials', () => {
 	const nodeCredentials = { id: '123', name: 'Test Credential' };
 	const credentialType = 'testApi';
 
-	const cipher = new Cipher(
-		mock<InstanceSettings>({ encryptionKey: 'password' }),
-		new CipherAes256GCM(),
-		new CipherAes256CBC(),
-		new EncryptionKeyProxy(),
-	);
+	const cipher = new Cipher(mock<InstanceSettings>({ encryptionKey: 'password' }));
 	Container.set(Cipher, cipher);
 
-	const setDataKey = async (credentials: Credentials, key: string, data: CredentialInformation) => {
+	const setDataKey = (credentials: Credentials, key: string, data: CredentialInformation) => {
 		let fullData;
 		try {
-			fullData = await credentials.getData();
+			fullData = credentials.getData();
 		} catch (e) {
 			fullData = {};
 		}
 		fullData[key] = data;
-		return await credentials.setData(fullData);
+		return credentials.setData(fullData);
 	};
 
 	describe('without nodeType set', () => {
-		test('should be able to set and read key data without initial data set', async () => {
+		test('should be able to set and read key data without initial data set', () => {
 			const credentials = new Credentials(nodeCredentials, credentialType);
 
 			const key = 'key1';
 			const newData = 1234;
 
-			await setDataKey(credentials, key, newData);
+			setDataKey(credentials, key, newData);
 
-			expect((await credentials.getData())[key]).toEqual(newData);
+			expect(credentials.getData()[key]).toEqual(newData);
 		});
 
-		test('should be able to set and read key data with initial data set', async () => {
+		test('should be able to set and read key data with initial data set', () => {
 			const key = 'key2';
 
 			// Saved under "key1"
@@ -59,30 +51,30 @@ describe('Credentials', () => {
 			const newData = 1234;
 
 			// Set and read new data
-			await setDataKey(credentials, key, newData);
-			expect((await credentials.getData())[key]).toEqual(newData);
+			setDataKey(credentials, key, newData);
+			expect(credentials.getData()[key]).toEqual(newData);
 
 			// Read the data which got provided encrypted on init
-			expect((await credentials.getData()).key1).toEqual(initialData);
+			expect(credentials.getData().key1).toEqual(initialData);
 		});
 	});
 
 	describe('getData', () => {
-		test('should throw an error when data is missing', async () => {
+		test('should throw an error when data is missing', () => {
 			const credentials = new Credentials(nodeCredentials, credentialType);
 			credentials.data = undefined;
 
-			await expect(credentials.getData()).rejects.toThrow(CREDENTIAL_ERRORS.NO_DATA);
+			expect(() => credentials.getData()).toThrow(CREDENTIAL_ERRORS.NO_DATA);
 		});
 
-		test('should throw an error when decryption fails', async () => {
+		test('should throw an error when decryption fails', () => {
 			const credentials = new Credentials(nodeCredentials, credentialType);
 			credentials.data = '{"key": "already-decrypted-credentials-data" }';
 
-			await expect(credentials.getData()).rejects.toThrow(CREDENTIAL_ERRORS.DECRYPTION_FAILED);
+			expect(() => credentials.getData()).toThrow(CREDENTIAL_ERRORS.DECRYPTION_FAILED);
 
 			try {
-				await credentials.getData();
+				credentials.getData();
 			} catch (error) {
 				expect(error.constructor.name).toBe('CredentialDataError');
 				expect(error.extra).toEqual({ ...nodeCredentials, type: credentialType });
@@ -90,14 +82,14 @@ describe('Credentials', () => {
 			}
 		});
 
-		test('should throw an error when JSON parsing fails', async () => {
+		test('should throw an error when JSON parsing fails', () => {
 			const credentials = new Credentials(nodeCredentials, credentialType);
 			credentials.data = cipher.encrypt('invalid-json-string');
 
-			await expect(credentials.getData()).rejects.toThrow(CREDENTIAL_ERRORS.INVALID_JSON);
+			expect(() => credentials.getData()).toThrow(CREDENTIAL_ERRORS.INVALID_JSON);
 
 			try {
-				await credentials.getData();
+				credentials.getData();
 			} catch (error) {
 				expect(error.constructor.name).toBe('CredentialDataError');
 				expect(error.extra).toEqual({ ...nodeCredentials, type: credentialType });
@@ -106,11 +98,11 @@ describe('Credentials', () => {
 			}
 		});
 
-		test('should successfully decrypt and parse valid JSON credentials', async () => {
+		test('should successfully decrypt and parse valid JSON credentials', () => {
 			const credentials = new Credentials(nodeCredentials, credentialType);
-			await credentials.setData({ username: 'testuser', password: 'testpass' });
+			credentials.setData({ username: 'testuser', password: 'testpass' });
 
-			const decryptedData = await credentials.getData();
+			const decryptedData = credentials.getData();
 			expect(decryptedData.username).toBe('testuser');
 			expect(decryptedData.password).toBe('testpass');
 		});
@@ -119,10 +111,10 @@ describe('Credentials', () => {
 	describe('setData', () => {
 		test.each<{}>([[123], [null], [undefined]])(
 			'should throw an AssertionError when data is %s',
-			async (data) => {
+			(data) => {
 				const credentials = new Credentials<{}>(nodeCredentials, credentialType);
 
-				await expect(credentials.setData(data)).rejects.toThrow(AssertionError);
+				expect(() => credentials.setData(data)).toThrow(AssertionError);
 			},
 		);
 	});
@@ -131,7 +123,7 @@ describe('Credentials', () => {
 		const nodeCredentials = { id: '123', name: 'Test Credential' };
 		const credentialType = 'testApi';
 
-		test('should update existing data', async () => {
+		test('should update existing data', () => {
 			const credentials = new Credentials(
 				nodeCredentials,
 				credentialType,
@@ -142,16 +134,16 @@ describe('Credentials', () => {
 				}),
 			);
 
-			await credentials.updateData({ username: 'newuser', password: 'newpass' });
+			credentials.updateData({ username: 'newuser', password: 'newpass' });
 
-			expect(await credentials.getData()).toEqual({
+			expect(credentials.getData()).toEqual({
 				username: 'newuser',
 				password: 'newpass',
 				apiKey: 'oldkey',
 			});
 		});
 
-		test('should delete specified keys', async () => {
+		test('should delete specified keys', () => {
 			const credentials = new Credentials(
 				nodeCredentials,
 				credentialType,
@@ -162,14 +154,14 @@ describe('Credentials', () => {
 				}),
 			);
 
-			await credentials.updateData({}, ['username', 'apiKey']);
+			credentials.updateData({}, ['username', 'apiKey']);
 
-			expect(await credentials.getData()).toEqual({
+			expect(credentials.getData()).toEqual({
 				password: 'testpass',
 			});
 		});
 
-		test('should update and delete keys in same operation', async () => {
+		test('should update and delete keys in same operation', () => {
 			const credentials = new Credentials(
 				nodeCredentials,
 				credentialType,
@@ -180,20 +172,20 @@ describe('Credentials', () => {
 				}),
 			);
 
-			await credentials.updateData({ username: 'newuser' }, ['apiKey']);
+			credentials.updateData({ username: 'newuser' }, ['apiKey']);
 
-			expect(await credentials.getData()).toEqual({
+			expect(credentials.getData()).toEqual({
 				username: 'newuser',
 				password: 'oldpass',
 			});
 		});
 
-		test('should throw an error if no data was previously set', async () => {
+		test('should throw an error if no data was previously set', () => {
 			const credentials = new Credentials(nodeCredentials, credentialType);
 
-			await expect(credentials.updateData({ username: 'newuser' })).rejects.toThrow(
-				CREDENTIAL_ERRORS.NO_DATA,
-			);
+			expect(() => {
+				credentials.updateData({ username: 'newuser' });
+			}).toThrow(CREDENTIAL_ERRORS.NO_DATA);
 		});
 	});
 });

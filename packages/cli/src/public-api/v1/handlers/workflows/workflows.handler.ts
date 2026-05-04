@@ -1,16 +1,18 @@
 import { GlobalConfig } from '@n8n/config';
-import { WorkflowEntity, TagRepository, WorkflowRepository } from '@n8n/db';
+import { WorkflowEntity, ProjectRepository, TagRepository, WorkflowRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
 // eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
 import { In, IsNull, Like, Not, QueryFailedError } from '@n8n/typeorm';
 // eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
 import type { FindOptionsWhere } from '@n8n/typeorm';
 import type express from 'express';
+import { v4 as uuid } from 'uuid';
 import { z } from 'zod';
 
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
 import { NotFoundError } from '@/errors/response-errors/not-found.error';
 import { EventService } from '@/events/event.service';
+import { ExternalHooks } from '@/external-hooks';
+import { addNodeIds, replaceInvalidCredentials } from '@/workflow-helpers';
 import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 import { WorkflowHistoryService } from '@/workflows/workflow-history/workflow-history.service';
 import { WorkflowService } from '@/workflows/workflow.service';
@@ -19,21 +21,50 @@ import { EnterpriseWorkflowService } from '@/workflows/workflow.service.ee';
 import { createWorkflow, parseTagNames, getWorkflowTags, updateTags } from './workflows.service';
 import type { WorkflowRequest } from '../../../types';
 import {
-	publicApiScope,
+	apiKeyHasScope,
 	projectScope,
 	validCursor,
 } from '../../shared/middlewares/global.middleware';
 import { encodeNextCursor } from '../../shared/services/pagination.service';
+
 export = {
 	createWorkflow: [
-		publicApiScope('workflow:create'),
+		apiKeyHasScope('workflow:create'),
 		async (req: WorkflowRequest.Create, res: express.Response): Promise<express.Response> => {
-			const createdWorkflow = await createWorkflow(req.user, req.body);
+			const workflow = req.body;
+
+			workflow.active = false;
+			workflow.versionId = uuid();
+
+			await replaceInvalidCredentials(workflow);
+
+			addNodeIds(workflow);
+
+			const project = await Container.get(ProjectRepository).getPersonalProjectForUserOrFail(
+				req.user.id,
+			);
+			const createdWorkflow = await createWorkflow(workflow, req.user, project, 'workflow:owner');
+
+			await Container.get(WorkflowHistoryService).saveVersion(
+				req.user,
+				createdWorkflow,
+				createdWorkflow.id,
+			);
+
+			await Container.get(ExternalHooks).run('workflow.afterCreate', [createdWorkflow]);
+			Container.get(EventService).emit('workflow-created', {
+				workflow: createdWorkflow,
+				user: req.user,
+				publicApi: true,
+				projectId: project.id,
+				projectType: project.type,
+			});
+
 			return res.json(createdWorkflow);
 		},
 	],
 	transferWorkflow: [
-		publicApiScope('workflow:move'),
+		apiKeyHasScope('workflow:move'),
 		projectScope('workflow:move', 'workflow'),
 		async (req: WorkflowRequest.Transfer, res: express.Response) => {
 			const { id: workflowId } = req.params;
@@ -50,7 +81,7 @@ export = {
 		},
 	],
 	deleteWorkflow: [
-		publicApiScope('workflow:delete'),
+		apiKeyHasScope('workflow:delete'),
 		projectScope('workflow:delete', 'workflow'),
 		async (req: WorkflowRequest.Get, res: express.Response): Promise<express.Response> => {
 			const { id: workflowId } = req.params;
@@ -66,7 +97,7 @@ export = {
 		},
 	],
 	getWorkflow: [
-		publicApiScope('workflow:read'),
+		apiKeyHasScope('workflow:read'),
 		projectScope('workflow:read', 'workflow'),
 		async (req: WorkflowRequest.Get, res: express.Response): Promise<express.Response> => {
 			const { id } = req.params;
@@ -102,7 +133,7 @@ export = {
 		},
 	],
 	getWorkflowVersion: [
-		publicApiScope('workflow:read'),
+		apiKeyHasScope('workflow:read'),
 		projectScope('workflow:read', 'workflow'),
 		async (req: WorkflowRequest.GetVersion, res: express.Response): Promise<express.Response> => {
 			const { id: workflowId, versionId } = req.params;
@@ -129,7 +160,7 @@ export = {
 		},
 	],
 	getWorkflows: [
-		publicApiScope('workflow:list'),
+		apiKeyHasScope('workflow:list'),
 		validCursor,
 		async (req: WorkflowRequest.GetAll, res: express.Response): Promise<express.Response> => {
 			const {
@@ -266,7 +297,7 @@ export = {
 		},
 	],
 	updateWorkflow: [
-		publicApiScope('workflow:update'),
+		apiKeyHasScope('workflow:update'),
 		projectScope('workflow:update', 'workflow'),
 		async (req: WorkflowRequest.Update, res: express.Response): Promise<express.Response> => {
 			const { id } = req.params;
@@ -282,7 +313,6 @@ export = {
 						forceSave: true, // Skip version conflict check for public API
 						publicApi: true,
 						publishIfActive: true,
-						source: 'api',
 					},
 				);
 
@@ -299,19 +329,19 @@ export = {
 		},
 	],
 	activateWorkflow: [
-		publicApiScope('workflow:activate'),
+		apiKeyHasScope('workflow:activate'),
 		projectScope('workflow:publish', 'workflow'),
 		async (req: WorkflowRequest.Activate, res: express.Response): Promise<express.Response> => {
 			const { id } = req.params;
 			const { versionId, name, description } = req.body;
 
 			try {
-				const workflow = await Container.get(WorkflowService).activateWorkflow(req.user, id, {
-					versionId,
-					name,
-					description,
-					source: 'api',
-				});
+				const workflow = await Container.get(WorkflowService).activateWorkflow(
+					req.user,
+					id,
+					{ versionId, name, description },
+					true,
+				);
 
 				return res.json(workflow);
 			} catch (error) {
@@ -326,14 +356,14 @@ export = {
 		},
 	],
 	deactivateWorkflow: [
-		publicApiScope('workflow:deactivate'),
+		apiKeyHasScope('workflow:deactivate'),
 		projectScope('workflow:unpublish', 'workflow'),
 		async (req: WorkflowRequest.Activate, res: express.Response): Promise<express.Response> => {
 			const { id } = req.params;
 
 			try {
 				const workflow = await Container.get(WorkflowService).deactivateWorkflow(req.user, id, {
-					source: 'api',
+					publicApi: true,
 				});
 
 				return res.json(workflow);
@@ -349,7 +379,7 @@ export = {
 		},
 	],
 	getWorkflowTags: [
-		publicApiScope('workflowTags:list'),
+		apiKeyHasScope('workflowTags:list'),
 		projectScope('workflow:read', 'workflow'),
 		async (req: WorkflowRequest.GetTags, res: express.Response): Promise<express.Response> => {
 			const { id } = req.params;
@@ -376,7 +406,7 @@ export = {
 		},
 	],
 	updateWorkflowTags: [
-		publicApiScope('workflowTags:update'),
+		apiKeyHasScope('workflowTags:update'),
 		projectScope('workflow:update', 'workflow'),
 		async (req: WorkflowRequest.UpdateTags, res: express.Response): Promise<express.Response> => {
 			const { id } = req.params;
@@ -412,47 +442,6 @@ export = {
 			}
 
 			return res.json(tags);
-		},
-	],
-	archiveWorkflow: [
-		publicApiScope('workflow:delete'),
-		projectScope('workflow:delete', 'workflow'),
-		async (req: WorkflowRequest.Get, res: express.Response): Promise<express.Response> => {
-			const { id } = req.params;
-			try {
-				const workflow = await Container.get(WorkflowService).archiveForPublicApi(req.user, id);
-				if (!workflow) {
-					throw new NotFoundError('Workflow not found');
-				}
-				return res.json(workflow);
-			} catch (error) {
-				if (error instanceof NotFoundError) {
-					return res.status(404).json({ message: 'Workflow Not Found' });
-				}
-				throw error;
-			}
-		},
-	],
-	unarchiveWorkflow: [
-		publicApiScope('workflow:delete'),
-		projectScope('workflow:delete', 'workflow'),
-		async (req: WorkflowRequest.Get, res: express.Response): Promise<express.Response> => {
-			const { id } = req.params;
-			try {
-				const workflow = await Container.get(WorkflowService).unarchiveForPublicApi(req.user, id);
-				if (!workflow) {
-					throw new NotFoundError('Workflow not found');
-				}
-				return res.json(workflow);
-			} catch (error) {
-				if (error instanceof NotFoundError) {
-					return res.status(404).json({ message: 'Workflow Not Found' });
-				}
-				if (error instanceof BadRequestError) {
-					return res.status(error.httpStatusCode).json({ message: error.message });
-				}
-				throw error;
-			}
 		},
 	],
 };

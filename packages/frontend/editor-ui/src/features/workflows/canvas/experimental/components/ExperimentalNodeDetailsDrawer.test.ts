@@ -13,6 +13,19 @@ import { createTestingPinia } from '@pinia/testing';
 import ExperimentalNodeDetailsDrawer from './ExperimentalNodeDetailsDrawer.vue';
 import { nextTick, shallowRef } from 'vue';
 import { fireEvent } from '@testing-library/vue';
+import {
+	injectWorkflowState,
+	useWorkflowState,
+	type WorkflowState,
+} from '@/app/composables/useWorkflowState';
+
+vi.mock('@/app/composables/useWorkflowState', async () => {
+	const actual = await vi.importActual('@/app/composables/useWorkflowState');
+	return {
+		...actual,
+		injectWorkflowState: vi.fn(),
+	};
+});
 
 vi.mock('@/app/stores/workflowDocument.store', async () => {
 	const actual = await vi.importActual('@/app/stores/workflowDocument.store');
@@ -29,6 +42,7 @@ describe('ExperimentalNodeDetailsDrawer', () => {
 	let workflowsStore: ReturnType<typeof useWorkflowsStore>;
 	let nodeTypesStore: ReturnType<typeof useNodeTypesStore>;
 	let ndvStore: ReturnType<typeof useNDVStore>;
+	let workflowState: WorkflowState;
 
 	const mockNodes = [
 		createTestNode({
@@ -48,7 +62,7 @@ describe('ExperimentalNodeDetailsDrawer', () => {
 
 		workflowsStore = useWorkflowsStore(pinia);
 		workflowsStore.workflow.id = 'test-workflow';
-		workflowsStore.workflow.nodes = mockNodes;
+		workflowsStore.setNodes(mockNodes);
 
 		const workflowDocumentStore = useWorkflowDocumentStore(
 			createWorkflowDocumentId(workflowsStore.workflowId),
@@ -70,6 +84,9 @@ describe('ExperimentalNodeDetailsDrawer', () => {
 			},
 		]);
 		ndvStore = useNDVStore();
+
+		workflowState = useWorkflowState();
+		vi.mocked(injectWorkflowState).mockReturnValue(workflowState);
 	});
 
 	it('should show updated parameter after closing NDV', async () => {
@@ -86,10 +103,7 @@ describe('ExperimentalNodeDetailsDrawer', () => {
 		// Simulate parameter update in NDV
 		ndvStore.setActiveNodeName('Node 1', 'other');
 		await nextTick();
-		const workflowDocumentStore = useWorkflowDocumentStore(
-			createWorkflowDocumentId(workflowsStore.workflowId),
-		);
-		workflowDocumentStore.setNodeParameters({ name: 'Node 1', value: { p0: 'after update' } });
+		workflowState.setNodeParameters({ name: 'Node 1', value: { p0: 'after update' } });
 		ndvStore.unsetActiveNodeName();
 		await nextTick();
 

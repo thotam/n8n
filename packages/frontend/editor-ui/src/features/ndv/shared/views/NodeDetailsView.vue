@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue';
 import { createEventBus } from '@n8n/utils/event-bus';
-import type { IRunData, NodeConnectionType, IConnectedNode } from 'n8n-workflow';
+import type { IRunData, Workflow, NodeConnectionType, IConnectedNode } from 'n8n-workflow';
 import { jsonParse, NodeHelpers, NodeConnectionTypes } from 'n8n-workflow';
 import type { IRunDataDisplayMode, IUpdateInformation, TargetItem } from '@/Interface';
 import type { NodePanelType } from '@/features/ndv/shared/ndv.types';
@@ -53,6 +53,7 @@ const emit = defineEmits<{
 
 const props = withDefaults(
 	defineProps<{
+		workflowObject: Workflow;
 		readOnly?: boolean;
 		renaming?: boolean;
 		isProductionExecutionPreview?: boolean;
@@ -98,10 +99,6 @@ const isPairedItemHoveringEnabled = ref(true);
 
 const pushRef = computed(() => ndvStore.pushRef);
 
-const workflowObject = computed(() =>
-	workflowDocumentStore?.value?.getWorkflowObjectAccessorSnapshot(),
-);
-
 const activeNodeType = computed(() => {
 	if (activeNode.value) {
 		return nodeTypesStore.getNodeType(activeNode.value.type, activeNode.value.typeVersion);
@@ -134,7 +131,7 @@ const workflowRunData = computed(() => {
 
 const parentNodes = computed(() => {
 	if (activeNode.value) {
-		return workflowObject.value?.getParentNodesByDepth(activeNode.value.name, 1) ?? [];
+		return props.workflowObject.getParentNodesByDepth(activeNode.value.name, 1);
 	}
 	return [];
 });
@@ -154,8 +151,8 @@ const parentNode = computed<IConnectedNode | undefined>(() => {
 
 const inputNodeName = computed<string | undefined>(() => {
 	const nodeOutputs =
-		activeNode.value && activeNodeType.value && workflowObject.value
-			? NodeHelpers.getNodeOutputs(workflowObject.value, activeNode.value, activeNodeType.value)
+		activeNode.value && activeNodeType.value
+			? NodeHelpers.getNodeOutputs(props.workflowObject, activeNode.value, activeNodeType.value)
 			: [];
 
 	const nonMainOutputs = nodeOutputs.filter((output) => {
@@ -170,7 +167,7 @@ const inputNodeName = computed<string | undefined>(() => {
 		// For sub-nodes, we need to get their connected output node to determine the input
 		// because sub-nodes use specialized outputs (e.g. NodeConnectionTypes.AiTool)
 		// instead of the standard Main output type
-		const connectedOutputNode = workflowObject.value?.getChildNodes(
+		const connectedOutputNode = props.workflowObject.getChildNodes(
 			activeNode.value.name,
 			'ALL_NON_MAIN',
 		)?.[0];
@@ -247,14 +244,14 @@ const maxInputRun = computed(() => {
 		return 0;
 	}
 
-	const workflowNode = workflowObject.value?.getNode(activeNode.value.name);
+	const workflowNode = props.workflowObject.getNode(activeNode.value.name);
 
-	if (!workflowNode || !activeNodeType.value || !workflowObject.value) {
+	if (!workflowNode || !activeNodeType.value) {
 		return 0;
 	}
 
 	const outputs = NodeHelpers.getNodeOutputs(
-		workflowObject.value,
+		props.workflowObject,
 		workflowNode,
 		activeNodeType.value,
 	);
@@ -607,17 +604,17 @@ watch(
 
 			setTimeout(() => ndvStore.setNDVPushRef(), 0);
 
-			if (!activeNodeType.value || !workflowObject.value) {
+			if (!activeNodeType.value) {
 				return;
 			}
 
 			void externalHooks.run('dataDisplay.nodeTypeChanged', {
-				nodeSubtitle: nodeHelpers.getNodeSubtitle(node, activeNodeType.value, workflowObject.value),
+				nodeSubtitle: nodeHelpers.getNodeSubtitle(node, activeNodeType.value, props.workflowObject),
 			});
 
 			setTimeout(() => {
 				if (activeNode.value) {
-					const outgoingConnections = workflowDocumentStore?.value?.outgoingConnectionsByNodeName(
+					const outgoingConnections = workflowsStore.outgoingConnectionsByNodeName(
 						activeNode.value?.name,
 					);
 
@@ -746,7 +743,7 @@ onBeforeUnmount(() => {
 						@activate="onWorkflowActivate"
 					/>
 					<InputPanel
-						v-else-if="!isTriggerNode && workflowObject"
+						v-else-if="!isTriggerNode"
 						:workflow-object="workflowObject"
 						:can-link-runs="canLinkRuns"
 						:run-index="inputRun"
@@ -775,7 +772,6 @@ onBeforeUnmount(() => {
 				</template>
 				<template #output>
 					<OutputPanel
-						v-if="workflowObject"
 						data-test-id="output-panel"
 						:workflow-object="workflowObject"
 						:can-link-runs="canLinkRuns"

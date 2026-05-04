@@ -5,19 +5,8 @@ import { mock } from 'vitest-mock-extended';
 import type { WorkerInitOptions } from '../types';
 import { worker } from './typescript.worker';
 
-vi.mock('@/app/plugins/cache', () => ({
-	indexedDbCache: async () => ({
-		getItem: () => '{}',
-		setItem: () => {},
-		removeItem: () => {},
-		clear: () => {},
-		getAllWithPrefix: async () => ({}),
-	}),
-}));
 vi.mock('@typescript/vfs');
-vi.mock('typescript', async (importOriginal) => {
-	return await importOriginal();
-});
+vi.mock('typescript');
 
 async function createWorker({
 	doc,

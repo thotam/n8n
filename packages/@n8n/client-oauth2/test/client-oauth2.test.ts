@@ -62,7 +62,7 @@ describe('ClientOAuth2', () => {
 				}),
 			});
 
-			const axiosSpy = vi.spyOn(axios, 'request');
+			const axiosSpy = jest.spyOn(axios, 'request');
 
 			await makeTokenCall();
 
@@ -71,7 +71,6 @@ describe('ClientOAuth2', () => {
 					url: config.accessTokenUri,
 					method: 'POST',
 					data: 'refresh_token=test&grant_type=refresh_token',
-					proxy: false,
 					headers: {
 						Authorization: authHeader,
 						Accept: 'application/json',

@@ -10,8 +10,8 @@ import { ElDialog } from 'element-plus';
 import {
 	N8nActionBox,
 	N8nButton,
-	N8nCallout,
 	N8nHeading,
+	N8nInfoTip,
 	N8nOption,
 	N8nSelect,
 	N8nText,
@@ -56,7 +56,6 @@ const activeForm = computed(() => {
 });
 
 const authProtocol = ref<SupportedProtocolType>(SupportedProtocols.SAML);
-
 function onAuthProtocolUpdated(value: SupportedProtocolType) {
 	authProtocol.value = value;
 }
@@ -77,11 +76,9 @@ onBeforeRouteLeave((_to, _from, next) => {
 
 async function onSaveAndLeave() {
 	showUnsavedChangesDialog.value = false;
-	const saved = await activeForm.value?.onSave();
-	if (saved) {
-		pendingNext.value?.();
-		pendingNext.value = null;
-	}
+	await activeForm.value?.onSave();
+	pendingNext.value?.();
+	pendingNext.value = null;
 }
 
 function onLeaveWithoutSaving() {
@@ -108,41 +105,31 @@ onMounted(() => {
 		<div :class="$style.heading">
 			<N8nHeading size="2xlarge">{{ i18n.baseText('settings.sso.title') }}</N8nHeading>
 		</div>
-		<p :class="$style.description">
+		<N8nInfoTip>
 			{{ i18n.baseText('settings.sso.info') }}
-			<a :class="$style.docLink" href="https://docs.n8n.io/user-management/saml/" target="_blank">
+			<a href="https://docs.n8n.io/user-management/saml/" target="_blank">
 				{{ i18n.baseText('settings.sso.info.link') }}
 			</a>
-		</p>
-		<N8nCallout v-if="ssoStore.ssoManagedByEnv" theme="warning" class="mb-m">
-			{{ i18n.baseText('settings.sso.settings.envConfigBanner') }}
-		</N8nCallout>
-		<!-- Protocol selector — rendered independently outside form v-ifs for E2E timing -->
-		<div v-if="hasAnySsoEnabled" :class="[shared.card, $style.protocolCard]">
-			<div data-test-id="sso-auth-protocol-select" :class="shared.settingsItem">
-				<div :class="shared.settingsItemLabel">
-					<label>{{ i18n.baseText('settings.sso.settings.authProtocol.label') }}</label>
-					<small>{{ i18n.baseText('settings.sso.settings.authProtocol.description') }}</small>
-				</div>
-				<div :class="shared.settingsItemControl">
-					<N8nSelect
-						filterable
-						size="medium"
-						:disabled="ssoStore.ssoManagedByEnv"
-						:model-value="authProtocol"
-						:placeholder="i18n.baseText('parameterInput.select')"
-						@update:model-value="onAuthProtocolUpdated"
-						@keydown.stop
+		</N8nInfoTip>
+		<div v-if="hasAnySsoEnabled" data-test-id="sso-auth-protocol-select" :class="shared.group">
+			<label>Select Authentication Protocol</label>
+			<div>
+				<N8nSelect
+					filterable
+					:model-value="authProtocol"
+					:placeholder="i18n.baseText('parameterInput.select')"
+					@update:model-value="onAuthProtocolUpdated"
+					@keydown.stop
+				>
+					<N8nOption
+						v-for="{ label, value } in options"
+						:key="value"
+						:value="value"
+						:label="label"
+						data-test-id="credential-select-option"
 					>
-						<N8nOption
-							v-for="{ label, value } in options"
-							:key="value"
-							:value="value"
-							:label="label"
-							data-test-id="credential-select-option"
-						/>
-					</N8nSelect>
-				</div>
+					</N8nOption>
+				</N8nSelect>
 			</div>
 		</div>
 		<div
@@ -206,32 +193,7 @@ onMounted(() => {
 
 <style lang="scss" module>
 .heading {
-	margin-bottom: var(--spacing--2xs);
-}
-
-.description {
-	font-size: var(--font-size--sm);
-	color: var(--color--text--tint-1);
-	line-height: var(--line-height--xl);
-	margin: 0 0 var(--spacing--lg);
-}
-
-.docLink {
-	color: var(--color--text);
-	text-decoration: underline;
-
-	&::after {
-		content: '↗';
-		margin-left: 2px;
-	}
-}
-
-.protocolCard {
-	margin-bottom: 0;
-	padding-bottom: 0;
-	border-bottom: none;
-	border-bottom-left-radius: 0;
-	border-bottom-right-radius: 0;
+	margin-bottom: var(--spacing--sm);
 }
 
 .actionBox {

@@ -6,11 +6,6 @@ import userEvent from '@testing-library/user-event';
 import NodeSetupCard from '@/features/setupPanel/components/cards/NodeSetupCard.vue';
 import type { NodeSetupState } from '@/features/setupPanel/setupPanel.types';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
-import { useWorkflowsStore } from '@/app/stores/workflows.store';
-import {
-	useWorkflowDocumentStore,
-	createWorkflowDocumentId,
-} from '@/app/stores/workflowDocument.store';
 import { useSetupPanelStore } from '@/features/setupPanel/setupPanel.store';
 import type { INodeUi } from '@/Interface';
 
@@ -78,8 +73,9 @@ vi.mock('@/features/ndv/parameters/components/ParameterInputList.vue', () => ({
 	},
 }));
 
-const { mockExecute, mockComposableState } = vi.hoisted(() => ({
+const { mockExecute, mockUpdateNodeProperties, mockComposableState } = vi.hoisted(() => ({
 	mockExecute: vi.fn(),
+	mockUpdateNodeProperties: vi.fn(),
 	mockComposableState: {
 		isExecuting: false,
 		isButtonDisabled: false,
@@ -106,6 +102,12 @@ vi.mock('@/features/setupPanel/composables/useTriggerExecution', async () => {
 		})),
 	};
 });
+
+vi.mock('@/app/composables/useWorkflowState', () => ({
+	injectWorkflowState: vi.fn(() => ({
+		updateNodeProperties: mockUpdateNodeProperties,
+	})),
+}));
 
 vi.mock('@/features/setupPanel/composables/useWebhookUrls', () => ({
 	useWebhookUrls: vi.fn(() => ({
@@ -151,12 +153,12 @@ const createParameterOnlyState = (overrides: Partial<NodeSetupState> = {}): Node
 });
 
 describe('NodeSetupCard', () => {
-	const WORKFLOW_ID = 'test-workflow';
 	let nodeTypesStore: ReturnType<typeof mockedStore<typeof useNodeTypesStore>>;
 	let setupPanelStore: ReturnType<typeof mockedStore<typeof useSetupPanelStore>>;
 
 	beforeEach(() => {
 		mockExecute.mockClear();
+		mockUpdateNodeProperties.mockClear();
 		mockComposableState.isExecuting = false;
 		mockComposableState.isButtonDisabled = false;
 		mockComposableState.label = 'Test node';
@@ -165,8 +167,6 @@ describe('NodeSetupCard', () => {
 		mockComposableState.isInListeningState = false;
 		mockComposableState.listeningHint = '';
 		createTestingPinia();
-		const workflowsStore = useWorkflowsStore();
-		workflowsStore.workflow.id = WORKFLOW_ID;
 		nodeTypesStore = mockedStore(useNodeTypesStore);
 		setupPanelStore = mockedStore(useSetupPanelStore);
 		nodeTypesStore.isTriggerNode = vi.fn().mockReturnValue(false);
@@ -285,7 +285,7 @@ describe('NodeSetupCard', () => {
 				expect(queryByTestId('parameter-input-list')).not.toBeInTheDocument();
 			});
 
-			it('should call workflowDocumentStore.updateNodeProperties when parameter is changed', async () => {
+			it('should call workflowState.updateNodeProperties when parameter is changed', async () => {
 				const { getByTestId } = renderComponent({
 					props: {
 						state: createCredentialState({
@@ -297,10 +297,7 @@ describe('NodeSetupCard', () => {
 
 				await userEvent.click(getByTestId('param-change-btn'));
 
-				const workflowDocumentStore = useWorkflowDocumentStore(
-					createWorkflowDocumentId(WORKFLOW_ID),
-				);
-				expect(workflowDocumentStore.updateNodeProperties).toHaveBeenCalledWith({
+				expect(mockUpdateNodeProperties).toHaveBeenCalledWith({
 					name: 'OpenAI',
 					properties: {
 						parameters: {

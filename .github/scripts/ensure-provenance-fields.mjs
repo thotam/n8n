@@ -9,13 +9,7 @@ const exec = promisify(child_process.exec);
 const commonFiles = ['LICENSE.md', 'LICENSE_EE.md'];
 
 const baseDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const packages = JSON.parse(
-	(
-		await exec(
-			`pnpm ls -r --only-projects --json | jq -r '[.[] | { name: .name, version: .version, path: .path,  private: .private}]'`,
-		)
-	).stdout,
-);
+const packages = JSON.parse((await exec('pnpm ls -r --only-projects --json')).stdout);
 
 for (let { name, path, version, private: isPrivate } of packages) {
 	if (isPrivate) continue;

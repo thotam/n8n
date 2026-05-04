@@ -23,6 +23,9 @@ export async function githubApiRequest(
 ): Promise<any> {
 	const options: IRequestOptions = {
 		method,
+		headers: {
+			'User-Agent': 'n8n',
+		},
 		body,
 		qs: query,
 		uri: '',

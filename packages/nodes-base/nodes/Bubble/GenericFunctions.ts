@@ -32,6 +32,7 @@ export async function bubbleApiRequest(
 
 	const options: IRequestOptions = {
 		headers: {
+			'user-agent': 'n8n',
 			Authorization: `Bearer ${apiToken}`,
 		},
 		method,

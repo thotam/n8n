@@ -1,8 +1,9 @@
 {
 	"extends": "@n8n/typescript-config/tsconfig.frontend.json",
 	"compilerOptions": {
+		"baseUrl": ".",
 		"rootDirs": [".", "../composables/src"],
-		"noEmit": true,
+		"outDir": "dist",
 		"moduleResolution": "bundler",
 		"types": ["vite/client", "unplugin-icons/types/vue", "vitest/globals"],
 		"typeRoots": [

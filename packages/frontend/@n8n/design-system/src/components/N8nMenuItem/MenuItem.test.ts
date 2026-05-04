@@ -144,15 +144,15 @@ describe('N8nMenuItem', () => {
 			expect(menuItem.textContent).not.toContain('Hidden Label');
 		});
 
-		it('should not render PreviewTag when compact is true', () => {
+		it('should not render BetaTag when compact is true', () => {
 			const { html } = render(N8nMenuItem, {
 				props: {
-					item: createMenuItem({ preview: true }),
+					item: createMenuItem({ beta: true }),
 					compact: true,
 				},
-				global: { stubs: { ...stubs, PreviewTag: true } },
+				global: { stubs: { ...stubs, BetaTag: true } },
 			});
-			expect(html()).not.toContain('preview-tag');
+			expect(html()).not.toContain('beta-tag');
 		});
 	});
 
@@ -206,25 +206,25 @@ describe('N8nMenuItem', () => {
 		});
 	});
 
-	describe('preview prop', () => {
-		it('should render PreviewTag when preview is true', () => {
+	describe('beta prop', () => {
+		it('should render BetaTag when beta is true', () => {
 			const { html } = render(N8nMenuItem, {
 				props: {
-					item: createMenuItem({ preview: true }),
+					item: createMenuItem({ beta: true }),
 				},
-				global: { stubs: { ...stubs, PreviewTag: true } },
+				global: { stubs: { ...stubs, BetaTag: true } },
 			});
-			expect(html()).toContain('preview-tag-stub');
+			expect(html()).toContain('beta-tag-stub');
 		});
 
-		it('should not render PreviewTag when preview is false', () => {
+		it('should not render BetaTag when beta is false', () => {
 			const { html } = render(N8nMenuItem, {
 				props: {
-					item: createMenuItem({ preview: false }),
+					item: createMenuItem({ beta: false }),
 				},
-				global: { stubs: { ...stubs, PreviewTag: true } },
+				global: { stubs: { ...stubs, BetaTag: true } },
 			});
-			expect(html()).not.toContain('preview-tag-stub');
+			expect(html()).not.toContain('beta-tag-stub');
 		});
 	});
 

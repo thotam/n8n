@@ -38,9 +38,9 @@ const quickConnectOptionSchema = z.union([
 export type QuickConnectOption = z.infer<typeof quickConnectOptionSchema>;
 
 const quickConnectOptionsSchema = z.string().pipe(
-	z.preprocess((input: unknown) => {
+	z.preprocess((input: string) => {
 		try {
-			return JSON.parse(input as string);
+			return JSON.parse(input);
 		} catch {
 			return [];
 		}

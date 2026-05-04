@@ -6,16 +6,10 @@ import { createComponentRenderer } from '@/__tests__/render';
 import { mockedStore, type MockedStore } from '@/__tests__/utils';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { useCredentialsStore } from '@/features/credentials/credentials.store';
-import {
-	createWorkflowDocumentId,
-	useWorkflowDocumentStore,
-} from '@/app/stores/workflowDocument.store';
 import { createTestingPinia } from '@pinia/testing';
 import CanvasNodeSettingsIcons from './CanvasNodeSettingsIcons.vue';
-import type { INodeUi } from '@/Interface';
+import type { INode } from 'n8n-workflow';
 import { computed } from 'vue';
-
-const WORKFLOW_ID = 'test-workflow-id';
 
 vi.mock('@/features/resolvers/composables/useDynamicCredentials', () => ({
 	useDynamicCredentials: vi.fn(),
@@ -38,9 +32,8 @@ const mockFeatureFlag = (enabled: boolean) => {
 describe('CanvasNodeSettingsIcons', () => {
 	let workflowsStore: MockedStore<typeof useWorkflowsStore>;
 	let credentialsStore: MockedStore<typeof useCredentialsStore>;
-	let workflowDocumentStore: ReturnType<typeof useWorkflowDocumentStore>;
 
-	const createMockNode = (overrides: Partial<INodeUi> = {}): INodeUi =>
+	const createMockNode = (overrides: Partial<INode> = {}): INode =>
 		({
 			name: 'Test Node',
 			type: 'test',
@@ -48,14 +41,11 @@ describe('CanvasNodeSettingsIcons', () => {
 			position: [0, 0],
 			parameters: {},
 			...overrides,
-		}) as INodeUi;
+		}) as INode;
 
 	beforeEach(() => {
 		workflowsStore = mockedStore(useWorkflowsStore);
 		credentialsStore = mockedStore(useCredentialsStore);
-
-		workflowsStore.workflow.id = WORKFLOW_ID;
-		workflowDocumentStore = useWorkflowDocumentStore(createWorkflowDocumentId(WORKFLOW_ID));
 
 		// Default: feature flag disabled
 		mockFeatureFlag(false);
@@ -66,7 +56,7 @@ describe('CanvasNodeSettingsIcons', () => {
 			const node = createMockNode({
 				credentials: { testCred: { id: 'cred-1', name: 'Test Cred' } },
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 			credentialsStore.getCredentialById = vi.fn().mockReturnValue({ isResolvable: true });
 
 			const { queryByTestId } = renderComponent({
@@ -87,7 +77,7 @@ describe('CanvasNodeSettingsIcons', () => {
 			const node = createMockNode({
 				credentials: { testCred: { id: 'cred-1', name: 'Test Cred' } },
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 			credentialsStore.getCredentialById = vi.fn().mockReturnValue({ isResolvable: true });
 
 			const { getByTestId } = renderComponent({
@@ -108,7 +98,7 @@ describe('CanvasNodeSettingsIcons', () => {
 			const node = createMockNode({
 				credentials: { testCred: { id: 'cred-1', name: 'Test Cred' } },
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 			credentialsStore.getCredentialById = vi.fn().mockReturnValue({ isResolvable: false });
 
 			const { queryByTestId } = renderComponent({
@@ -131,7 +121,7 @@ describe('CanvasNodeSettingsIcons', () => {
 					contextEstablishmentHooks: { hooks: [{ id: 'hook-1' }] },
 				},
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { getByTestId } = renderComponent({
 				global: {
@@ -153,7 +143,7 @@ describe('CanvasNodeSettingsIcons', () => {
 					contextEstablishmentHooks: { hooks: [] },
 				},
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { queryByTestId } = renderComponent({
 				global: {
@@ -171,7 +161,7 @@ describe('CanvasNodeSettingsIcons', () => {
 			mockFeatureFlag(true);
 
 			const node = createMockNode({ credentials: undefined });
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { queryByTestId } = renderComponent({
 				global: {
@@ -191,7 +181,7 @@ describe('CanvasNodeSettingsIcons', () => {
 			const node = createMockNode({
 				credentials: { testCred: { id: '', name: 'Test Cred' } },
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 			credentialsStore.getCredentialById = vi.fn().mockReturnValue({ isResolvable: true });
 
 			const { queryByTestId } = renderComponent({
@@ -212,7 +202,7 @@ describe('CanvasNodeSettingsIcons', () => {
 			const node = createMockNode({
 				credentials: { testCred: { id: 'cred-1', name: 'Test Cred' } },
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 			credentialsStore.getCredentialById = vi.fn().mockReturnValue(undefined);
 
 			const { queryByTestId } = renderComponent({
@@ -235,7 +225,7 @@ describe('CanvasNodeSettingsIcons', () => {
 					contextEstablishmentHooks: 'not-an-object',
 				},
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { queryByTestId } = renderComponent({
 				global: {
@@ -257,7 +247,7 @@ describe('CanvasNodeSettingsIcons', () => {
 					contextEstablishmentHooks: { other: 'property' },
 				},
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { queryByTestId } = renderComponent({
 				global: {
@@ -279,7 +269,7 @@ describe('CanvasNodeSettingsIcons', () => {
 					contextEstablishmentHooks: { hooks: 'not-an-array' },
 				},
 			});
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { queryByTestId } = renderComponent({
 				global: {
@@ -296,12 +286,14 @@ describe('CanvasNodeSettingsIcons', () => {
 
 	describe('other settings icons', () => {
 		beforeEach(() => {
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(createMockNode());
+			workflowsStore.workflowObject = {
+				getNode: vi.fn().mockReturnValue(createMockNode()),
+			} as never;
 		});
 
 		it('should render always output data icon when enabled', () => {
 			const node = createMockNode({ alwaysOutputData: true });
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { getByTestId } = renderComponent({
 				global: {
@@ -317,7 +309,7 @@ describe('CanvasNodeSettingsIcons', () => {
 
 		it('should render execute once icon when enabled', () => {
 			const node = createMockNode({ executeOnce: true });
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { getByTestId } = renderComponent({
 				global: {
@@ -333,7 +325,7 @@ describe('CanvasNodeSettingsIcons', () => {
 
 		it('should render retry on fail icon when enabled', () => {
 			const node = createMockNode({ retryOnFail: true });
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { getByTestId } = renderComponent({
 				global: {
@@ -349,7 +341,7 @@ describe('CanvasNodeSettingsIcons', () => {
 
 		it('should render continue on error icon when onError is continueRegularOutput', () => {
 			const node = createMockNode({ onError: 'continueRegularOutput' });
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { getByTestId } = renderComponent({
 				global: {
@@ -365,7 +357,7 @@ describe('CanvasNodeSettingsIcons', () => {
 
 		it('should render continue on error icon when onError is continueErrorOutput', () => {
 			const node = createMockNode({ onError: 'continueErrorOutput' });
-			vi.mocked(workflowDocumentStore.getNodeByName).mockReturnValue(node);
+			workflowsStore.workflowObject = { getNode: vi.fn().mockReturnValue(node) } as never;
 
 			const { getByTestId } = renderComponent({
 				global: {

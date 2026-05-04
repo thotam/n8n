@@ -158,7 +158,7 @@ export class LogStreamingDestinationService {
 	) {
 		// If there are no destinations that should receive this message, mark it as sent immediately
 		if (!this.shouldSendMsg(msg)) {
-			confirmCallback(msg, { id: '0', name: 'eventBus' });
+			this.eventBus.confirmSent(msg, { id: '0', name: 'eventBus' });
 			return;
 		}
 
@@ -200,8 +200,7 @@ export class LogStreamingDestinationService {
 		if (destination.length > 0) {
 			const sendResult = await this.destinations[destinationId].receiveFromEventBus({
 				msg,
-				confirmCallback: () =>
-					this.eventBus.confirmMessageDelivered(msg, { id: '0', name: 'eventBus' }),
+				confirmCallback: () => this.eventBus.confirmSent(msg, { id: '0', name: 'eventBus' }),
 			});
 			return sendResult;
 		}

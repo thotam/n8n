@@ -387,9 +387,6 @@ export class EmailReadImapV2 implements INodeType {
 					});
 
 					if (connection) {
-						// Create a fresh copy to avoid accumulating filters across calls
-						const currentSearchCriteria = [...searchCriteria];
-
 						/**
 						 * Only process new emails:
 						 * - If we've seen emails before (lastMessageUid is set), fetch messages higher UID.
@@ -411,19 +408,19 @@ export class EmailReadImapV2 implements INodeType {
 							 * - You can check if UIDs changed in the above example
 							 * by checking UIDValidity.
 							 */
-							currentSearchCriteria.push(['UID', `${staticData.lastMessageUid as number}:*`]);
+							searchCriteria.push(['UID', `${staticData.lastMessageUid as number}:*`]);
 						} else if (node.typeVersion > 2 && options.trackLastMessageId !== false) {
-							currentSearchCriteria.push(['SINCE', activatedAt.toFormat('dd-LLL-yyyy')]);
+							searchCriteria.push(['SINCE', activatedAt.toFormat('dd-LLL-yyyy')]);
 						}
 
 						this.logger.debug('Querying for new messages on node "EmailReadImap"', {
-							searchCriteria: currentSearchCriteria,
+							searchCriteria,
 						});
 
 						try {
 							await getNewEmails.call(this, {
 								imapConnection: connection,
-								searchCriteria: currentSearchCriteria,
+								searchCriteria,
 								postProcessAction,
 								getText,
 								getAttachment,
@@ -467,26 +464,21 @@ export class EmailReadImapV2 implements INodeType {
 			// Connect to the IMAP server and open the mailbox
 			// that we get informed whenever a new email arrives
 			return await imapConnect(config).then((conn) => {
-				let errorReported = false;
-
 				conn.on('close', (_hadError: boolean) => {
 					if (isCurrentlyReconnecting) {
 						this.logger.debug('Email Read Imap: Connected closed for forced reconnecting');
 					} else if (closeFunctionWasCalled) {
 						this.logger.debug('Email Read Imap: Shutting down workflow - connected closed');
-					} else if (!errorReported) {
+					} else {
 						this.logger.error('Email Read Imap: Connected closed unexpectedly');
 						this.emitError(new Error('Imap connection closed unexpectedly'));
 					}
-					conn.removeAllListeners();
 				});
 				conn.on('error', (error) => {
-					const errorCode =
-						((error as JsonObject).code as string | undefined)?.toUpperCase() ?? 'UNKNOWN';
+					const errorCode = ((error as JsonObject).code as string).toUpperCase();
 					this.logger.debug(`IMAP connection experienced an error: (${errorCode})`, {
 						error: error as Error,
 					});
-					errorReported = true;
 					this.emitError(error as Error);
 				});
 				return conn;

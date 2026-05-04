@@ -6,12 +6,8 @@ import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { useSourceControlStore } from '@/features/integrations/sourceControl.ee/sourceControl.store';
 import { useCollaborationStore } from '@/features/collaboration/collaboration/collaboration.store';
 import { STORES } from '@n8n/stores';
-import { WorkflowIdKey, WorkflowDocumentStoreKey } from '@/app/constants/injectionKeys';
-import { computed, shallowRef } from 'vue';
-import {
-	useWorkflowDocumentStore,
-	createWorkflowDocumentId,
-} from '@/app/stores/workflowDocument.store';
+import { WorkflowIdKey } from '@/app/constants/injectionKeys';
+import { computed } from 'vue';
 
 vi.mock('@n8n/permissions', () => ({
 	getResourcePermissions: vi.fn(() => ({
@@ -26,7 +22,7 @@ vi.mock('vue-router', async (importOriginal) => ({
 	// eslint-disable-next-line @typescript-eslint/consistent-type-imports
 	...(await importOriginal<typeof import('vue-router')>()),
 	useRoute: vi.fn().mockReturnValue({
-		params: { workflowId: 'test' },
+		params: { name: 'test' },
 		query: {},
 		meta: {
 			nodeView: true,
@@ -37,7 +33,7 @@ vi.mock('vue-router', async (importOriginal) => ({
 		replace: vi.fn(),
 		currentRoute: {
 			value: {
-				params: { workflowId: 'test' },
+				params: { name: 'test' },
 				query: {},
 			},
 		},
@@ -72,23 +68,29 @@ const initialState = {
 	},
 };
 
-const pinia = createTestingPinia({ initialState, stubActions: false });
-const workflowDocumentStore = useWorkflowDocumentStore(createWorkflowDocumentId('1'));
-
 const renderComponent = createComponentRenderer(MainHeader, {
-	pinia,
+	pinia: createTestingPinia({ initialState }),
 	global: {
 		stubs: {
 			WorkflowDetails: {
-				props: ['id', 'tags', 'name', 'currentFolder', 'isArchived', 'description'],
+				props: [
+					'id',
+					'tags',
+					'name',
+					'meta',
+					'scopes',
+					'active',
+					'currentFolder',
+					'isArchived',
+					'description',
+				],
 				template: '<div data-test-id="workflow-details-stub"></div>',
 			},
 			GithubButton: { template: '<div></div>' },
 			TabBar: { template: '<div></div>' },
 		},
 		provide: {
-			[WorkflowIdKey as symbol]: computed(() => 'test-workflow-id'),
-			[WorkflowDocumentStoreKey as symbol]: shallowRef(workflowDocumentStore),
+			[WorkflowIdKey]: computed(() => 'test-workflow-id'),
 		},
 	},
 });
@@ -119,8 +121,6 @@ describe('MainHeader', () => {
 			tags: [],
 			meta: {},
 		};
-
-		workflowDocumentStore.setName('Test Workflow');
 
 		sourceControlStore.preferences.branchReadOnly = false;
 		vi.spyOn(collaborationStore, 'shouldBeReadOnly', 'get').mockReturnValue(false);

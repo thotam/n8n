@@ -405,7 +405,7 @@ describe('MicrosoftOutlookV2 - listSearch methods', () => {
 					$top: 100,
 				},
 			);
-			expect(mockTransport.getSubfolders).toHaveBeenCalledWith(mockResponse.value, true);
+			expect(mockTransport.getSubfolders).toHaveBeenCalledWith(mockResponse.value);
 			expect(result).toEqual({
 				results: [
 					{

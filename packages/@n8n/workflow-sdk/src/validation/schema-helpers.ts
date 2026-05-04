@@ -30,14 +30,8 @@ export {
 } from '../generate-types/zod-helpers';
 
 // Re-export resolveSchema and types from resolve-schema
-export { resolveSchema, resolveOneOfSchemas } from './resolve-schema';
-export type {
-	ResolveSchemaConfig,
-	ResolveSchemaFn,
-	ResolveOneOfSchemasConfig,
-	ResolveOneOfSchemasFn,
-	ResolveOneOfSchemasVariant,
-} from './resolve-schema';
+export { resolveSchema } from './resolve-schema';
+export type { ResolveSchemaConfig, ResolveSchemaFn } from './resolve-schema';
 
 // =============================================================================
 // Resource Mapper Schema

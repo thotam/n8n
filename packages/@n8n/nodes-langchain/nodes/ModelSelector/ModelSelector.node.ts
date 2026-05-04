@@ -57,8 +57,8 @@ export class ModelSelector implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Model Selector',
 		name: 'modelSelector',
-		icon: 'node:model-selector',
-		iconColor: 'black',
+		icon: 'fa:map-signs',
+		iconColor: 'green',
 		defaults: {
 			name: 'Model Selector',
 		},

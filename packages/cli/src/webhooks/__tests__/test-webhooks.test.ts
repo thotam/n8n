@@ -9,7 +9,6 @@ import type {
 	IWorkflowExecuteAdditionalData,
 	Workflow,
 	IHttpRequestMethods,
-	WorkflowExpression,
 } from 'n8n-workflow';
 import { v4 as uuid } from 'uuid';
 
@@ -60,8 +59,7 @@ describe('TestWebhooks', () => {
 	});
 
 	beforeEach(() => {
-		jest.restoreAllMocks();
-		jest.clearAllMocks();
+		jest.resetAllMocks();
 	});
 
 	describe('needsWebhook()', () => {
@@ -72,7 +70,7 @@ describe('TestWebhooks', () => {
 		};
 
 		test('if webhook is needed, should register then create webhook and return true', async () => {
-			const workflow = mock<Workflow>({ expression: mock<WorkflowExpression>() });
+			const workflow = mock<Workflow>();
 
 			jest.spyOn(testWebhooks, 'toWorkflow').mockReturnValueOnce(workflow);
 			jest.spyOn(WebhookHelpers, 'getWorkflowWebhooks').mockReturnValue([webhook]);
@@ -108,7 +106,7 @@ describe('TestWebhooks', () => {
 		});
 
 		test('returns false if a triggerToStartFrom with triggerData is given', async () => {
-			const workflow = mock<Workflow>({ expression: mock<WorkflowExpression>() });
+			const workflow = mock<Workflow>();
 			jest.spyOn(testWebhooks, 'toWorkflow').mockReturnValueOnce(workflow);
 			jest.spyOn(WebhookHelpers, 'getWorkflowWebhooks').mockReturnValue([webhook]);
 
@@ -125,7 +123,7 @@ describe('TestWebhooks', () => {
 
 		test('returns true, registers and then creates webhook if triggerToStartFrom is given with no triggerData', async () => {
 			// ARRANGE
-			const workflow = mock<Workflow>({ expression: mock<WorkflowExpression>() });
+			const workflow = mock<Workflow>();
 			const webhook2 = mock<IWebhookData>({
 				node: 'trigger',
 				httpMethod,
@@ -162,7 +160,6 @@ describe('TestWebhooks', () => {
 						name: 'chatTriggerNode',
 					},
 				},
-				expression: mock<WorkflowExpression>(),
 			});
 			const chatSessionId = 'test-session-123';
 			const chatWebhook = mock<IWebhookData>({
@@ -202,7 +199,6 @@ describe('TestWebhooks', () => {
 						name: 'chatTriggerNode',
 					},
 				},
-				expression: mock<WorkflowExpression>(),
 			});
 			const chatWebhook = mock<IWebhookData>({
 				node: 'chatTriggerNode',
@@ -233,7 +229,6 @@ describe('TestWebhooks', () => {
 						name: 'webhookNode',
 					},
 				},
-				expression: mock<WorkflowExpression>(),
 			});
 			const chatSessionId = 'test-session-123';
 			const regularWebhook = mock<IWebhookData>({
@@ -260,7 +255,7 @@ describe('TestWebhooks', () => {
 
 		test('should handle destinationNode parameter correctly', async () => {
 			// ARRANGE
-			const workflow = mock<Workflow>({ expression: mock<WorkflowExpression>() });
+			const workflow = mock<Workflow>();
 			const destinationNodeObj = { nodeName: 'DestinationNode', mode: 'inclusive' as const };
 			webhook.webhookDescription = {
 				restartWebhook: false,
@@ -295,7 +290,7 @@ describe('TestWebhooks', () => {
 		}>)(
 			'handles single webhook trigger when workflowIsActive=%s',
 			async ({ published: workflowIsActive, withSingleWebhookTrigger, shouldThrow }) => {
-				const workflow = mock<Workflow>({ expression: mock<WorkflowExpression>() });
+				const workflow = mock<Workflow>();
 				const regularWebhook = mock<IWebhookData>({
 					node: 'Webhook',
 					httpMethod,
@@ -380,46 +375,6 @@ describe('TestWebhooks', () => {
 			);
 
 			await expect(promise).rejects.toThrowError(NotFoundError);
-		});
-
-		test('returns a not-found error when a form trigger is requested on the webhook route family', async () => {
-			const formWebhook = mock<IWebhookData>({
-				httpMethod,
-				path,
-				workflowId: workflowEntity.id,
-				webhookDescription: { nodeType: 'form' } as never,
-			});
-
-			jest.spyOn(testWebhooks, 'getActiveWebhook').mockResolvedValue(formWebhook);
-			jest.spyOn(testWebhooks, 'getWebhookMethods').mockResolvedValue([]);
-
-			const promise = testWebhooks.executeWebhook(
-				mock<WebhookRequest>({ params: { path } }),
-				mock<express.Response>(),
-				'webhook',
-			);
-
-			await expect(promise).rejects.toThrowError(WebhookNotFoundError);
-		});
-
-		test('returns a not-found error when a regular webhook is requested on the form route family', async () => {
-			const regularWebhook = mock<IWebhookData>({
-				httpMethod,
-				path,
-				workflowId: workflowEntity.id,
-				webhookDescription: { nodeType: undefined } as never,
-			});
-
-			jest.spyOn(testWebhooks, 'getActiveWebhook').mockResolvedValue(regularWebhook);
-			jest.spyOn(testWebhooks, 'getWebhookMethods').mockResolvedValue([]);
-
-			const promise = testWebhooks.executeWebhook(
-				mock<WebhookRequest>({ params: { path } }),
-				mock<express.Response>(),
-				'form',
-			);
-
-			await expect(promise).rejects.toThrowError(WebhookNotFoundError);
 		});
 	});
 

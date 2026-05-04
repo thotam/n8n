@@ -8,12 +8,20 @@ import { BasePage } from './BasePage';
  * after skipping or partially completing it during template setup
  */
 export class WorkflowCredentialSetupModal extends BasePage {
-	get container(): Locator {
+	/**
+	 * Get the workflow credential setup modal
+	 * @returns Locator for the modal element
+	 */
+	getModal(): Locator {
 		return this.page.getByTestId('setup-workflow-credentials-modal');
 	}
 
+	/**
+	 * Get the continue button in the modal
+	 * @returns Locator for the continue button
+	 */
 	getContinueButton(): Locator {
-		return this.container.getByTestId('continue-button');
+		return this.page.getByTestId('continue-button');
 	}
 
 	/**

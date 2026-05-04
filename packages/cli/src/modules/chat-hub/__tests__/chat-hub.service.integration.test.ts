@@ -37,7 +37,7 @@ mockInstance(WorkflowExecutionService);
 const mockPush = mockInstance(Push);
 mockPush.sendToUsers.mockReturnValue(undefined);
 const mockCipher = mockInstance(Cipher);
-mockCipher.encryptV2.mockResolvedValue('encrypted-metadata');
+mockCipher.encrypt.mockReturnValue('encrypted-metadata');
 
 beforeAll(async () => {
 	await testModules.loadModules(['chat-hub']);

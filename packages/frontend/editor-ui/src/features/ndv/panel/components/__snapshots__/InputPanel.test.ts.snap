@@ -306,7 +306,6 @@ exports[`InputPanel > should render 1`] = `
               </span>
               
             </p>
-            <!--v-if-->
           </article>
           
         </div>

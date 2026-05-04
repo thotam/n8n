@@ -280,8 +280,7 @@ export class Form extends Node {
 	description: INodeTypeDescription = {
 		displayName: 'n8n Form',
 		name: 'form',
-		icon: 'node:form-trigger',
-		iconColor: 'teal',
+		icon: 'file:form.svg',
 		group: ['input'],
 		// since trigger and node are sharing descriptions and logic we need to sync the versions
 		// and keep them aligned in both nodes
@@ -439,11 +438,6 @@ export class Form extends Node {
 		}
 
 		const waitTill = configureWaitTillDate(context, 'root');
-
-		// Add signed resumeFormUrl to metadata for frontend to use when opening form popup
-		const resumeFormUrl = context.evaluateExpression('{{ $execution.resumeFormUrl }}', 0) as string;
-		context.setMetadata({ resumeFormUrl });
-
 		await context.putExecutionToWait(waitTill);
 
 		context.sendResponse({

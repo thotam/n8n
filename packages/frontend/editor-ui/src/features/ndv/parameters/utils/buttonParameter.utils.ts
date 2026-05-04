@@ -11,10 +11,6 @@ import { useSettingsStore } from '@/app/stores/settings.store';
 import { format } from 'prettier';
 import jsParser from 'prettier/plugins/babel';
 import * as estree from 'prettier/plugins/estree';
-import {
-	createWorkflowDocumentId,
-	useWorkflowDocumentStore,
-} from '@/app/stores/workflowDocument.store';
 
 export type TextareaRowData = {
 	rows: string[];
@@ -23,17 +19,16 @@ export type TextareaRowData = {
 
 export function getParentNodes() {
 	const activeNode = useNDVStore().activeNode;
-	const { workflowId } = useWorkflowsStore();
-	const workflowDocumentStore = useWorkflowDocumentStore(createWorkflowDocumentId(workflowId));
+	const { workflowObject, getNodeByName } = useWorkflowsStore();
 
-	if (!activeNode) return [];
+	if (!activeNode || !workflowObject) return [];
 
-	return workflowDocumentStore
+	return workflowObject
 		.getParentNodesByDepth(activeNode?.name)
 		.filter(({ name }, i, nodes) => {
 			return name !== activeNode.name && nodes.findIndex((node) => node.name === name) === i;
 		})
-		.map((n) => workflowDocumentStore.getNodeByName(n.name))
+		.map((n) => getNodeByName(n.name))
 		.filter((n) => n !== null);
 }
 

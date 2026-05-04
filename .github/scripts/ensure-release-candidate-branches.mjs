@@ -7,7 +7,6 @@ import {
 	resolveReleaseTagForTrack,
 	sh,
 	tagVersionInfoToReleaseCandidateBranchName,
-	trySh,
 	writeGithubOutput,
 } from './github-helpers.mjs';
 
@@ -89,12 +88,12 @@ function removeBranch(branch) {
 
 	console.log(`Removing remote branch ${branch} from origin...`);
 	// Delete remote branch
-	trySh('git', ['push', 'origin', '--delete', branch]);
+	sh('git', ['push', 'origin', '--delete', branch]);
 
 	// Optional local cleanup (keeps reruns tidy)
 	if (localRefExists(`refs/heads/${branch}`)) {
 		console.log(`Removing local branch ${branch}...`);
-		trySh('git', ['branch', '-D', branch]);
+		sh('git', ['branch', '-D', branch]);
 	}
 
 	return branch;

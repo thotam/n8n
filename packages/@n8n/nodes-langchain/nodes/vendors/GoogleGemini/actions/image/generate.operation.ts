@@ -7,20 +7,11 @@ import {
 	type ImagenResponse,
 	Modality,
 } from '../../helpers/interfaces';
-import { getFilenameFromMimeType } from '../../helpers/utils';
 import { apiRequest } from '../../transport';
 import { modelRLC } from '../descriptions';
 
 const properties: INodeProperties[] = [
-	{
-		...modelRLC('imageGenerationModelSearch'),
-		displayOptions: { show: { '@version': [{ _cnd: { lt: 1.2 } }] } },
-	},
-	{
-		...modelRLC('imageGenerationModelSearch'),
-		default: { mode: 'list', value: 'models/gemini-3.1-flash-image-preview' },
-		displayOptions: { show: { '@version': [{ _cnd: { gte: 1.2 } }] } },
-	},
+	modelRLC('imageGenerationModelSearch'),
 	{
 		displayName: 'Prompt',
 		name: 'prompt',
@@ -43,13 +34,9 @@ const properties: INodeProperties[] = [
 				displayName: 'Number of Images',
 				name: 'sampleCount',
 				default: 1,
-				description: 'Number of images to generate',
+				description:
+					'Number of images to generate. Not supported by Gemini models, supported by Imagen models.',
 				type: 'number',
-				displayOptions: {
-					show: {
-						'/modelId': [{ _cnd: { includes: 'imagen' } }],
-					},
-				},
 				typeOptions: {
 					minValue: 1,
 				},
@@ -102,10 +89,12 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		})) as GenerateContentResponse;
 		const promises = response.candidates.map(async (candidate) => {
 			const imagePart = candidate.content.parts.find((part) => 'inlineData' in part);
-			const mimeType = imagePart?.inlineData.mimeType;
-			const fileName = getFilenameFromMimeType(mimeType, 'image', 'png');
 			const buffer = Buffer.from(imagePart?.inlineData.data ?? '', 'base64');
-			const binaryData = await this.helpers.prepareBinaryData(buffer, fileName, mimeType);
+			const binaryData = await this.helpers.prepareBinaryData(
+				buffer,
+				'image.png',
+				imagePart?.inlineData.mimeType,
+			);
 			return {
 				binary: {
 					[binaryPropertyOutput]: binaryData,
@@ -137,11 +126,10 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		})) as ImagenResponse;
 
 		const promises = response.predictions.map(async (prediction) => {
-			const fileName = getFilenameFromMimeType(prediction.mimeType, 'image', 'png');
 			const buffer = Buffer.from(prediction.bytesBase64Encoded ?? '', 'base64');
 			const binaryData = await this.helpers.prepareBinaryData(
 				buffer,
-				fileName,
+				'image.png',
 				prediction.mimeType,
 			);
 			return {

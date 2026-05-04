@@ -7,6 +7,7 @@ import type { RunningMode, SyncStatus } from '@n8n/db';
 import { Constructable, Container } from '@n8n/di';
 import type { IPasswordAuthHandler } from '@n8n/decorators';
 import { AuthHandler } from '@n8n/decorators';
+import { QueryFailedError } from '@n8n/typeorm';
 import type { Entry as LdapUser, ClientOptions, Client } from 'ldapts';
 import { Cipher } from 'n8n-core';
 import { jsonParse, UnexpectedError } from 'n8n-workflow';
@@ -96,7 +97,7 @@ export class LdapService implements IPasswordAuthHandler<User> {
 			ldapConfig.enforceEmailUniqueness = true;
 		}
 
-		ldapConfig.bindingAdminPassword = await this.cipher.decryptV2(ldapConfig.bindingAdminPassword);
+		ldapConfig.bindingAdminPassword = this.cipher.decrypt(ldapConfig.bindingAdminPassword);
 		return ldapConfig;
 	}
 
@@ -113,7 +114,7 @@ export class LdapService implements IPasswordAuthHandler<User> {
 
 		this.setConfig({ ...ldapConfig });
 
-		ldapConfig.bindingAdminPassword = await this.cipher.encryptV2(ldapConfig.bindingAdminPassword);
+		ldapConfig.bindingAdminPassword = this.cipher.encrypt(ldapConfig.bindingAdminPassword);
 
 		if (!ldapConfig.loginEnabled) {
 			ldapConfig.synchronizationEnabled = false;
@@ -387,12 +388,8 @@ export class LdapService implements IPasswordAuthHandler<User> {
 
 		const localAdUsers = await getLdapIds();
 
-		const processableAdUsers = this.config.enforceEmailUniqueness
-			? this.filterEmailDuplicates(adUsers)
-			: adUsers;
-
 		const { usersToCreate, usersToUpdate, usersToDisable } = this.getUsersToProcess(
-			processableAdUsers,
+			adUsers,
 			localAdUsers,
 		);
 
@@ -427,8 +424,10 @@ export class LdapService implements IPasswordAuthHandler<User> {
 				await processUsers(filteredUsersToCreate, filteredUsersToUpdate, usersToDisable);
 			}
 		} catch (error) {
-			status = 'error';
-			errorMessage = error instanceof Error ? error.message : String(error);
+			if (error instanceof QueryFailedError) {
+				status = 'error';
+				errorMessage = `${error.message}`;
+			}
 		}
 
 		await saveLdapSynchronization({
@@ -445,17 +444,13 @@ export class LdapService implements IPasswordAuthHandler<User> {
 
 		this.eventService.emit('ldap-general-sync-finished', {
 			type: !this.syncTimer ? 'scheduled' : `manual_${mode}`,
-			succeeded: status === 'success',
+			succeeded: true,
 			usersSynced:
 				filteredUsersToCreate.length + filteredUsersToUpdate.length + usersToDisable.length,
 			error: errorMessage,
 		});
 
-		if (status === 'success') {
-			this.logger.debug('LDAP - Synchronization finished successfully');
-		} else {
-			this.logger.error('LDAP - Synchronization finished with errors', { error: errorMessage });
-		}
+		this.logger.debug('LDAP - Synchronization finished successfully');
 	}
 
 	/** Stop the current job scheduled, if any */
@@ -478,33 +473,6 @@ export class LdapService implements IPasswordAuthHandler<User> {
 			usersToUpdate: this.getUsersToUpdate(adUsers, localAdUsers),
 			usersToDisable: this.getUsersToDisable(adUsers, localAdUsers),
 		};
-	}
-
-	/**
-	 * Drop LDAP entries whose email appears on more than one entry in the same
-	 * batch. Prevents the sync from linking or creating ambiguous identities
-	 * when `enforceEmailUniqueness` is enabled — parity with the guard applied
-	 * on the login path.
-	 */
-	private filterEmailDuplicates(adUsers: LdapUser[]): LdapUser[] {
-		const emailCounts = new Map<string, number>();
-		for (const adUser of adUsers) {
-			const email = adUser[this.config.emailAttribute] as string | undefined;
-			if (!email) continue;
-			emailCounts.set(email, (emailCounts.get(email) ?? 0) + 1);
-		}
-
-		return adUsers.filter((adUser) => {
-			const email = adUser[this.config.emailAttribute] as string | undefined;
-			if (email && (emailCounts.get(email) ?? 0) > 1) {
-				this.logger.warn('LDAP sync skipped entry: multiple LDAP accounts share the same email', {
-					email,
-					ldapId: adUser[this.config.ldapIdAttribute] as string,
-				});
-				return false;
-			}
-			return true;
-		});
 	}
 
 	/** Get users in LDAP that are not in the database yet */

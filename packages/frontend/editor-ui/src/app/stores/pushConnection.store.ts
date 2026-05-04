@@ -82,12 +82,12 @@ export const usePushConnectionStore = defineStore(STORES.PUSH, () => {
 		});
 	}
 
-	const url = computed(() => getConnectionUrl());
+	const url = getConnectionUrl();
 
 	const client = computed(() =>
 		useWebSockets.value
-			? useWebSocketClient({ url: url.value, onMessage })
-			: useEventSourceClient({ url: url.value, onMessage }),
+			? useWebSocketClient({ url, onMessage })
+			: useEventSourceClient({ url, onMessage }),
 	);
 
 	function serializeAndSend(message: unknown) {

@@ -21,20 +21,19 @@ vi.mock('@/app/stores/workflowDocument.store', async () => {
 
 let workflowsStore: MockedStore<typeof useWorkflowsStore>;
 let nodeTypesStore: MockedStore<typeof useNodeTypesStore>;
-let workflowDocStore: ReturnType<typeof useWorkflowDocumentStore>;
 
 describe('TriggerPanel.vue', () => {
 	beforeEach(async () => {
 		setActivePinia(createTestingPinia({ stubActions: false }));
 		workflowsStore = mockedStore(useWorkflowsStore);
+		workflowsStore.workflowName = 'Test Workflow';
 		workflowsStore.workflowId = '1';
 		const node = createTestNode({ id: '0', name: 'Webhook', type: 'n8n-nodes-base.webhook' });
 		workflowsStore.workflow.nodes = [node];
 
-		workflowDocStore = useWorkflowDocumentStore(
-			createWorkflowDocumentId(workflowsStore.workflowId),
+		vi.mocked(injectWorkflowDocumentStore).mockReturnValue(
+			shallowRef(useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))),
 		);
-		vi.mocked(injectWorkflowDocumentStore).mockReturnValue(shallowRef(workflowDocStore));
 
 		nodeTypesStore = mockedStore(useNodeTypesStore);
 		const nodeTypeDescription = mockNodeTypeDescription({
@@ -47,7 +46,6 @@ describe('TriggerPanel.vue', () => {
 
 	afterEach(() => {
 		vi.clearAllMocks();
-		vi.resetAllMocks();
 	});
 
 	it('renders default state', () => {
@@ -95,7 +93,7 @@ describe('TriggerPanel.vue', () => {
 	it('renders listening state when executedNode is a child of the current node', () => {
 		workflowsStore.executionWaitingForWebhook = true;
 		workflowsStore.executedNode = 'ChildNode';
-		vi.spyOn(workflowDocStore, 'getParentNodes').mockReturnValue(['Webhook']);
+		workflowsStore.workflowObject.getParentNodes = vi.fn(() => ['Webhook']);
 		const { getByTestId } = renderComponent(TriggerPanel, {
 			props: { nodeName: 'Webhook' },
 			global: {
@@ -110,6 +108,7 @@ describe('TriggerPanel.vue', () => {
 	it('does not render listening state when executedNode is not a child or current node', () => {
 		workflowsStore.executionWaitingForWebhook = true;
 		workflowsStore.executedNode = 'UnrelatedNode';
+		workflowsStore.workflowObject.getParentNodes = vi.fn(() => []);
 		const { queryByTestId } = renderComponent(TriggerPanel, {
 			props: { nodeName: 'Webhook' },
 			global: {

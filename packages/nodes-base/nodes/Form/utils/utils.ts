@@ -2,7 +2,7 @@ import type { Response } from 'express';
 import { rm } from 'fs/promises';
 import isbot from 'isbot';
 import { DateTime } from 'luxon';
-import { getHtmlSandboxCSP, isFormHtmlSandboxingDisabled } from 'n8n-core';
+import { getWebhookSandboxCSP } from 'n8n-core';
 import type {
 	INodeExecutionData,
 	MultiPartFormData,
@@ -567,9 +567,7 @@ export function renderForm({
 		authToken,
 	});
 
-	if (!isFormHtmlSandboxingDisabled()) {
-		res.setHeader('Content-Security-Policy', getHtmlSandboxCSP());
-	}
+	res.setHeader('Content-Security-Policy', getWebhookSandboxCSP());
 	res.render('form-trigger', data);
 }
 

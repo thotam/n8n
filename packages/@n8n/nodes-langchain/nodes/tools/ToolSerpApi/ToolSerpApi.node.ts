@@ -27,7 +27,6 @@ export class ToolSerpApi implements INodeType {
 		icon: 'file:serpApi.svg',
 		group: ['transform'],
 		version: 1,
-		hidden: true,
 		description: 'Search in Google using SerpAPI',
 		defaults: {
 			name: 'SerpAPI',
@@ -59,13 +58,6 @@ export class ToolSerpApi implements INodeType {
 		],
 		properties: [
 			getConnectionHintNoticeField([NodeConnectionTypes.AiAgent]),
-			{
-				displayName:
-					'This node is deprecated and will not be updated in the future. Please use the official verified community node instead.',
-				name: 'oldVersionNotice',
-				type: 'notice',
-				default: '',
-			},
 			{
 				displayName: 'Options',
 				name: 'options',

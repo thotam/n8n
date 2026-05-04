@@ -137,7 +137,7 @@ describe('OAuth2 API', () => {
 
 		await ownerAgent.get('/oauth2-credential/auth').query({ id: credential.id }).expect(200);
 
-		const [_, state] = await csrfSpy.mock.results[0].value;
+		const [_, state] = csrfSpy.mock.results[0].value;
 
 		await testServer
 			.authAgentFor(anotherUser)
@@ -159,7 +159,7 @@ describe('OAuth2 API', () => {
 
 		await ownerAgent.get('/oauth2-credential/auth').query({ id: credential.id }).expect(200);
 
-		const [_, state] = await csrfSpy.mock.results[0].value;
+		const [_, state] = csrfSpy.mock.results[0].value;
 
 		nock('https://test.domain').post('/oauth2/token').reply(200, { access_token: 'updated_token' });
 
@@ -174,7 +174,7 @@ describe('OAuth2 API', () => {
 			credential,
 			credential.type,
 		);
-		expect(await updatedCredential.getData()).toEqual({
+		expect(updatedCredential.getData()).toEqual({
 			...credentialData,
 			oauthTokenData: { access_token: 'updated_token' },
 		});

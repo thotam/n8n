@@ -94,7 +94,6 @@ export const chatTriggerParamsShape = z.object({
 			allowFileUploads: z.boolean().optional(),
 			allowedFilesMimeTypes: z.string().optional(),
 			responseMode: ChatTriggerResponseModeSchema.optional(),
-			autoSaveHighlightedData: z.boolean().optional(),
 		})
 		.optional(),
 });

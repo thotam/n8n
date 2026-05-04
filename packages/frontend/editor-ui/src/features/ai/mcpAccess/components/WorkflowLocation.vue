@@ -55,7 +55,7 @@ const workflowLink = computed(() => {
 	if (!props.workflowId) return '';
 	return router.resolve({
 		name: VIEWS.WORKFLOW,
-		params: { workflowId: props.workflowId },
+		params: { name: props.workflowId },
 	}).fullPath;
 });
 

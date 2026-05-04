@@ -27,15 +27,13 @@ export const parseRangeQuery = (
 	try {
 		req.rangeQuery = {
 			kind: 'range',
-			range: {
-				limit: limit && typeof limit === 'string' ? Math.min(parseInt(limit, 10), 100) : 20,
-			},
+			range: { limit: limit ? Math.min(parseInt(limit, 10), 100) : 20 },
 		};
 
-		if (firstId && typeof firstId === 'string') req.rangeQuery.range.firstId = firstId;
-		if (lastId && typeof lastId === 'string') req.rangeQuery.range.lastId = lastId;
+		if (firstId) req.rangeQuery.range.firstId = firstId;
+		if (lastId) req.rangeQuery.range.lastId = lastId;
 
-		if (typeof req.query.filter === 'string') {
+		if (req.query.filter) {
 			const jsonFilter = jsonParse<JsonObject>(req.query.filter, {
 				errorMessage: 'Failed to parse query string',
 			});

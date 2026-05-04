@@ -93,7 +93,6 @@ describe('SettingsMCPView', () => {
 		settingsStore.moduleSettings = {
 			mcp: {
 				mcpAccessEnabled: false,
-				mcpManagedByEnv: false,
 			},
 		};
 	});
@@ -119,7 +118,6 @@ describe('SettingsMCPView', () => {
 			settingsStore.moduleSettings = {
 				mcp: {
 					mcpAccessEnabled: true,
-					mcpManagedByEnv: false,
 				},
 			};
 			mcpStore.fetchWorkflowsAvailableForMCP.mockResolvedValue([]);
@@ -166,7 +164,6 @@ describe('SettingsMCPView', () => {
 			settingsStore.moduleSettings = {
 				mcp: {
 					mcpAccessEnabled: true,
-					mcpManagedByEnv: false,
 				},
 			};
 			mcpStore.fetchWorkflowsAvailableForMCP.mockResolvedValue([]);
@@ -202,7 +199,6 @@ describe('SettingsMCPView', () => {
 			settingsStore.moduleSettings = {
 				mcp: {
 					mcpAccessEnabled: true,
-					mcpManagedByEnv: false,
 				},
 			};
 			mcpStore.fetchWorkflowsAvailableForMCP.mockResolvedValue([]);
@@ -294,41 +290,6 @@ describe('SettingsMCPView', () => {
 			const enableButton = getByTestId('enable-mcp-button');
 			expect(enableButton).not.toBeDisabled();
 		});
-
-		it('should disable toggle button for owner when MCP is managed by env', async () => {
-			usersStore.isInstanceOwner = true;
-			usersStore.isAdmin = false;
-			settingsStore.moduleSettings = {
-				mcp: {
-					mcpAccessEnabled: false,
-					mcpManagedByEnv: true,
-				},
-			};
-
-			const { getByTestId } = createComponent({ pinia });
-			await nextTick();
-
-			const enableButton = getByTestId('enable-mcp-button');
-			expect(enableButton).toBeDisabled();
-		});
-
-		it('should not call setMcpAccessEnabled when toggle is clicked under env management', async () => {
-			usersStore.isInstanceOwner = true;
-			settingsStore.moduleSettings = {
-				mcp: {
-					mcpAccessEnabled: false,
-					mcpManagedByEnv: true,
-				},
-			};
-
-			const { getByTestId } = createComponent({ pinia });
-			await nextTick();
-
-			const enableButton = getByTestId('enable-mcp-button');
-			await userEvent.click(enableButton);
-
-			expect(mcpStore.setMcpAccessEnabled).not.toHaveBeenCalled();
-		});
 	});
 
 	describe('Refresh button', () => {
@@ -336,7 +297,6 @@ describe('SettingsMCPView', () => {
 			settingsStore.moduleSettings = {
 				mcp: {
 					mcpAccessEnabled: true,
-					mcpManagedByEnv: false,
 				},
 			};
 			mcpStore.fetchWorkflowsAvailableForMCP.mockResolvedValue([]);
@@ -389,7 +349,6 @@ describe('SettingsMCPView', () => {
 			settingsStore.moduleSettings = {
 				mcp: {
 					mcpAccessEnabled: true,
-					mcpManagedByEnv: false,
 				},
 			};
 		});

@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ref } from 'vue';
 import { useSidebarLayout } from './useSidebarLayout';
 
 // Mock UI Store
 const mockUIStore = {
 	sidebarMenuCollapsed: false as boolean | null,
-	sidebarWidth: 200,
 	toggleSidebarMenuCollapse: vi.fn(),
 };
 
@@ -12,28 +12,47 @@ vi.mock('../stores/ui.store', () => ({
 	useUIStore: () => mockUIStore,
 }));
 
+// Mock useLocalStorage
+vi.mock('@vueuse/core', () => ({
+	useLocalStorage: vi.fn((_key: string, defaultValue: number) => ref(defaultValue)),
+}));
+
+// Mock constants
+vi.mock('../constants', () => ({
+	LOCAL_STORAGE_SIDEBAR_WIDTH: 'sidebarWidth',
+}));
+
 describe('useSidebarLayout', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		// Reset UI store state
 		mockUIStore.sidebarMenuCollapsed = false;
-		mockUIStore.sidebarWidth = 200;
 	});
 
 	describe('initial setup', () => {
-		it('should return sidebarWidth from store', () => {
-			mockUIStore.sidebarWidth = 350;
+		it('should initialize with correct default width when not collapsed', () => {
+			mockUIStore.sidebarMenuCollapsed = false;
 
 			const { sidebarWidth } = useSidebarLayout();
 
-			expect(sidebarWidth.value).toBe(350);
+			expect(sidebarWidth.value).toBe(300);
+		});
+
+		it('should initialize with correct default width when collapsed', () => {
+			mockUIStore.sidebarMenuCollapsed = true;
+
+			const { sidebarWidth } = useSidebarLayout();
+
+			expect(sidebarWidth.value).toBe(42);
 		});
 
 		it('should default to expanded (not collapsed) when sidebarMenuCollapsed is null', () => {
 			mockUIStore.sidebarMenuCollapsed = null;
 
-			const { isCollapsed } = useSidebarLayout();
+			const { isCollapsed, sidebarWidth } = useSidebarLayout();
 
 			expect(isCollapsed.value).toBe(false);
+			expect(sidebarWidth.value).toBe(300);
 		});
 
 		it('should return computed isCollapsed from store', () => {
@@ -59,6 +78,24 @@ describe('useSidebarLayout', () => {
 
 			expect(mockUIStore.toggleSidebarMenuCollapse).toHaveBeenCalledTimes(1);
 		});
+
+		it('should set width to 200 when expanding (not collapsed after toggle)', () => {
+			mockUIStore.sidebarMenuCollapsed = false; // Will be true after toggle
+			const { toggleCollapse, sidebarWidth } = useSidebarLayout();
+
+			toggleCollapse();
+
+			expect(sidebarWidth.value).toBe(200);
+		});
+
+		it('should set width to 42 when collapsing (collapsed after toggle)', () => {
+			mockUIStore.sidebarMenuCollapsed = true; // Will be false after toggle
+			const { toggleCollapse, sidebarWidth } = useSidebarLayout();
+
+			toggleCollapse();
+
+			expect(sidebarWidth.value).toBe(42);
+		});
 	});
 
 	describe('resize state management', () => {
@@ -73,9 +110,11 @@ describe('useSidebarLayout', () => {
 		it('should set isResizing to false when resize ends', () => {
 			const { onResizeStart, onResizeEnd, isResizing } = useSidebarLayout();
 
+			// Start resize first
 			onResizeStart();
 			expect(isResizing.value).toBe(true);
 
+			// End resize
 			onResizeEnd();
 			expect(isResizing.value).toBe(false);
 		});
@@ -93,12 +132,12 @@ describe('useSidebarLayout', () => {
 
 		it('should not resize when collapsed and dragging right below threshold', () => {
 			mockUIStore.sidebarMenuCollapsed = true;
-			mockUIStore.sidebarWidth = 42;
 			const { onResize, sidebarWidth } = useSidebarLayout();
+			const originalWidth = sidebarWidth.value;
 
 			onResize({ width: 250, x: 80 }); // x < 100
 
-			expect(sidebarWidth.value).toBe(42);
+			expect(sidebarWidth.value).toBe(originalWidth);
 			expect(mockUIStore.toggleSidebarMenuCollapse).not.toHaveBeenCalled();
 		});
 
@@ -122,12 +161,12 @@ describe('useSidebarLayout', () => {
 
 		it('should not update width when collapsed', () => {
 			mockUIStore.sidebarMenuCollapsed = true;
-			mockUIStore.sidebarWidth = 42;
 			const { onResize, sidebarWidth } = useSidebarLayout();
+			const originalWidth = sidebarWidth.value;
 
-			onResize({ width: 350, x: 80 }); // Below threshold
+			onResize({ width: 350, x: 80 }); // Below threshold, should not expand
 
-			expect(sidebarWidth.value).toBe(42);
+			expect(sidebarWidth.value).toBe(originalWidth);
 		});
 	});
 });

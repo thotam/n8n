@@ -23,7 +23,6 @@ import type {
 	IUsedCredential,
 } from '@/features/credentials/credentials.types';
 import type { ChangeLocationSearchResult } from '../folders.types';
-import { getTruncatedProjectName } from '@/features/collaboration/projects/projects.utils';
 import { useCredentialsStore } from '@/features/credentials/credentials.store';
 import { useWorkflowsListStore } from '@/app/stores/workflowsList.store';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
@@ -31,7 +30,6 @@ import { useFoldersStore } from '../folders.store';
 import { useProjectsStore } from '@/features/collaboration/projects/projects.store';
 import MoveToFolderModal from './MoveToFolderModal.vue';
 import type { EventBus } from '@n8n/utils/event-bus';
-import type { WorkflowListEventMap } from '../folders.types';
 
 vi.mock('vue-router', () => {
 	const push = vi.fn();
@@ -143,7 +141,7 @@ const folder: ChangeLocationSearchResult = {
 
 const mockEventBus = {
 	emit: vi.fn(),
-} as unknown as EventBus<WorkflowListEventMap>;
+} as unknown as EventBus;
 
 describe('MoveToFolderModal', () => {
 	beforeEach(() => {
@@ -847,12 +845,6 @@ describe('MoveToFolderModal', () => {
 				},
 				canAccess: true,
 			},
-			toast: {
-				targetProject: teamProjects[0],
-				targetProjectName: getTruncatedProjectName(teamProjects[0].name),
-				shareUsedCredentials: false,
-				areAllUsedCredentialsShareable: true,
-			},
 		});
 	});
 
@@ -909,12 +901,6 @@ describe('MoveToFolderModal', () => {
 					name: `${anotherUser.name} (Personal space)`,
 				},
 				canAccess: false,
-			},
-			toast: {
-				targetProject: anotherUser,
-				targetProjectName: `${anotherUser.name} (Personal space)`,
-				shareUsedCredentials: false,
-				areAllUsedCredentialsShareable: true,
 			},
 		});
 	});

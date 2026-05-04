@@ -427,7 +427,7 @@ export class WebhookService {
 			webhookData,
 		);
 
-		return await webhookFn.call(context);
+		return (await webhookFn.call(context)) as boolean;
 	}
 
 	/**
@@ -449,32 +449,18 @@ export class WebhookService {
 			});
 		}
 
-		const closeFunctions: Array<() => Promise<void>> = [];
 		const context = new WebhookContext(
 			workflow,
 			node,
 			additionalData,
 			mode,
 			webhookData,
-			closeFunctions,
+			[],
 			runExecutionData ?? null,
 		);
 
-		try {
-			return nodeType instanceof Node
-				? await nodeType.webhook(context)
-				: await nodeType.webhook.call(context);
-		} finally {
-			const settledResults = await Promise.allSettled(closeFunctions.map(async (fn) => await fn()));
-			for (const result of settledResults) {
-				if (result.status === 'rejected') {
-					this.logger.error('Failed to run webhook close function', {
-						error: ensureError(result.reason),
-						nodeName: node.name,
-						nodeType: node.type,
-					});
-				}
-			}
-		}
+		return nodeType instanceof Node
+			? await nodeType.webhook(context)
+			: ((await nodeType.webhook.call(context)) as IWebhookResponseData);
 	}
 }

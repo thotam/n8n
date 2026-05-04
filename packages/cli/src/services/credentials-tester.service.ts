@@ -35,11 +35,11 @@ import {
 } from 'n8n-workflow';
 
 import { RESPONSE_ERROR_MESSAGES } from '../constants';
-import { getExternalSecretExpressionPaths } from '../credentials/external-secrets.utils';
 import { CredentialsHelper } from '../credentials-helper';
 
 import { CredentialTypes } from '@/credential-types';
 import { NodeTypes } from '@/node-types';
+import { getAllKeyPaths } from '@/utils';
 import * as WorkflowExecuteAdditionalData from '@/workflow-execute-additional-data';
 
 const { OAUTH2_CREDENTIAL_TEST_SUCCEEDED, OAUTH2_CREDENTIAL_TEST_FAILED } = RESPONSE_ERROR_MESSAGES;
@@ -211,7 +211,9 @@ export class CredentialsTester {
 				});
 
 				// Keep all credentials data keys which have a secret value
-				credentialsDataSecretKeys = getExternalSecretExpressionPaths(credentialsDecrypted.data);
+				credentialsDataSecretKeys = getAllKeyPaths(credentialsDecrypted.data, '', [], (value) =>
+					value.includes('$secrets.'),
+				);
 				credentialsDecrypted.data = await this.credentialsHelper.applyDefaultsAndOverwrites(
 					additionalData,
 					credentialsDecrypted.data,
@@ -348,7 +350,6 @@ export class CredentialsTester {
 
 		let response: INodeExecutionData[][] | null | undefined;
 		try {
-			await workflow.expression.acquireIsolate();
 			response = await routingNode.runNode();
 		} catch (error) {
 			this.errorReporter.error(error);
@@ -394,7 +395,6 @@ export class CredentialsTester {
 				message: error.message.toString(),
 			};
 		} finally {
-			await workflow.expression.releaseIsolate();
 			delete mockNodesData[nodeTypeCopy.description.name];
 		}
 

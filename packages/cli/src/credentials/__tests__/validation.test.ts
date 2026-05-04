@@ -1,13 +1,15 @@
 import { GLOBAL_OWNER_ROLE, GLOBAL_MEMBER_ROLE, type User } from '@n8n/db';
 import { mock } from 'jest-mock-extended';
 
+import type { SecretsProviderAccessCheckService } from '@/modules/external-secrets.ee/secret-provider-access-check.service.ee';
+import * as checkAccess from '@/permissions.ee/check-access';
+
 import {
 	validateExternalSecretsPermissions,
 	isChangingExternalSecretExpression,
 	validateAccessToReferencedSecretProviders,
+	extractProviderKeys,
 } from '../validation';
-import type { SecretsProviderAccessCheckService } from '@/modules/external-secrets.ee/secret-provider-access-check.service.ee';
-import * as checkAccess from '@/permissions.ee/check-access';
 
 const ownerUser = mock<User>({ id: 'owner-id', role: GLOBAL_OWNER_ROLE });
 const memberUser = mock<User>({ id: 'member-id', role: GLOBAL_MEMBER_ROLE });
@@ -15,6 +17,54 @@ const memberUser = mock<User>({ id: 'member-id', role: GLOBAL_MEMBER_ROLE });
 describe('Credentials Validation', () => {
 	const projectId = 'project-id';
 	const errorMessage = 'Lacking permissions to reference external secrets in credentials';
+
+	describe('extractProviderKeys', () => {
+		it('should extract single provider from dot notation', () => {
+			expect(extractProviderKeys('={{ $secrets.vault.myKey }}')).toEqual(['vault']);
+		});
+
+		it('should extract single provider from bracket notation', () => {
+			expect(extractProviderKeys("={{ $secrets['aws']['secret'] }}")).toEqual(['aws']);
+		});
+
+		it('should extract multiple providers from same expression', () => {
+			const result = extractProviderKeys(
+				'={{ $secrets.vault.myKey + ":" + $secrets.aws.otherKey }}',
+			);
+			expect(result.sort()).toEqual(['aws', 'vault']);
+		});
+
+		it('should deduplicate repeated provider keys', () => {
+			expect(extractProviderKeys('={{ $secrets.vault.key1 + $secrets.vault.key2 }}')).toEqual([
+				'vault',
+			]);
+		});
+
+		it('should return empty array when no $secrets references found', () => {
+			expect(extractProviderKeys('={{ $variables.myVar }}')).toEqual([]);
+		});
+
+		it('should return empty array for plain text', () => {
+			expect(extractProviderKeys('some plain text')).toEqual([]);
+		});
+
+		it('should return empty array when $secrets is not inside expression braces', () => {
+			expect(extractProviderKeys('$secrets.vault.key')).toEqual([]);
+			expect(extractProviderKeys('text with $secrets.vault.key but no braces')).toEqual([]);
+		});
+
+		it('should only extract providers from inside expression braces', () => {
+			expect(extractProviderKeys('$secrets.vault.key and {{ $secrets.aws.secret }}')).toEqual([
+				'aws',
+			]);
+		});
+
+		it('should extract providers from multiple expression blocks', () => {
+			const expression = 'hello {{ $secrets.vault.key }} world {{ $secrets.aws.secret }}';
+			const result = extractProviderKeys(expression);
+			expect(result.sort()).toEqual(['aws', 'vault']);
+		});
+	});
 
 	describe('validateExternalSecretsPermissions', () => {
 		beforeEach(() => {
@@ -244,9 +294,9 @@ describe('Credentials Validation', () => {
 			accessCheckService = mock<SecretsProviderAccessCheckService>();
 		});
 
-		it('should handle provider name with letters and numbers', async () => {
+		it('should handle provider name with hyphens and numbers', async () => {
 			const data = {
-				apiKey: '={{ $secrets.myProvider123.key }}',
+				apiKey: '={{ $secrets.my-provider-123.key }}',
 			};
 
 			accessCheckService.isProviderAvailableInProject = jest.fn().mockResolvedValue(true);
@@ -256,7 +306,7 @@ describe('Credentials Validation', () => {
 			).resolves.toBeUndefined();
 
 			expect(accessCheckService.isProviderAvailableInProject).toHaveBeenCalledWith(
-				'myProvider123',
+				'my-provider-123',
 				projectId,
 			);
 		});
@@ -368,23 +418,6 @@ describe('Credentials Validation', () => {
 					validateAccessToReferencedSecretProviders(projectId, data, accessCheckService, 'create'),
 				).rejects.toThrow(
 					'The secret provider "vault" used in "apiKey" does not exist in this project',
-				);
-			});
-
-			it('should pass when project has access to provider referenced using mixed notation', async () => {
-				const data = {
-					apiKey: "={{ $secrets.vault['mykey'] }}",
-				};
-
-				accessCheckService.isProviderAvailableInProject = jest.fn().mockResolvedValue(true);
-
-				await expect(
-					validateAccessToReferencedSecretProviders(projectId, data, accessCheckService, 'create'),
-				).resolves.toBeUndefined();
-
-				expect(accessCheckService.isProviderAvailableInProject).toHaveBeenCalledWith(
-					'vault',
-					projectId,
 				);
 			});
 		});

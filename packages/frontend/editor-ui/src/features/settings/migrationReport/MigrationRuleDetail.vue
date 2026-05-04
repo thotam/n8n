@@ -93,7 +93,7 @@ function handleRowClick(_event: MouseEvent, { item }: { item: AffectedWorkflow }
 	window.open(
 		router.resolve({
 			name: VIEWS.WORKFLOW,
-			params: { workflowId: item.id },
+			params: { name: item.id },
 		}).href,
 		'_blank',
 	);

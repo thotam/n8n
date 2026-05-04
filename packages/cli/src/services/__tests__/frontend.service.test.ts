@@ -28,7 +28,7 @@ describe('FrontendService', () => {
 	let originalEnv: NodeJS.ProcessEnv;
 	const globalConfig = mock<GlobalConfig>({
 		database: { type: 'sqlite' },
-		endpoints: { rest: 'rest', health: '/healthz' },
+		endpoints: { rest: 'rest' },
 		diagnostics: { enabled: false },
 		templates: { enabled: false, host: '' },
 		nodes: {},
@@ -54,7 +54,7 @@ describe('FrontendService', () => {
 		mfa: { enabled: false },
 		deployment: { type: 'default' },
 		workflowHistory: { pruneTime: 24 },
-		path: '/',
+		path: '',
 		sso: {
 			ldap: { loginEnabled: false },
 			saml: { loginEnabled: false },
@@ -62,9 +62,6 @@ describe('FrontendService', () => {
 		},
 		credentials: {
 			overwrite: { skipTypes: [] },
-		},
-		userManagement: {
-			password: { minLength: 8 },
 		},
 	});
 
@@ -119,7 +116,7 @@ describe('FrontendService', () => {
 		isDebugInEditorLicensed: jest.fn().mockReturnValue(false),
 		isWorkerViewLicensed: jest.fn().mockReturnValue(false),
 		isAdvancedPermissionsLicensed: jest.fn().mockReturnValue(false),
-
+		isApiKeyScopesEnabled: jest.fn().mockReturnValue(false),
 		getVariablesLimit: jest.fn().mockReturnValue(0),
 		getTeamProjectLimit: jest.fn().mockReturnValue(0),
 		isBinaryDataS3Licensed: jest.fn().mockReturnValue(false),
@@ -221,28 +218,6 @@ describe('FrontendService', () => {
 				}),
 			);
 		});
-
-		it('should surface logStreaming.managedByEnv from instanceSettingsLoader config', async () => {
-			globalConfig.instanceSettingsLoader = {
-				logStreamingManagedByEnv: true,
-			} as GlobalConfig['instanceSettingsLoader'];
-
-			const { service } = createMockService();
-			const settings = await service.getSettings();
-
-			expect(settings.logStreaming).toEqual({ managedByEnv: true });
-		});
-
-		it('should default logStreaming.managedByEnv to false when flag is off', async () => {
-			globalConfig.instanceSettingsLoader = {
-				logStreamingManagedByEnv: false,
-			} as GlobalConfig['instanceSettingsLoader'];
-
-			const { service } = createMockService();
-			const settings = await service.getSettings();
-
-			expect(settings.logStreaming).toEqual({ managedByEnv: false });
-		});
 	});
 
 	describe('getPublicSettings', () => {
@@ -254,7 +229,6 @@ describe('FrontendService', () => {
 					smtpSetup: false,
 					showSetupOnFirstLoad: true,
 					authenticationMethod: 'email',
-					passwordMinLength: 8,
 				},
 				sso: {
 					saml: { loginEnabled: false },
@@ -284,7 +258,6 @@ describe('FrontendService', () => {
 					smtpSetup: false,
 					showSetupOnFirstLoad: true,
 					authenticationMethod: 'email',
-					passwordMinLength: 8,
 				},
 				sso: {
 					saml: { loginEnabled: false },
@@ -308,21 +281,6 @@ describe('FrontendService', () => {
 			const settings = await service.getPublicSettings(true);
 
 			expect(settings).toEqual(expectedPublicSettings);
-		});
-
-		it('should expose configured passwordMinLength in settings', async () => {
-			(globalConfig as any).userManagement = { password: { minLength: 12 } };
-
-			const { service } = createMockService();
-			const settings = await service.getSettings();
-
-			expect(settings.userManagement.passwordMinLength).toBe(12);
-
-			const publicSettings = await service.getPublicSettings(false);
-			expect(publicSettings.userManagement.passwordMinLength).toBe(12);
-
-			// Restore default
-			(globalConfig as any).userManagement = { password: { minLength: 8 } };
 		});
 
 		it('should set showSetupOnFirstLoad to false in preview mode', async () => {

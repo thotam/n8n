@@ -16,6 +16,7 @@ import {
 	type WorkflowState,
 } from '@/app/composables/useWorkflowState';
 import { useUIStore } from '@/app/stores/ui.store';
+import { nodeViewEventBus } from '@/app/event-bus';
 import { needsAgentInput } from '@/app/utils/nodes/nodeTransforms';
 import { generateCodeForAiTransform } from '@/features/ndv/parameters/utils/buttonParameter.utils';
 import type { INodeUi } from '@/Interface';
@@ -36,7 +37,6 @@ const {
 	mockPinnedData,
 	mockMessage,
 	mockWorkflowDocumentStore,
-	mockNodeHelpers,
 } = vi.hoisted(() => ({
 	mockWorkflowsStore: {
 		isWorkflowRunning: false,
@@ -44,6 +44,7 @@ const {
 		executionWaitingForWebhook: false,
 		workflowId: '123',
 		chatPartialExecutionDestinationNode: undefined as string | undefined,
+		checkIfNodeHasChatParent: vi.fn(),
 		getNodeByName: vi.fn(),
 		removeTestWebhook: vi.fn(),
 	},
@@ -70,13 +71,6 @@ const {
 	},
 	mockWorkflowDocumentStore: {
 		updateNodeProperties: vi.fn(),
-		getNodeByName: vi.fn(),
-		getStartNode: vi.fn(),
-		checkIfNodeHasChatParent: vi.fn(),
-		pinData: {} as Record<string, unknown>,
-	},
-	mockNodeHelpers: {
-		getNodeInputData: vi.fn().mockReturnValue([]),
 	},
 }));
 
@@ -114,10 +108,6 @@ vi.mock('@/app/stores/ui.store', () => ({
 
 vi.mock('@/app/composables/useRunWorkflow', () => ({
 	useRunWorkflow: vi.fn().mockReturnValue(mockRunWorkflow),
-}));
-
-vi.mock('@/app/composables/useNodeHelpers', () => ({
-	useNodeHelpers: vi.fn().mockReturnValue(mockNodeHelpers),
 }));
 
 vi.mock('@/app/composables/usePinnedData', () => ({
@@ -171,6 +161,10 @@ vi.mock('@/features/ndv/parameters/utils/buttonParameter.utils', () => ({
 	generateCodeForAiTransform: vi.fn(),
 }));
 
+vi.mock('@/app/event-bus', () => ({
+	nodeViewEventBus: { emit: vi.fn() },
+}));
+
 function createTestNode(overrides: Partial<INodeUi> = {}): INodeUi {
 	return {
 		id: 'test-id',
@@ -201,13 +195,9 @@ describe('useNodeExecution', () => {
 		mockWorkflowsStore.executedNode = undefined;
 		mockWorkflowsStore.executionWaitingForWebhook = false;
 		mockWorkflowsStore.chatPartialExecutionDestinationNode = undefined;
-		mockWorkflowDocumentStore.checkIfNodeHasChatParent.mockReturnValue(false);
+		mockWorkflowsStore.checkIfNodeHasChatParent.mockReturnValue(false);
 		mockWorkflowsStore.removeTestWebhook.mockReset();
 		mockWorkflowsStore.getNodeByName.mockReset();
-
-		mockNodeHelpers.getNodeInputData.mockReset().mockReturnValue([]);
-		mockWorkflowDocumentStore.getNodeByName.mockReset();
-		mockWorkflowDocumentStore.pinData = {};
 
 		mockNodeTypesStore.getNodeType.mockReturnValue(null);
 		mockNodeTypesStore.isTriggerNode.mockReturnValue(false);
@@ -479,7 +469,7 @@ describe('useNodeExecution', () => {
 
 			const { buttonLabel } = useNodeExecution(node);
 
-			expect(buttonLabel.value).toBe('chat.open');
+			expect(buttonLabel.value).toBe('ndv.execute.testChat');
 		});
 
 		it('should return listenForTestEvent for webhook node', () => {
@@ -670,18 +660,13 @@ describe('useNodeExecution', () => {
 
 			expect(result).toBe('opened-chat');
 			expect(mockNdvStore.unsetActiveNodeName).toHaveBeenCalled();
-			expect(mockRunWorkflow.runWorkflow).toHaveBeenCalledWith(
-				expect.objectContaining({ destinationNode: { nodeName: 'Chat Node', mode: 'inclusive' } }),
-			);
+			expect(nodeViewEventBus.emit).toHaveBeenCalledWith('openChat');
+			expect(mockWorkflowsStore.chatPartialExecutionDestinationNode).toBe('Chat Node');
 		});
 
-		it('should open chat for chat child nodes when chat trigger has no data', async () => {
-			mockWorkflowDocumentStore.checkIfNodeHasChatParent.mockReturnValue(true);
-			mockWorkflowDocumentStore.getStartNode.mockReturnValue({
-				name: 'Chat Trigger',
-				type: CHAT_TRIGGER_NODE_TYPE,
-			});
-			mockNodeHelpers.getNodeInputData.mockReturnValue([]);
+		it('should open chat for chat child nodes when input panel is empty', async () => {
+			mockWorkflowsStore.checkIfNodeHasChatParent.mockReturnValue(true);
+			mockNdvStore.isInputPanelEmpty = true;
 			const node = ref(createTestNode({ name: 'Child Node' }));
 
 			const { execute } = useNodeExecution(node);

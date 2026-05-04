@@ -33,13 +33,4 @@ export class WorkflowPublishHistoryRepository extends Repository<WorkflowPublish
 			.where('wph.workflowId = :workflowId', { workflowId })
 			.getMany();
 	}
-
-	async findActivatedByUserId(workflowId: string): Promise<string | undefined> {
-		const record = await this.findOne({
-			select: ['userId'],
-			where: { workflowId, event: 'activated' },
-			order: { createdAt: 'DESC' },
-		});
-		return record?.userId ?? undefined;
-	}
 }

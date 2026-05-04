@@ -278,20 +278,6 @@ export class ProjectService {
 		return await this.projectRepository.getAccessibleProjectsAndCount(user.id, options);
 	}
 
-	// Returns the projects a caller can pick as share targets, including peer
-	// personal projects. Admins (project:read) still see everything; non-admin
-	// callers also see all personal projects so the share dropdown can surface
-	// other users. See `ProjectRepository.getShareableProjectsAndCount`.
-	async getShareableProjectsAndCount(
-		user: User,
-		options: ProjectListOptions,
-	): Promise<[Project[], number]> {
-		if (hasGlobalScope(user, 'project:read')) {
-			return await this.projectRepository.findAllProjectsAndCount(options);
-		}
-		return await this.projectRepository.getShareableProjectsAndCount(user.id, options);
-	}
-
 	async getPersonalProjectOwners(projectIds: string[]): Promise<ProjectRelation[]> {
 		return await this.projectRelationRepository.getPersonalProjectOwners(projectIds);
 	}
@@ -578,10 +564,7 @@ export class ProjectService {
 		};
 
 		if (!hasGlobalScope(user, scopes, { mode: 'allOf' })) {
-			// Use the same EntityManager as the project lookup (including when callers pass a
-			// transaction manager). Otherwise role resolution can open a second pooled connection
-			// while a transaction already holds a connection
-			const projectRoles = await this.roleService.rolesWithScope('project', scopes, em);
+			const projectRoles = await this.roleService.rolesWithScope('project', scopes);
 
 			where = {
 				...where,
@@ -605,10 +588,7 @@ export class ProjectService {
 
 		if (!hasGlobalScope(user, scopes, { mode: 'allOf' })) {
 			const projectRoles = await this.roleService.rolesWithScope('project', scopes);
-			// if we're not checking specific projects, restrict to team projects
-			if (!projectIds) {
-				where.type = 'team';
-			}
+			where.type = 'team';
 			where.projectRelations = {
 				role: In(projectRoles),
 				userId: user.id,

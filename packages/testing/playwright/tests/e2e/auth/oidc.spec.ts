@@ -6,7 +6,7 @@ test.use({
 });
 
 test.describe(
-	'OIDC Authentication @capability:oidc @licensed',
+	'OIDC Authentication @capability:oidc',
 	{
 		annotation: [{ type: 'owner', description: 'Identity & Access' }],
 	},

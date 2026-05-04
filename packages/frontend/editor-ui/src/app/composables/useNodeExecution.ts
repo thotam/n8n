@@ -17,7 +17,6 @@ import { useNDVStore } from '@/features/ndv/shared/ndv.store';
 import { useUIStore } from '@/app/stores/ui.store';
 
 import { useRunWorkflow } from '@/app/composables/useRunWorkflow';
-import { useNodeHelpers } from '@/app/composables/useNodeHelpers';
 import { usePinnedData } from '@/app/composables/usePinnedData';
 import { useMessage } from '@/app/composables/useMessage';
 import { useTelemetry } from '@/app/composables/useTelemetry';
@@ -31,6 +30,8 @@ import {
 
 import { needsAgentInput } from '@/app/utils/nodes/nodeTransforms';
 import { generateCodeForAiTransform } from '@/features/ndv/parameters/utils/buttonParameter.utils';
+
+import { nodeViewEventBus } from '@/app/event-bus';
 
 import {
 	WEBHOOK_NODE_TYPE,
@@ -104,11 +105,12 @@ export function useNodeExecution(
 	const workflowState = injectWorkflowState();
 
 	const workflowDocumentStore = computed(() =>
-		useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+		workflowsStore.workflowId
+			? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+			: undefined,
 	);
 
 	const { runWorkflow, stopCurrentExecution } = useRunWorkflow({ router });
-	const nodeHelpers = useNodeHelpers();
 
 	const codeGenerationInProgress = ref(false);
 
@@ -131,9 +133,7 @@ export function useNodeExecution(
 	const isChatNode = computed(() => nodeType.value?.name === CHAT_TRIGGER_NODE_TYPE);
 
 	const isChatChild = computed(() =>
-		nodeRef.value
-			? workflowDocumentStore.value.checkIfNodeHasChatParent(nodeRef.value.name)
-			: false,
+		nodeRef.value ? workflowsStore.checkIfNodeHasChatParent(nodeRef.value.name) : false,
 	);
 
 	const isFormTriggerNode = computed(() => nodeType.value?.name === FORM_TRIGGER_NODE_TYPE);
@@ -221,7 +221,7 @@ export function useNodeExecution(
 		}
 
 		if (isChatNode.value) {
-			return i18n.baseText('chat.open');
+			return i18n.baseText('ndv.execute.testChat');
 		}
 
 		if (isWebhookNode.value) {
@@ -299,7 +299,7 @@ export function useNodeExecution(
 			}
 
 			// Update node with generated code
-			workflowDocumentStore.value.updateNodeProperties({
+			workflowDocumentStore.value?.updateNodeProperties({
 				name: nodeRef.value.name,
 				properties: {
 					parameters: {
@@ -341,15 +341,6 @@ export function useNodeExecution(
 		return true;
 	}
 
-	function chatTriggerHasInputData(): boolean {
-		if (!nodeRef.value) return false;
-		const startNode = workflowDocumentStore.value.getStartNode(nodeRef.value.name);
-		if (!startNode || startNode.type !== CHAT_TRIGGER_NODE_TYPE) return false;
-		const hasRunData = nodeHelpers.getNodeInputData(startNode, 0, 0, 'input')?.length > 0;
-		const hasPinData = !!workflowDocumentStore.value.pinData?.[startNode.name];
-		return hasRunData || hasPinData;
-	}
-
 	async function execute(): Promise<ExecuteAction> {
 		if (!nodeRef.value) return 'noop';
 
@@ -361,14 +352,11 @@ export function useNodeExecution(
 			if (!success) return 'cancelled';
 		}
 
-		// Chat nodes — open chat when: it's a chat trigger itself, or it's a child of
-		// a chat trigger that has no execution/pin data yet (needs chat input first).
-		if (isChatNode.value || (isChatChild.value && !chatTriggerHasInputData())) {
+		// Chat nodes
+		if (isChatNode.value || (isChatChild.value && ndvStore.isInputPanelEmpty)) {
 			ndvStore.unsetActiveNodeName();
-			await runWorkflow({
-				destinationNode: { nodeName, mode: toValue(executionMode) },
-				source,
-			});
+			workflowsStore.chatPartialExecutionDestinationNode = nodeName;
+			nodeViewEventBus.emit('openChat');
 			return 'opened-chat';
 		}
 

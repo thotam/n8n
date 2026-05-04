@@ -11,7 +11,7 @@ describe('RemoveDuplicatesV2', () => {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'Remove Duplicates',
 			name: 'removeDuplicates',
-			icon: 'node:remove-duplicates',
+			icon: 'file:removeDuplicates.svg',
 			group: ['transform'],
 			description: 'Delete items with matching field values',
 		};

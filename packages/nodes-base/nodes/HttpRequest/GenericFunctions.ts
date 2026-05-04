@@ -1,16 +1,14 @@
 import FormData from 'form-data';
 import get from 'lodash/get';
-import type { Readable } from 'stream';
 import isPlainObject from 'lodash/isPlainObject';
 import set from 'lodash/set';
 import {
 	deepCopy,
-	getCredentialAllowedDomains,
-	NodeOperationError,
+	setSafeObjectProperty,
 	type ICredentialDataDecryptedObject,
 	type IDataObject,
-	type INode,
 	type INodeExecutionData,
+	type INodeProperties,
 	type IOAuth2Options,
 	type IRequestOptions,
 } from 'n8n-workflow';
@@ -42,24 +40,17 @@ function isObject(obj: unknown): obj is IDataObject {
 	return isPlainObject(obj);
 }
 
-function redactString(str: string, secrets: string[]): string {
-	return secrets.reduce((safe, secret) => safe.split(secret).join(REDACTED), str);
-}
-
 function redact<T = unknown>(obj: T, secrets: string[]): T {
 	if (typeof obj === 'string') {
-		return redactString(obj, secrets) as T;
+		return secrets.reduce((safe, secret) => safe.replace(secret, REDACTED), obj) as T;
 	}
 
 	if (Array.isArray(obj)) {
 		return obj.map((item) => redact(item, secrets)) as T;
 	} else if (isObject(obj)) {
-		const result: IDataObject = {};
 		for (const [key, value] of Object.entries(obj)) {
-			const redactedKey = redactString(key, secrets);
-			result[redactedKey] = redact(value, secrets);
+			setSafeObjectProperty(obj, key, redact(value, secrets));
 		}
-		return result as T;
 	}
 
 	return obj;
@@ -127,13 +118,20 @@ export function sanitizeUiMessage(
 	return sendRequest;
 }
 
-export function getSecrets(credentials: ICredentialDataDecryptedObject): string[] {
-	const secrets = Object.values(credentials).filter(
-		(value): value is string => typeof value === 'string' && value.length > 0,
+export function getSecrets(
+	properties: INodeProperties[],
+	credentials: ICredentialDataDecryptedObject,
+): string[] {
+	const sensitivePropNames = new Set(
+		properties.filter((prop) => prop.typeOptions?.password).map((prop) => prop.name),
 	);
 
+	const secrets = Object.entries(credentials)
+		.filter(([propName]) => sensitivePropNames.has(propName))
+		.map(([_, value]) => value)
+		.filter((value): value is string => typeof value === 'string');
 	const oauthAccessToken = get(credentials, 'oauthTokenData.access_token');
-	if (typeof oauthAccessToken === 'string' && !secrets.includes(oauthAccessToken)) {
+	if (typeof oauthAccessToken === 'string') {
 		secrets.push(oauthAccessToken);
 	}
 
@@ -265,7 +263,7 @@ export const prepareRequestBody = async (
 			if (parameter.parameterType === 'formBinaryData') {
 				const entry = await defaultReducer({}, parameter);
 				const key = Object.keys(entry)[0];
-				const data = entry[key] as { value: Buffer | Readable; options: FormData.AppendOptions };
+				const data = entry[key] as { value: Buffer; options: FormData.AppendOptions };
 				formData.append(key, data.value, data.options);
 				continue;
 			}
@@ -308,30 +306,4 @@ export const updadeQueryParameterConfig = (version: number) => {
 			}
 		};
 	}
-};
-
-export const getAllowedDomains = (
-	node: INode,
-	credentialData: ICredentialDataDecryptedObject,
-): string | undefined => {
-	if (credentialData.allowedHttpRequestDomains === 'none') {
-		throw new NodeOperationError(
-			node,
-			'This credential is configured to prevent use within an HTTP Request node',
-		);
-	}
-
-	if (credentialData.allowedHttpRequestDomains === 'domains') {
-		const allowedDomains = getCredentialAllowedDomains(credentialData);
-		if (!allowedDomains) {
-			throw new NodeOperationError(
-				node,
-				'No allowed domains specified. Configure allowed domains or change restriction setting.',
-			);
-		}
-
-		return allowedDomains;
-	}
-
-	return undefined;
 };

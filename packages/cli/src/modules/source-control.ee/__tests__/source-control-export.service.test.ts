@@ -28,6 +28,12 @@ import type { SourceControlScopedService } from '../source-control-scoped.servic
 import { SourceControlContext } from '../types/source-control-context';
 
 describe('SourceControlExportService', () => {
+	const globalAdminContext = new SourceControlContext(
+		Object.assign(new User(), {
+			role: GLOBAL_ADMIN_ROLE,
+		}),
+	);
+
 	const cipher = Container.get(Cipher);
 	const sharedCredentialsRepository = mock<SharedCredentialsRepository>();
 	const sharedWorkflowRepository = mock<SharedWorkflowRepository>();
@@ -39,12 +45,6 @@ describe('SourceControlExportService', () => {
 	const folderRepository = mock<FolderRepository>();
 	const sourceControlScopedService = mock<SourceControlScopedService>();
 	const dataTableRepository = mock<DataTableRepository>();
-
-	const globalAdminContext = new SourceControlContext(
-		Object.assign(new User(), { role: GLOBAL_ADMIN_ROLE }),
-		[],
-		[],
-	);
 
 	const service = new SourceControlExportService(
 		mock(),
@@ -727,6 +727,10 @@ describe('SourceControlExportService', () => {
 			];
 
 			dataTableRepository.find.mockResolvedValue(mockDataTables as any);
+			sourceControlScopedService.getAuthorizedProjectsFromContext.mockResolvedValue([
+				mock<Project>({ id: 'project1' }),
+				mock<Project>({ id: 'project2' }),
+			]);
 
 			// Act
 			const result = await service.exportDataTablesToWorkFolder(candidates, globalAdminContext);

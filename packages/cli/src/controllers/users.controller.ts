@@ -42,7 +42,6 @@ import { ForbiddenError } from '@/errors/response-errors/forbidden.error';
 import { NotFoundError } from '@/errors/response-errors/not-found.error';
 import { EventService } from '@/events/event.service';
 import { ExternalHooks } from '@/external-hooks';
-import { ProvisioningService } from '@/modules/provisioning.ee/provisioning.service.ee';
 import { UserRequest } from '@/requests';
 import { FolderService } from '@/services/folder.service';
 import { UserService } from '@/services/user.service';
@@ -67,7 +66,6 @@ export class UsersController {
 		private readonly folderService: FolderService,
 		private readonly jwtService: JwtService,
 		private readonly urlService: UrlService,
-		private readonly provisioningService: ProvisioningService,
 	) {}
 
 	static ERROR_MESSAGES = {
@@ -116,8 +114,6 @@ export class UsersController {
 		_res: Response,
 		@Query listQueryOptions: UsersListFilterDto,
 	) {
-		await this.userService.assertGetUsersAccess(req.user, listQueryOptions.filter?.projectId);
-
 		const userQuery = this.userRepository.buildUserQuery(listQueryOptions);
 		const response = await userQuery.getManyAndCount();
 
@@ -346,12 +342,6 @@ export class UsersController {
 		@Body payload: RoleChangeRequestDto,
 		@Param('id') id: string,
 	) {
-		if (await this.provisioningService.isInstanceRoleManaged()) {
-			throw new ForbiddenError(
-				'Instance roles are managed automatically and cannot be changed manually',
-			);
-		}
-
 		const { NO_ADMIN_ON_OWNER, NO_USER, NO_OWNER_ON_OWNER } =
 			UsersController.ERROR_MESSAGES.CHANGE_ROLE;
 

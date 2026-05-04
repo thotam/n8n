@@ -16,22 +16,18 @@ export interface BaseEntity {
 	reload(): Promise<void>;
 }
 
-export interface CreatedAtEntity {
+export interface TimestampedIdEntity {
+	id: string;
 	createdAt: Date;
-}
-export interface TimestampedEntity extends CreatedAtEntity {
 	updatedAt: Date;
 }
 
-export interface TimestampedIdEntity extends TimestampedEntity {
-	id: string;
+export interface TimestampedEntity {
+	createdAt: Date;
+	updatedAt: Date;
 }
 
-export type EntityClass = new () =>
-	| BaseEntity
-	| TimestampedIdEntity
-	| TimestampedEntity
-	| CreatedAtEntity;
+export type EntityClass = new () => BaseEntity | TimestampedIdEntity | TimestampedEntity;
 
 export type ModuleSettings = Record<string, unknown>;
 export type ModuleContext = Record<string, unknown>;

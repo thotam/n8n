@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
 
-import { appendListQueryOptions } from '@/requests';
+import type { ListQuery } from '@/requests';
 import * as ResponseHelper from '@/response-helper';
 import { toError } from '@/utils';
 
@@ -8,10 +8,10 @@ import { CredentialsSelect } from './dtos/credentials.select.dto';
 import { UserSelect } from './dtos/user.select.dto';
 import { WorkflowSelect } from './dtos/workflow.select.dto';
 
-export const selectListQueryMiddleware: RequestHandler = (req, res, next) => {
+export const selectListQueryMiddleware: RequestHandler = (req: ListQuery.Request, res, next) => {
 	const { select: rawSelect } = req.query;
 
-	if (!rawSelect || typeof rawSelect !== 'string') return next();
+	if (!rawSelect) return next();
 
 	let Select;
 
@@ -30,7 +30,7 @@ export const selectListQueryMiddleware: RequestHandler = (req, res, next) => {
 
 		if (Object.keys(select).length === 0) return next();
 
-		appendListQueryOptions(req, { select });
+		req.listQueryOptions = { ...req.listQueryOptions, select };
 
 		next();
 	} catch (maybeError) {

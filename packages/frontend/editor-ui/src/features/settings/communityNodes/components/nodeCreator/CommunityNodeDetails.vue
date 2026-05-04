@@ -14,7 +14,6 @@ import {
 } from '@/features/shared/nodeCreator/nodeCreator.utils';
 import NodeIcon from '@/app/components/NodeIcon.vue';
 import { useQuickConnect } from '@/features/credentials/quickConnect/composables/useQuickConnect';
-import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
 
 const {
 	activeViewStack,
@@ -31,7 +30,6 @@ const quickConnect = computed(() => {
 	const pkg = packageName.value;
 	return pkg ? getQuickConnectOptionByPackageName(pkg) : undefined;
 });
-const workflowDocumentStore = injectWorkflowDocumentStore();
 
 const nodeCreatorStore = useNodeCreatorStore();
 const { installNode, loading } = useInstallNode();
@@ -51,11 +49,7 @@ const updateViewStack = (key: string) => {
 
 		const viewStack = prepareCommunityNodeDetailsViewStack(
 			installedNode,
-			getNodeIconSource(
-				installedNode.properties,
-				null,
-				workflowDocumentStore?.value?.getExpressionHandler() ?? null,
-			),
+			getNodeIconSource(installedNode.properties),
 			activeViewStack.rootView,
 			nodeActions,
 		);

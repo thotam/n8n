@@ -57,7 +57,6 @@ export class DataRequestResponseStripper {
 			// TODO: We could send `runExecutionData.contextData` only if requested,
 			// since it's only needed if $input.context or $("node").context is used.
 			executionData: runExecutionData.executionData,
-			resumeToken: runExecutionData.resumeToken,
 		});
 	}
 

@@ -16,16 +16,9 @@ import type { ExecutionSummary } from 'n8n-workflow';
 import { useDebounce } from '@/app/composables/useDebounce';
 import { useTelemetry } from '@/app/composables/useTelemetry';
 import { executionRetryMessage } from '../executions.utils';
-import {
-	createWorkflowDocumentId,
-	useWorkflowDocumentStore,
-} from '@/app/stores/workflowDocument.store';
 
 const executionsStore = useExecutionsStore();
 const workflowsStore = useWorkflowsStore();
-const workflowDocumentStore = computed(() =>
-	useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
-);
 const workflowsListStore = useWorkflowsListStore();
 const i18n = useI18n();
 const telemetry = useTelemetry();
@@ -146,7 +139,7 @@ async function initializeRoute() {
 		await router
 			.replace({
 				name: VIEWS.EXECUTION_PREVIEW,
-				params: { workflowId: workflow.value.id, executionId: executions.value[0].id },
+				params: { name: workflow.value.id, executionId: executions.value[0].id },
 				query: route.query,
 			})
 			.catch(() => {});
@@ -156,13 +149,12 @@ async function initializeRoute() {
 function fetchWorkflow() {
 	// Skip fetching if it's a new workflow that hasn't been saved yet
 	if (isNewWorkflowRoute.value || !workflowId.value) {
-		workflow.value = workflowDocumentStore.value.getSnapshot();
+		workflow.value = workflowsStore.workflow;
 		return;
 	}
 
 	// Use the workflow from the list store (already loaded by WorkflowLayout)
-	workflow.value =
-		workflowsListStore.workflowsById[workflowId.value] ?? workflowDocumentStore.value.getSnapshot();
+	workflow.value = workflowsListStore.workflowsById[workflowId.value] ?? workflowsStore.workflow;
 }
 
 async function onAutoRefreshToggle(value: boolean) {
@@ -249,14 +241,14 @@ async function onExecutionDelete(id?: string) {
 				await router
 					.replace({
 						name: VIEWS.EXECUTION_PREVIEW,
-						params: { workflowId: workflow.value.id, executionId: nextExecution.id },
+						params: { name: workflow.value.id, executionId: nextExecution.id },
 					})
 					.catch(() => {});
 			} else {
 				// If there are no executions left, show empty state
 				await router.replace({
 					name: VIEWS.EXECUTION_HOME,
-					params: { workflowId: workflow.value.id },
+					params: { name: workflow.value.id },
 				});
 			}
 		}
@@ -310,14 +302,11 @@ async function onLoadMore(): Promise<void> {
 	}
 }
 
-const hasMore = computed(
-	() =>
-		!executionsStore.executionsFilters.status?.includes('running') &&
-		executions.value.length < executionsStore.executionsCount,
-);
-
 async function loadMore(): Promise<void> {
-	if (!hasMore.value) {
+	if (
+		!!executionsStore.executionsFilters.status?.includes('running') ||
+		executions.value.length >= executionsStore.executionsCount
+	) {
 		return;
 	}
 
@@ -348,7 +337,6 @@ async function loadMore(): Promise<void> {
 		:workflow="workflow"
 		:loading="loading"
 		:loading-more="loadingMore"
-		:has-more="hasMore"
 		@execution:stop="onExecutionStop"
 		@execution:delete="onExecutionDelete"
 		@execution:retry="onExecutionRetry"

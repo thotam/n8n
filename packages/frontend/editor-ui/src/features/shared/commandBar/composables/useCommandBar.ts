@@ -15,11 +15,10 @@ import { useExecutionCommands } from './useExecutionCommands';
 import { useGenericCommands } from './useGenericCommands';
 import { useRecentResources } from './useRecentResources';
 import { useChatHubCommands } from './useChatHubCommands';
-import { useInstanceAiCommands } from './useInstanceAiCommands';
 import type { CommandGroup } from '../types';
 import { useI18n } from '@n8n/i18n';
 import { PROJECT_DATA_TABLES, DATA_TABLE_VIEW } from '@/features/core/dataTable/constants';
-import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
+import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { useTelemetry } from '@/app/composables/useTelemetry';
 import {
 	CHAT_CONVERSATION_VIEW,
@@ -31,7 +30,7 @@ import {
 export function useCommandBar() {
 	const nodeTypesStore = useNodeTypesStore();
 	const projectsStore = useProjectsStore();
-	const workflowDocumentStore = injectWorkflowDocumentStore();
+	const workflowStore = useWorkflowsStore();
 	const router = useRouter();
 	const route = useRoute();
 	const i18n = useI18n();
@@ -83,23 +82,18 @@ export function useCommandBar() {
 	const chatHubCommandGroup = useChatHubCommands({
 		lastQuery,
 	});
-	const instanceAiCommandGroup = useInstanceAiCommands({
-		lastQuery,
-	});
 
 	const canvasViewGroups: CommandGroup[] = [
 		recentResourcesGroup,
 		nodeCommandGroup,
 		workflowCommandGroup,
 		workflowNavigationGroup,
-		instanceAiCommandGroup,
 		genericCommandGroup,
 	];
 
 	const executionViewGroups: CommandGroup[] = [
 		recentResourcesGroup,
 		executionCommandGroup,
-		instanceAiCommandGroup,
 		workflowNavigationGroup,
 		projectNavigationGroup,
 		credentialNavigationGroup,
@@ -110,7 +104,6 @@ export function useCommandBar() {
 
 	const workflowsListViewGroups: CommandGroup[] = [
 		recentResourcesGroup,
-		instanceAiCommandGroup,
 		workflowNavigationGroup,
 		projectNavigationGroup,
 		credentialNavigationGroup,
@@ -121,7 +114,6 @@ export function useCommandBar() {
 
 	const credentialsListViewGroups: CommandGroup[] = [
 		recentResourcesGroup,
-		instanceAiCommandGroup,
 		credentialNavigationGroup,
 		projectNavigationGroup,
 		workflowNavigationGroup,
@@ -132,7 +124,6 @@ export function useCommandBar() {
 
 	const executionsListViewGroups: CommandGroup[] = [
 		recentResourcesGroup,
-		instanceAiCommandGroup,
 		workflowNavigationGroup,
 		projectNavigationGroup,
 		credentialNavigationGroup,
@@ -142,7 +133,6 @@ export function useCommandBar() {
 
 	const dataStoresListViewGroups: CommandGroup[] = [
 		recentResourcesGroup,
-		instanceAiCommandGroup,
 		dataTableNavigationGroup,
 		projectNavigationGroup,
 		workflowNavigationGroup,
@@ -153,7 +143,6 @@ export function useCommandBar() {
 
 	const evaluationViewGroups: CommandGroup[] = [
 		recentResourcesGroup,
-		instanceAiCommandGroup,
 		workflowNavigationGroup,
 		projectNavigationGroup,
 		credentialNavigationGroup,
@@ -165,7 +154,6 @@ export function useCommandBar() {
 	const chatHubViewGroups: CommandGroup[] = [
 		chatHubCommandGroup,
 		recentResourcesGroup,
-		instanceAiCommandGroup,
 		genericCommandGroup,
 		projectNavigationGroup,
 		workflowNavigationGroup,
@@ -176,7 +164,6 @@ export function useCommandBar() {
 
 	const fallbackViewCommands: CommandGroup[] = [
 		recentResourcesGroup,
-		instanceAiCommandGroup,
 		projectNavigationGroup,
 		workflowNavigationGroup,
 		credentialNavigationGroup,
@@ -220,22 +207,21 @@ export function useCommandBar() {
 	});
 
 	const context = computed(() => {
-		const workflowName = workflowDocumentStore?.value?.name ?? '';
 		switch (router.currentRoute.value.name) {
 			case VIEWS.WORKFLOW:
 			case VIEWS.NEW_WORKFLOW:
-				return workflowName
-					? i18n.baseText('commandBar.sections.workflow') + ' ⋅ ' + workflowName
+				return workflowStore.workflow.name
+					? i18n.baseText('commandBar.sections.workflow') + ' ⋅ ' + workflowStore.workflow.name
 					: '';
 			case VIEWS.EXECUTION_PREVIEW:
 			case VIEWS.EXECUTION_DEBUG:
-				return workflowName
-					? i18n.baseText('commandBar.sections.execution') + ' ⋅ ' + workflowName
+				return workflowStore.workflow.name
+					? i18n.baseText('commandBar.sections.execution') + ' ⋅ ' + workflowStore.workflow.name
 					: '';
 			case VIEWS.EVALUATION:
 			case VIEWS.EVALUATION_EDIT:
 			case VIEWS.EVALUATION_RUNS_DETAIL:
-				return workflowName ? ' ⋅ ' + workflowName : '';
+				return workflowStore.workflow.name ? ' ⋅ ' + workflowStore.workflow.name : '';
 			default:
 				return '';
 		}

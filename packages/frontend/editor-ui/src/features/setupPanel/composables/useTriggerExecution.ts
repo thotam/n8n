@@ -1,34 +1,22 @@
 import { computed, toValue, type MaybeRef } from 'vue';
 import { useI18n } from '@n8n/i18n';
+import { NodeConnectionTypes } from 'n8n-workflow';
 
 import type { INodeUi } from '@/Interface';
-import { useNodeExecution, type UseNodeExecutionOptions } from '@/app/composables/useNodeExecution';
+import { useNodeExecution } from '@/app/composables/useNodeExecution';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { getTriggerNodeServiceName } from '@/app/utils/nodeTypesUtils';
-import { CHAT_TRIGGER_NODE_TYPE } from '@/app/constants/nodeTypes';
-import { useLogsStore } from '@/app/stores/logs.store';
-import {
-	createWorkflowDocumentId,
-	useWorkflowDocumentStore,
-} from '@/app/stores/workflowDocument.store';
 
 /**
  * Wraps `useNodeExecution` with listening-hint logic for setup-panel cards.
  * Returns everything a card needs: execution state for the button + listening
  * hint text for the callout.
  */
-export function useTriggerExecution(
-	node: MaybeRef<INodeUi | null>,
-	options?: UseNodeExecutionOptions,
-) {
+export function useTriggerExecution(node: MaybeRef<INodeUi | null>) {
 	const i18n = useI18n();
 	const nodeTypesStore = useNodeTypesStore();
 	const workflowsStore = useWorkflowsStore();
-	const workflowDocumentStore = computed(() =>
-		useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
-	);
-	const logsStore = useLogsStore();
 
 	const {
 		isExecuting,
@@ -39,7 +27,7 @@ export function useTriggerExecution(
 		disabledReason,
 		hasIssues,
 		execute,
-	} = useNodeExecution(node, options);
+	} = useNodeExecution(node);
 
 	const nodeValue = computed(() => toValue(node));
 
@@ -49,15 +37,9 @@ export function useTriggerExecution(
 			: null,
 	);
 
-	const isInListeningState = computed(() => {
-		if (isListening.value || isListeningForWorkflowEvents.value) return true;
-
-		return (
-			nodeType.value?.name === CHAT_TRIGGER_NODE_TYPE &&
-			logsStore.isOpen &&
-			workflowsStore.chatPartialExecutionDestinationNode === nodeValue.value?.name
-		);
-	});
+	const isInListeningState = computed(
+		() => isListening.value || isListeningForWorkflowEvents.value,
+	);
 
 	const listeningHint = computed(() => {
 		if (!isInListeningState.value || !nodeType.value) return '';
@@ -81,10 +63,12 @@ export function useTriggerExecution(
 
 	const hasUpstreamIssues = computed(() => {
 		if (!nodeValue.value) return false;
-		const parentNames =
-			workflowDocumentStore.value?.getParentNodes(nodeValue.value.name, 'ALL') ?? [];
+		const parentNames = workflowsStore.workflowObject.getParentNodes(
+			nodeValue.value.name,
+			NodeConnectionTypes.Main,
+		);
 		return parentNames.some((name) => {
-			const parentNode = workflowDocumentStore.value?.getNodeByName(name);
+			const parentNode = workflowsStore.getNodeByName(name);
 			return parentNode?.issues?.parameters || parentNode?.issues?.credentials;
 		});
 	});

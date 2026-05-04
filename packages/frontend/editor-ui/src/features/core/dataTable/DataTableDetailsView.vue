@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type {
 	AddColumnResponse,
 	DataTable,
@@ -140,13 +140,6 @@ const handleSourceControlPull = async () => {
 	}
 };
 
-watch(
-	() => props.id,
-	async () => {
-		await initialize();
-	},
-);
-
 onMounted(async () => {
 	documentTitle.set(i18n.baseText('dataTable.dataTables'));
 	await initialize();
@@ -274,7 +267,6 @@ onBeforeUnmount(() => {
 
 .actions {
 	display: flex;
-	align-items: center;
 	gap: var(--spacing--3xs);
 	margin-left: auto;
 }

@@ -241,13 +241,6 @@ onMounted(() => {
 			</div>
 			<div :class="$style.footer">
 				<N8nButton
-					variant="subtle"
-					float="left"
-					:label="i18.baseText('mfa.button.back')"
-					size="large"
-					@click="onBackClick"
-				/>
-				<N8nButton
 					float="right"
 					:loading="verifyingMfaCode"
 					:label="
@@ -258,6 +251,13 @@ onMounted(() => {
 					size="large"
 					:disabled="!hasAnyChanges"
 					@click="onSaveClick"
+				/>
+				<N8nButton
+					variant="subtle"
+					float="left"
+					:label="i18.baseText('mfa.button.back')"
+					size="large"
+					@click="onBackClick"
 				/>
 			</div>
 		</N8nCard>

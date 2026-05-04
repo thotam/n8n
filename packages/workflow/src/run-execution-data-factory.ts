@@ -13,11 +13,7 @@ import type {
 	INode,
 } from './interfaces';
 import type { IRunExecutionData } from './run-execution-data/run-execution-data';
-import type {
-	IRunExecutionDataV1,
-	RedactionInfo,
-} from './run-execution-data/run-execution-data.v1';
-import { generateSecureToken } from './utils';
+import type { IRunExecutionDataV1 } from './run-execution-data/run-execution-data.v1';
 
 export interface CreateFullRunExecutionDataOptions {
 	startData?: {
@@ -44,38 +40,10 @@ export interface CreateFullRunExecutionDataOptions {
 		runtimeData?: IExecutionContext;
 	} | null;
 	parentExecution?: RelatedExecution;
-	resumeToken?: string;
+	validateSignature?: boolean;
 	waitTill?: Date;
 	manualData?: IRunExecutionData['manualData'];
 	pushRef?: IRunExecutionData['pushRef'];
-	redactionInfo?: RedactionInfo;
-}
-
-function buildResultData(
-	resultData: CreateFullRunExecutionDataOptions['resultData'],
-): IRunExecutionDataV1['resultData'] {
-	return {
-		error: resultData?.error,
-		// @ts-expect-error CAT-752
-		runData: resultData?.runData === null ? undefined : (resultData?.runData ?? {}),
-		pinData: resultData?.pinData,
-		lastNodeExecuted: resultData?.lastNodeExecuted,
-		metadata: resultData?.metadata,
-	};
-}
-
-function buildExecutionData(
-	executionData: CreateFullRunExecutionDataOptions['executionData'],
-): IRunExecutionDataV1['executionData'] {
-	if (executionData === null) return undefined;
-	return {
-		contextData: executionData?.contextData ?? {},
-		nodeExecutionStack: executionData?.nodeExecutionStack ?? [],
-		metadata: executionData?.metadata ?? {},
-		waitingExecution: executionData?.waitingExecution ?? {},
-		waitingExecutionSource: executionData?.waitingExecutionSource ?? {},
-		runtimeData: executionData?.runtimeData,
-	};
 }
 
 /**
@@ -89,14 +57,31 @@ export function createRunExecutionData(
 	return {
 		version: 1,
 		startData: options.startData ?? {},
-		resultData: buildResultData(options.resultData),
-		executionData: buildExecutionData(options.executionData),
+		resultData: {
+			error: options.resultData?.error,
+			// @ts-expect-error CAT-752
+			runData:
+				options.resultData?.runData === null ? undefined : (options.resultData?.runData ?? {}),
+			pinData: options.resultData?.pinData,
+			lastNodeExecuted: options.resultData?.lastNodeExecuted,
+			metadata: options.resultData?.metadata,
+		},
+		executionData:
+			options.executionData === null
+				? undefined
+				: {
+						contextData: options.executionData?.contextData ?? {},
+						nodeExecutionStack: options.executionData?.nodeExecutionStack ?? [],
+						metadata: options.executionData?.metadata ?? {},
+						waitingExecution: options.executionData?.waitingExecution ?? {},
+						waitingExecutionSource: options.executionData?.waitingExecutionSource ?? {},
+						runtimeData: options.executionData?.runtimeData,
+					},
 		parentExecution: options.parentExecution,
-		resumeToken: options.resumeToken ?? generateSecureToken(),
+		validateSignature: options.validateSignature,
 		waitTill: options.waitTill,
 		manualData: options.manualData,
 		pushRef: options.pushRef,
-		redactionInfo: options.redactionInfo,
 	} satisfies IRunExecutionDataV1 as unknown as IRunExecutionData; // NOTE: we cast to unknown to avoid manual construction of branded type.
 }
 

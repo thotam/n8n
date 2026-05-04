@@ -17,14 +17,6 @@ import { useSettingsStore } from '@/app/stores/settings.store';
 import { useUIStore } from '@/app/stores/ui.store';
 import { usePostHog } from '@/app/stores/posthog.store';
 
-export type TelemetryIdentifyOptions = {
-	instanceId: string;
-	userId?: string;
-	projectId?: string;
-	versionCli?: string;
-	userRole?: string;
-};
-
 export class Telemetry {
 	private pageEventQueue: Array<{ route: RouteLocation }>;
 
@@ -46,8 +38,12 @@ export class Telemetry {
 			userId,
 			projectId,
 			versionCli,
-			userRole,
-		}: TelemetryIdentifyOptions & { versionCli: string },
+		}: {
+			instanceId: string;
+			userId?: string;
+			projectId?: string;
+			versionCli: string;
+		},
 	) {
 		if (!telemetrySettings.enabled || !telemetrySettings.config || this.rudderStack) return;
 
@@ -63,23 +59,17 @@ export class Telemetry {
 			configUrl: sourceConfig,
 		});
 
-		this.identify({ instanceId, userId, versionCli, projectId, userRole });
+		this.identify(instanceId, userId, versionCli, projectId);
 
 		this.flushPageEvents();
 		this.track('Session started', { session_id: rootStore.pushRef });
 	}
 
-	identify({ instanceId, userId, versionCli, projectId, userRole }: TelemetryIdentifyOptions) {
+	identify(instanceId: string, userId?: string, versionCli?: string, projectId?: string) {
 		const settingsStore = useSettingsStore();
-		const traits: {
-			instance_id: string;
-			version_cli?: string;
-			user_cloud_id?: string;
-			user_role?: string;
-		} = {
+		const traits: { instance_id: string; version_cli?: string; user_cloud_id?: string } = {
 			instance_id: instanceId,
 			version_cli: versionCli,
-			user_role: userRole,
 		};
 
 		if (settingsStore.isCloudDeployment) {

@@ -52,7 +52,7 @@ describe('Test IMap V2', () => {
 	const baseDescription: INodeTypeBaseDescription = {
 		displayName: 'EmailReadImapV2',
 		name: 'emailReadImapV2',
-		icon: 'node:remove-duplicates',
+		icon: 'file:removeDuplicates.svg',
 		group: ['transform'],
 		description: 'Delete items with matching field values',
 	};

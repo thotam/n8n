@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-import type { QuickReplyType } from '@n8n/api-types';
 import { useAssistantStore } from '@/features/ai/assistant/assistant.store';
 import { useUsersStore } from '@/features/settings/users/users.store';
 import { computed, ref, useSlots } from 'vue';
@@ -41,10 +40,7 @@ async function onUserMessage(content: string, quickReplyType?: string, isFeedbac
 	if (!assistantStore.currentSessionId) {
 		await assistantStore.initSupportChat(workflowId.value, content);
 	} else {
-		await assistantStore.sendMessage(workflowId.value, {
-			text: content,
-			quickReplyType: quickReplyType as QuickReplyType,
-		});
+		await assistantStore.sendMessage(workflowId.value, { text: content, quickReplyType });
 	}
 	const task = assistantStore.chatSessionTask;
 	const solutionCount = assistantStore.chatMessages.filter(

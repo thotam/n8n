@@ -365,9 +365,11 @@ describe('AgentEditorModal', () => {
 			await userEvent.click(saveButton);
 
 			await waitFor(() => {
-				expect(mockShowError).toHaveBeenCalledWith(error, 'chatHub.agent.editor.error.save', {
-					message: 'Save failed',
-				});
+				expect(mockShowError).toHaveBeenCalledWith(
+					error,
+					'chatHub.agent.editor.error.save',
+					'Save failed',
+				);
 			});
 		});
 	});
@@ -429,9 +431,11 @@ describe('AgentEditorModal', () => {
 			await userEvent.click(deleteButton);
 
 			await waitFor(() => {
-				expect(mockShowError).toHaveBeenCalledWith(error, 'chatHub.agent.editor.error.delete', {
-					message: 'Delete failed',
-				});
+				expect(mockShowError).toHaveBeenCalledWith(
+					error,
+					'chatHub.agent.editor.error.delete',
+					'Delete failed',
+				);
 			});
 		});
 	});

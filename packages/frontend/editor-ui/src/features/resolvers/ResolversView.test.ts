@@ -35,7 +35,6 @@ vi.mock('@n8n/rest-api-client', async (importOriginal) => {
 		...actual,
 		getCredentialResolvers: vi.fn(),
 		getCredentialResolverTypes: vi.fn(),
-		getCredentialResolverWorkflows: vi.fn().mockResolvedValue([]),
 		deleteCredentialResolver: vi.fn(),
 	};
 });

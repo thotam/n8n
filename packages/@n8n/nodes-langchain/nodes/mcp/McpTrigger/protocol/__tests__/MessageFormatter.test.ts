@@ -169,14 +169,12 @@ describe('MessageFormatter', () => {
 			expect(result.content[0].text).toContain('CustomError: Custom error message');
 		});
 
-		it('should not include stack trace in the response', () => {
+		it('should include stack trace when available', () => {
 			const error = new Error('Test error');
-			error.stack =
-				'Error: Test error\n    at Context.<anonymous> (test.ts:1:1)\n    at /internal/path/node.js:100:5';
 			const result = MessageFormatter.formatError(error);
 
-			expect(result.content[0].text).toBe('Error: Test error');
-			expect(result.content[0].text).not.toContain('internal/path');
+			expect(result.content[0].text).toContain('Error: Test error');
+			expect(result.content[0].text).toContain('at ');
 		});
 	});
 });

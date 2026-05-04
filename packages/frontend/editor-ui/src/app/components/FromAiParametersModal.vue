@@ -42,21 +42,23 @@ const ndvStore = useNDVStore();
 const modalBus = createEventBus();
 const workflowsStore = useWorkflowsStore();
 const workflowDocumentStore = computed(() =>
-	useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+	workflowsStore.workflowId
+		? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+		: undefined,
 );
 const router = useRouter();
 const { runWorkflow } = useRunWorkflow({ router });
 const agentRequestStore = useAgentRequestStore();
 
 const node = computed(() =>
-	props.data.nodeName ? workflowDocumentStore.value.getNodeByName(props.data.nodeName) : undefined,
+	props.data.nodeName ? workflowDocumentStore.value?.getNodeByName(props.data.nodeName) : undefined,
 );
 
 const parentNode = computed(() => {
 	if (!node.value) return undefined;
-	const parentNodes = workflowDocumentStore.value.getChildNodes(node.value.name, 'ALL', 1);
+	const parentNodes = workflowsStore.workflowObject.getChildNodes(node.value.name, 'ALL', 1);
 	if (parentNodes.length === 0) return undefined;
-	return workflowDocumentStore.value.getNodeByName(parentNodes[0])?.name;
+	return workflowDocumentStore.value?.getNodeByName(parentNodes[0])?.name;
 });
 
 const { getToolName, parameters, error, updateSelectedTool } = useToolParameters({ node });

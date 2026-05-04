@@ -1,6 +1,5 @@
 export {
 	WithStringId,
-	WithCreatedAt,
 	WithTimestamps,
 	WithTimestampsAndStringId,
 	jsonColumnType,

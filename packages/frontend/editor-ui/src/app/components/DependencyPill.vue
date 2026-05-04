@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 import { useI18n } from '@n8n/i18n';
 import { useRouter } from 'vue-router';
 import type { BaseTextKey } from '@n8n/i18n';
-import { N8nBadge, N8nIcon, N8nTooltip } from '@n8n/design-system';
+import { N8nBadge, N8nIcon } from '@n8n/design-system';
 import {
 	N8nDropdownMenu,
 	type DropdownMenuItemProps,
@@ -47,10 +47,6 @@ const effectiveCount = computed(() => {
 
 const hasHiddenDeps = computed(() => (depsResult.value?.inaccessibleCount ?? 0) > 0);
 
-const tooltipText = computed(() =>
-	i18n.baseText(`workflows.dependencies.tooltip.${props.resourceType}` satisfies BaseTextKey),
-);
-
 const hasFullDeps = computed(() => depsResult.value !== undefined);
 
 const showSearch = computed(
@@ -68,14 +64,6 @@ const typeConfig: Record<DependencyType, { icon: IconName; labelKey: BaseTextKey
 		icon: 'table',
 		labelKey: 'workflows.dependencies.type.dataTables' as BaseTextKey,
 	},
-	errorWorkflow: {
-		icon: 'bug',
-		labelKey: 'workflows.dependencies.type.errorWorkflow' as BaseTextKey,
-	},
-	errorWorkflowParent: {
-		icon: 'bug',
-		labelKey: 'workflows.dependencies.type.errorWorkflowParent' as BaseTextKey,
-	},
 	workflowCall: {
 		icon: 'log-in',
 		labelKey: 'workflows.dependencies.type.subWorkflows' as BaseTextKey,
@@ -91,8 +79,6 @@ const displayOrder: DependencyType[] = [
 	'dataTableId',
 	'workflowCall',
 	'workflowParent',
-	'errorWorkflow',
-	'errorWorkflowParent',
 ];
 
 const menuItems = computed(() => {
@@ -105,8 +91,6 @@ const menuItems = computed(() => {
 	const groups: Record<DependencyType, ResolvedDependency[]> = {
 		credentialId: [],
 		dataTableId: [],
-		errorWorkflow: [],
-		errorWorkflowParent: [],
 		workflowCall: [],
 		workflowParent: [],
 	};
@@ -150,21 +134,13 @@ function onSelect(value: string) {
 	const dep = (depsResult.value?.dependencies ?? []).find((d) => d.type === type && d.id === id);
 	if (!dep) return;
 
-	telemetry.track('User clicked dependency pill item', {
-		source: props.source,
-		dependency_type: dep.type,
-		dependency_count: effectiveCount.value,
-	});
-
 	switch (dep.type) {
 		case 'credentialId':
 			uiStore.openExistingCredential(dep.id);
 			break;
 		case 'workflowCall':
 		case 'workflowParent':
-		case 'errorWorkflow':
-		case 'errorWorkflowParent':
-			const href = router.resolve({ name: VIEWS.WORKFLOW, params: { workflowId: dep.id } }).href;
+			const href = router.resolve({ name: VIEWS.WORKFLOW, params: { name: dep.id } }).href;
 			window.open(href, '_blank');
 			break;
 		case 'dataTableId':
@@ -204,52 +180,48 @@ async function onDropdownToggle(open: boolean) {
 </script>
 
 <template>
-	<N8nTooltip :content="tooltipText" placement="bottom" :show-after="300">
-		<N8nDropdownMenu
-			:items="menuItems"
-			trigger="hover"
-			placement="bottom"
-			:loading="isLoadingDetails"
-			:loading-item-count="1"
-			:searchable="showSearch"
-			extra-popper-class="dependency-pill-dropdown"
-			:search-placeholder="i18n.baseText('workflows.dependencies.search.placeholder')"
-			:max-height="280"
-			:data-test-id="dataTestId"
-			@select="onSelect"
-			@search="onSearch"
-			@update:model-value="onDropdownToggle"
-		>
-			<template #trigger>
-				<!-- We use a custom border to align color with the other related badges -->
-				<N8nBadge theme="tertiary" :show-border="false" :class="$style.badge">
-					<span :class="$style.badgeText">
-						<N8nIcon icon="link" size="small" />
-						{{ effectiveCount }}
-					</span>
-				</N8nBadge>
-			</template>
-			<template v-if="hasHiddenDeps" #footer>
-				<div :class="$style.hiddenNotice">
-					{{
-						i18n.baseText('workflows.dependencies.hiddenNotice', {
-							adjustToNumber: depsResult!.inaccessibleCount,
-							interpolate: { count: String(depsResult!.inaccessibleCount) },
-						})
-					}}
-				</div>
-			</template>
-		</N8nDropdownMenu>
-	</N8nTooltip>
+	<N8nDropdownMenu
+		:items="menuItems"
+		trigger="hover"
+		placement="bottom"
+		:loading="isLoadingDetails"
+		:loading-item-count="1"
+		:searchable="showSearch"
+		extra-popper-class="dependency-pill-dropdown"
+		:search-placeholder="i18n.baseText('workflows.dependencies.search.placeholder')"
+		:max-height="280"
+		:data-test-id="dataTestId"
+		@select="onSelect"
+		@search="onSearch"
+		@update:model-value="onDropdownToggle"
+	>
+		<template #trigger>
+			<N8nBadge theme="tertiary" :class="$style.badge">
+				<span :class="$style.badgeText">
+					<N8nIcon icon="link" size="medium" />
+					{{ effectiveCount }}
+				</span>
+			</N8nBadge>
+		</template>
+		<template v-if="hasHiddenDeps" #footer>
+			<div :class="$style.hiddenNotice">
+				{{
+					i18n.baseText('workflows.dependencies.hiddenNotice', {
+						adjustToNumber: depsResult!.inaccessibleCount,
+						interpolate: { count: String(depsResult!.inaccessibleCount) },
+					})
+				}}
+			</div>
+		</template>
+	</N8nDropdownMenu>
 </template>
 
 <style lang="scss" module>
 .badge {
 	cursor: pointer;
-	border: var(--border);
-	border-radius: var(--radius);
-
 	padding: var(--spacing--4xs) var(--spacing--2xs);
+	border-radius: var(--spacing--4xs);
+	border-color: var(--color--foreground);
 	color: var(--color--text);
 }
 
@@ -263,7 +235,7 @@ async function onDropdownToggle(open: boolean) {
 .hiddenNotice {
 	padding: var(--spacing--4xs) var(--spacing--2xs);
 	border-top: var(--border);
-	color: var(--color--text--tint-1);
+	color: var(--color--text--tint-2);
 	font-size: var(--font-size--3xs);
 	font-style: italic;
 	line-height: var(--line-height--lg);

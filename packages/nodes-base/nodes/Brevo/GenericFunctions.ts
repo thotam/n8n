@@ -6,7 +6,7 @@ import type {
 	IWebhookFunctions,
 	JsonObject,
 } from 'n8n-workflow';
-import { BINARY_ENCODING, jsonParse, NodeOperationError } from 'n8n-workflow';
+import { jsonParse, NodeOperationError } from 'n8n-workflow';
 import MailComposer from 'nodemailer/lib/mail-composer';
 export namespace BrevoNode {
 	type ValidEmailFields = { to: string } | { sender: string } | { cc: string } | { bcc: string };
@@ -54,18 +54,19 @@ export namespace BrevoNode {
 		function getFileName(
 			itemIndex: number,
 			mimeType: string,
-			fileExt: string | undefined,
-			fileName: string | undefined,
+			fileExt: string,
+			fileName: string,
 		): string {
-			const ext = fileExt ?? mimeType.split('/')[1];
-
-			if (!fileName) {
-				return `file-${itemIndex}.${ext}`;
+			let ext = fileExt;
+			if (fileExt === undefined) {
+				ext = mimeType.split('/')[1];
 			}
 
-			return fileName.toLowerCase().endsWith(`.${ext.toLowerCase()}`)
-				? fileName
-				: `${fileName}.${ext}`;
+			let name = `${fileName}.${ext}`;
+			if (fileName === undefined) {
+				name = `file-${itemIndex}.${ext}`;
+			}
+			return name;
 		}
 
 		export async function validateAndCompileAttachmentsData(
@@ -83,15 +84,22 @@ export namespace BrevoNode {
 				const { binaryPropertyName } = dataPropertyList;
 				const dataMappingList = (binaryPropertyName as string).split(',');
 				for (const attachmentDataName of dataMappingList) {
-					const binaryData = this.helpers.assertBinaryData(attachmentDataName.trim());
-					const buffer = await this.helpers.getBinaryDataBuffer(attachmentDataName.trim());
+					const binaryData = this.helpers.assertBinaryData(attachmentDataName);
+					const bufferFromIncomingData = await this.helpers.getBinaryDataBuffer(attachmentDataName);
 
-					const content = buffer.toString(BINARY_ENCODING);
+					const {
+						data: content,
+						mimeType,
+						fileName,
+						fileExtension,
+					} = await this.helpers.prepareBinaryData(bufferFromIncomingData);
+
+					const itemIndex = this.getItemIndex();
 					const name = getFileName(
-						this.getItemIndex(),
-						binaryData.mimeType,
-						binaryData.fileExtension,
-						binaryData.fileName,
+						itemIndex,
+						mimeType,
+						fileExtension!,
+						fileName ?? binaryData.fileName!,
 					);
 
 					attachment.push({ content, name });

@@ -14,13 +14,13 @@ import { prepareBinariesDataList } from '../../../utils/binary';
 const versionDescription: INodeTypeDescription = {
 	displayName: 'Send Email',
 	name: 'emailSend',
-	icon: 'node:send-mail',
-	iconColor: 'black',
+	icon: 'fa:envelope',
 	group: ['output'],
 	version: 1,
 	description: 'Sends an Email',
 	defaults: {
 		name: 'Send Email',
+		color: '#00bb88',
 	},
 	inputs: [NodeConnectionTypes.Main],
 	outputs: [NodeConnectionTypes.Main],

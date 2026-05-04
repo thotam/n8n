@@ -1,7 +1,8 @@
 import { Logger } from '@n8n/backend-common';
+import { AuthenticatedRequest } from '@n8n/db';
 import { CredentialResolverError } from '@n8n/decorators';
 import { Service } from '@n8n/di';
-import type { NextFunction, Response } from 'express';
+import { NextFunction, Response } from 'express';
 import { Cipher } from 'n8n-core';
 import type {
 	ICredentialDataDecryptedObject,
@@ -27,7 +28,6 @@ import { CredentialResolutionError } from '../errors/credential-resolution.error
 import { CredentialResolverNotConfiguredError } from '../errors/credential-resolver-not-configured.error';
 import { CredentialResolverNotFoundError } from '../errors/credential-resolver-not-found.error';
 import { MissingExecutionContextError } from '../errors/missing-execution-context.error';
-import { AuthenticatedRequest } from '@n8n/db';
 
 /**
  * Service for resolving credentials dynamically via configured resolvers.
@@ -91,7 +91,7 @@ export class DynamicCredentialService implements ICredentialResolutionProvider {
 		}
 
 		// Build credential context from execution context
-		const credentialContext = await this.buildCredentialContext(executionContext);
+		const credentialContext = this.buildCredentialContext(executionContext);
 
 		if (!credentialContext) {
 			return this.handleMissingContext(credentialsResolveMetadata);
@@ -105,7 +105,7 @@ export class DynamicCredentialService implements ICredentialResolutionProvider {
 			const sharedFields = extractSharedFields(credentialType.type);
 
 			// Decrypt and parse resolver configuration
-			const decryptedConfig = await this.cipher.decryptV2(resolverEntity.config);
+			const decryptedConfig = this.cipher.decrypt(resolverEntity.config);
 			const parsedConfig = jsonParse<Record<string, unknown>>(decryptedConfig);
 
 			// Resolve expressions in resolver configuration using global data only
@@ -146,14 +146,14 @@ export class DynamicCredentialService implements ICredentialResolutionProvider {
 	/**
 	 * Builds credential context from execution context by decrypting the credentials field
 	 */
-	private async buildCredentialContext(executionContext: IExecutionContext | undefined) {
+	private buildCredentialContext(executionContext: IExecutionContext | undefined) {
 		if (!executionContext?.credentials) {
 			return undefined;
 		}
 
 		try {
 			// Decrypt credential context from execution context
-			const decrypted = await this.cipher.decryptV2(executionContext.credentials);
+			const decrypted = this.cipher.decrypt(executionContext.credentials);
 			return toCredentialContext(decrypted);
 		} catch (error) {
 			this.logger.error('Failed to decrypt credential context from execution context', {

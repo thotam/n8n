@@ -17,13 +17,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
+import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { createTestNode } from '@/__tests__/mocks';
 import type { INodeUi } from '@/Interface';
 import {
 	useWorkflowDocumentNodes,
 	type WorkflowDocumentNodesDeps,
 } from './useWorkflowDocumentNodes';
-import { useWorkflowDocumentNodeMetadata } from './useWorkflowDocumentNodeMetadata';
 
 function createNode(overrides: Partial<INodeUi> = {}): INodeUi {
 	return createTestNode({ name: 'Test Node', ...overrides }) as INodeUi;
@@ -32,19 +32,17 @@ function createNode(overrides: Partial<INodeUi> = {}): INodeUi {
 function createDeps(overrides: Partial<WorkflowDocumentNodesDeps> = {}): WorkflowDocumentNodesDeps {
 	return {
 		getNodeType: vi.fn().mockReturnValue(null),
-		assignNodeId: vi.fn().mockReturnValue(''),
-		syncWorkflowObject: vi.fn(),
-		unpinNodeData: vi.fn(),
-		nodeMetadata: useWorkflowDocumentNodeMetadata(),
 		...overrides,
 	};
 }
 
 describe('useWorkflowDocumentNodes', () => {
+	let workflowsStore: ReturnType<typeof useWorkflowsStore>;
 	let deps: WorkflowDocumentNodesDeps;
 
 	beforeEach(() => {
 		setActivePinia(createPinia());
+		workflowsStore = useWorkflowsStore();
 		deps = createDeps();
 	});
 
@@ -80,11 +78,11 @@ describe('useWorkflowDocumentNodes', () => {
 			expect(workflowDocumentNodes.getNodeByName('MyNode')?.id).toBe(node.id);
 		});
 
-		it('nodes set via setNodes are readable via allNodes', () => {
+		it('nodes set via setNodes are readable via getNodes', () => {
 			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
 			workflowDocumentNodes.setNodes([createNode({ name: 'A' }), createNode({ name: 'B' })]);
 
-			const nodes = workflowDocumentNodes.allNodes.value;
+			const nodes = workflowDocumentNodes.getNodes();
 			expect(nodes).toHaveLength(2);
 		});
 
@@ -187,25 +185,11 @@ describe('useWorkflowDocumentNodes', () => {
 			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
 			workflowDocumentNodes.setNodes([createNode({ name: 'A' })]);
 
-			expect(deps.nodeMetadata.nodeMetadata.value).toHaveProperty('A');
+			expect(workflowsStore.nodeMetadata).toHaveProperty('A');
 
 			workflowDocumentNodes.removeAllNodes();
 
-			expect(deps.nodeMetadata.nodeMetadata.value).toEqual({});
-		});
-
-		it('setNodes replaces all metadata to match the new node list', () => {
-			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
-			workflowDocumentNodes.setNodes([createNode({ name: 'A' }), createNode({ name: 'B' })]);
-			deps.nodeMetadata.touchParametersLastUpdatedAt('A');
-
-			workflowDocumentNodes.setNodes([createNode({ name: 'A' }), createNode({ name: 'C' })]);
-
-			// Metadata is reset: 'B' removed, 'A' reset to pristine, 'C' added
-			expect(deps.nodeMetadata.nodeMetadata.value).toEqual({
-				A: { pristine: true },
-				C: { pristine: true },
-			});
+			expect(workflowsStore.nodeMetadata).toEqual({});
 		});
 	});
 
@@ -397,10 +381,10 @@ describe('useWorkflowDocumentNodes', () => {
 			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
 			workflowDocumentNodes.setNodes([node]);
 
-			const tsBefore = deps.nodeMetadata.getParametersLastUpdate('Target');
+			const tsBefore = workflowsStore.nodeMetadata.Target.parametersLastUpdatedAt;
 			workflowDocumentNodes.setNodeValue({ name: 'Target', key: 'position', value: [300, 400] });
 
-			expect(deps.nodeMetadata.getParametersLastUpdate('Target')).toBe(tsBefore);
+			expect(workflowsStore.nodeMetadata.Target.parametersLastUpdatedAt).toBe(tsBefore);
 		});
 
 		it('setNodeValue updates parametersLastUpdatedAt for non-position changes', () => {
@@ -411,7 +395,27 @@ describe('useWorkflowDocumentNodes', () => {
 
 			workflowDocumentNodes.setNodeValue({ name: 'Target', key: 'disabled', value: true });
 
-			expect(deps.nodeMetadata.getParametersLastUpdate('Target') ?? 0).toBeGreaterThan(0);
+			expect(workflowsStore.nodeMetadata.Target.parametersLastUpdatedAt).toBeGreaterThan(0);
+		});
+
+		it('resetParametersLastUpdatedAt updates timestamp', () => {
+			const node = createNode({ name: 'Target' });
+
+			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
+			workflowDocumentNodes.setNodes([node]);
+
+			workflowDocumentNodes.resetParametersLastUpdatedAt('Target');
+
+			expect(workflowsStore.nodeMetadata.Target.parametersLastUpdatedAt).toBeGreaterThan(0);
+		});
+
+		it('resetParametersLastUpdatedAt creates metadata entry if missing', () => {
+			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
+
+			workflowDocumentNodes.resetParametersLastUpdatedAt('NewNode');
+
+			expect(workflowsStore.nodeMetadata.NewNode).toBeDefined();
+			expect(workflowsStore.nodeMetadata.NewNode.parametersLastUpdatedAt).toBeGreaterThan(0);
 		});
 	});
 
@@ -549,33 +553,6 @@ describe('useWorkflowDocumentNodes', () => {
 			expect(dirtySpy).not.toHaveBeenCalled();
 		});
 
-		it('removeNode calls unpinNodeData', () => {
-			const node = createNode({ name: 'Target' });
-
-			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
-			workflowDocumentNodes.setNodes([node]);
-			workflowDocumentNodes.removeNode(node);
-
-			expect(deps.unpinNodeData).toHaveBeenCalledWith('Target');
-		});
-
-		it('removeNodeById calls unpinNodeData', () => {
-			const node = createNode({ name: 'Target' });
-
-			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
-			workflowDocumentNodes.setNodes([node]);
-			workflowDocumentNodes.removeNodeById(node.id);
-
-			expect(deps.unpinNodeData).toHaveBeenCalledWith('Target');
-		});
-
-		it('removeNodeById does not call unpinNodeData when node not found', () => {
-			const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
-			workflowDocumentNodes.removeNodeById('nonexistent');
-
-			expect(deps.unpinNodeData).not.toHaveBeenCalled();
-		});
-
 		it('removeNodeById uses empty name when node not found', () => {
 			const hookSpy = vi.fn();
 
@@ -588,27 +565,5 @@ describe('useWorkflowDocumentNodes', () => {
 				payload: { name: '', id: 'nonexistent' },
 			});
 		});
-	});
-
-	describe('findNodeByPartialId', () => {
-		test.each([
-			[[], 'D', undefined],
-			[['A', 'B', 'C'], 'D', undefined],
-			[['A', 'B', 'C'], 'B', 1],
-			[['AA', 'BB', 'CC'], 'B', 1],
-			[['AA', 'BB', 'BC'], 'B', 1],
-			[['AA', 'BB', 'BC'], 'BC', 2],
-		] as Array<[string[], string, number | undefined]>)(
-			'with input %s , %s returns node with index %s',
-			(ids, id, expectedIndex) => {
-				const nodes = ids.map((x) => createNode({ id: x, name: x }));
-				const workflowDocumentNodes = useWorkflowDocumentNodes(deps);
-				workflowDocumentNodes.setNodes(nodes);
-
-				expect(workflowDocumentNodes.findNodeByPartialId(id)?.id).toBe(
-					nodes[expectedIndex ?? -1]?.id,
-				);
-			},
-		);
 	});
 });

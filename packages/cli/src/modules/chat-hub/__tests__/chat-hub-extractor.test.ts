@@ -61,7 +61,7 @@ describe('ChatHubExtractor', () => {
 			};
 			const encryptedData = 'encrypted-string';
 
-			mockCipher.decryptV2.mockResolvedValue(JSON.stringify(metadata));
+			mockCipher.decrypt.mockReturnValue(JSON.stringify(metadata));
 
 			const triggerItem = createTriggerItem({
 				encryptedMetadata: encryptedData,
@@ -73,7 +73,7 @@ describe('ChatHubExtractor', () => {
 
 			const result = await extractor.execute(options);
 
-			expect(mockCipher.decryptV2).toHaveBeenCalledWith(encryptedData);
+			expect(mockCipher.decrypt).toHaveBeenCalledWith(encryptedData);
 			expect(result).toEqual({
 				triggerItems: [triggerItem],
 				contextUpdate: {
@@ -97,7 +97,7 @@ describe('ChatHubExtractor', () => {
 				method: 'POST',
 				endpoint: '/api/test',
 			};
-			mockCipher.decryptV2.mockResolvedValue(JSON.stringify(metadata));
+			mockCipher.decrypt.mockReturnValue(JSON.stringify(metadata));
 
 			const triggerItem = createTriggerItem({
 				encryptedMetadata: 'encrypted',
@@ -133,7 +133,7 @@ describe('ChatHubExtractor', () => {
 				method: 'POST',
 				endpoint: '/api/test',
 			};
-			mockCipher.decryptV2.mockResolvedValue(JSON.stringify(metadata));
+			mockCipher.decrypt.mockReturnValue(JSON.stringify(metadata));
 
 			const triggerItem = createTriggerItem({
 				encryptedMetadata: 'encrypted',
@@ -151,7 +151,7 @@ describe('ChatHubExtractor', () => {
 		});
 
 		it('should throw error when decryption fails', async () => {
-			mockCipher.decryptV2.mockImplementation(async () => {
+			mockCipher.decrypt.mockImplementation(() => {
 				throw new Error('Decryption failed');
 			});
 
@@ -174,7 +174,7 @@ describe('ChatHubExtractor', () => {
 		});
 
 		it('should throw error when JSON parsing fails', async () => {
-			mockCipher.decryptV2.mockResolvedValue('invalid-json{]');
+			mockCipher.decrypt.mockReturnValue('invalid-json{]');
 
 			const triggerItem = createTriggerItem({
 				encryptedMetadata: 'encrypted',
@@ -190,7 +190,7 @@ describe('ChatHubExtractor', () => {
 		});
 
 		it('should throw error when authToken is missing in decrypted data', async () => {
-			mockCipher.decryptV2.mockResolvedValue(JSON.stringify({ browserId: 'browser-id-456' }));
+			mockCipher.decrypt.mockReturnValue(JSON.stringify({ browserId: 'browser-id-456' }));
 
 			const triggerItem = createTriggerItem({
 				encryptedMetadata: 'encrypted',
@@ -211,7 +211,7 @@ describe('ChatHubExtractor', () => {
 		});
 
 		it('should always delete encryptedMetadata even on error', async () => {
-			mockCipher.decryptV2.mockImplementation(async () => {
+			mockCipher.decrypt.mockImplementation(() => {
 				throw new Error('fail');
 			});
 
@@ -240,7 +240,7 @@ describe('ChatHubExtractor', () => {
 			await expect(extractor.execute(options)).rejects.toThrow(
 				'No valid Chat Hub authentication metadata could be extracted.',
 			);
-			expect(mockCipher.decryptV2).not.toHaveBeenCalled();
+			expect(mockCipher.decrypt).not.toHaveBeenCalled();
 		});
 	});
 

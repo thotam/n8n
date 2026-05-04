@@ -45,9 +45,6 @@ const mockResponse = {
 		{
 			name: 'models/gemini-3-pro-image',
 		},
-		{
-			name: 'models/gemini-3.1-flash-image-preview',
-		},
 	],
 };
 
@@ -146,11 +143,6 @@ describe('GoogleGemini -> listSearch', () => {
 						name: 'models/gemini-3-pro-image (Nano Banana Pro)',
 						value: 'models/gemini-3-pro-image',
 					},
-					{
-						// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
-						name: 'models/gemini-3.1-flash-image-preview (Nano Banana 2)',
-						value: 'models/gemini-3.1-flash-image-preview',
-					},
 				],
 			});
 		});
@@ -188,11 +180,6 @@ describe('GoogleGemini -> listSearch', () => {
 						// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
 						name: 'models/gemini-3-pro-image (Nano Banana Pro)',
 						value: 'models/gemini-3-pro-image',
-					},
-					{
-						// eslint-disable-next-line n8n-nodes-base/node-param-display-name-miscased
-						name: 'models/gemini-3.1-flash-image-preview (Nano Banana 2)',
-						value: 'models/gemini-3.1-flash-image-preview',
 					},
 				],
 			});

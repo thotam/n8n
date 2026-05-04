@@ -1,6 +1,6 @@
 /* eslint-disable n8n-local-rules/no-skipped-tests */
 import type { JSONSchema7 } from 'json-schema';
-import { z } from 'zod';
+import { z, ZodError } from 'zod';
 
 import { parseObject } from '../../src/parsers/parse-object';
 
@@ -432,26 +432,24 @@ describe('parseObject', () => {
 			},
 		});
 
-		expect(run(result, { b: 'hello', x: true })).toMatchObject({
+		expect(run(result, { b: 'hello', x: true })).toEqual({
 			success: false,
-			error: expect.objectContaining({
-				issues: [
-					{
-						code: 'invalid_type',
-						expected: 'string',
-						received: 'undefined',
-						path: ['a'],
-						message: 'Required',
-					},
-					{
-						code: 'invalid_type',
-						expected: 'number',
-						received: 'string',
-						path: ['b'],
-						message: 'Expected number, received string',
-					},
-				],
-			}),
+			error: new ZodError([
+				{
+					code: 'invalid_type',
+					expected: 'string',
+					received: 'undefined',
+					path: ['a'],
+					message: 'Required',
+				},
+				{
+					code: 'invalid_type',
+					expected: 'number',
+					received: 'string',
+					path: ['b'],
+					message: 'Expected number, received string',
+				},
+			]),
 		});
 	});
 
@@ -476,33 +474,31 @@ describe('parseObject', () => {
 
 		expect(result).toMatchZod(expected);
 
-		expect(run(result, { b: 'hello', x: 'true' })).toMatchObject({
+		expect(run(result, { b: 'hello', x: 'true' })).toEqual({
 			success: false,
-			error: expect.objectContaining({
-				issues: [
-					{
-						code: 'invalid_type',
-						expected: 'string',
-						received: 'undefined',
-						path: ['a'],
-						message: 'Required',
-					},
-					{
-						code: 'invalid_type',
-						expected: 'number',
-						received: 'string',
-						path: ['b'],
-						message: 'Expected number, received string',
-					},
-					{
-						code: 'invalid_type',
-						expected: 'boolean',
-						received: 'string',
-						path: ['x'],
-						message: 'Expected boolean, received string',
-					},
-				],
-			}),
+			error: new ZodError([
+				{
+					code: 'invalid_type',
+					expected: 'string',
+					received: 'undefined',
+					path: ['a'],
+					message: 'Required',
+				},
+				{
+					code: 'invalid_type',
+					expected: 'number',
+					received: 'string',
+					path: ['b'],
+					message: 'Expected number, received string',
+				},
+				{
+					code: 'invalid_type',
+					expected: 'boolean',
+					received: 'string',
+					path: ['x'],
+					message: 'Expected boolean, received string',
+				},
+			]),
 		});
 	});
 
@@ -553,19 +549,17 @@ describe('parseObject', () => {
 			data: { a: 'a', b: 2, '.': [] },
 		});
 
-		expect(run(result, { a: 'a', b: 2, '.': '[]' })).toMatchObject({
+		expect(run(result, { a: 'a', b: 2, '.': '[]' })).toEqual({
 			success: false,
-			error: expect.objectContaining({
-				issues: [
-					{
-						code: 'invalid_type',
-						expected: 'array',
-						received: 'string',
-						path: ['.'],
-						message: 'Expected array, received string',
-					},
-				],
-			}),
+			error: new ZodError([
+				{
+					code: 'invalid_type',
+					expected: 'array',
+					received: 'string',
+					path: ['.'],
+					message: 'Expected array, received string',
+				},
+			]),
 		});
 	});
 
@@ -719,30 +713,28 @@ describe('parseObject', () => {
 
 		expect(result).toMatchZod(expected);
 
-		expect(run(result, { x: true, '.': [], ',': [] })).toMatchObject({
+		expect(run(result, { x: true, '.': [], ',': [] })).toEqual({
 			success: false,
-			error: expect.objectContaining({
-				issues: [
-					{
-						path: [','],
-						code: 'custom',
-						message: 'Invalid input: Key matching regex /,/ must match schema',
-						params: {
-							issues: [
-								{
-									code: 'too_small',
-									minimum: 1,
-									type: 'array',
-									inclusive: true,
-									exact: false,
-									message: 'Array must contain at least 1 element(s)',
-									path: [],
-								},
-							],
-						},
+			error: new ZodError([
+				{
+					path: [','],
+					code: 'custom',
+					message: 'Invalid input: Key matching regex /,/ must match schema',
+					params: {
+						issues: [
+							{
+								code: 'too_small',
+								minimum: 1,
+								type: 'array',
+								inclusive: true,
+								exact: false,
+								message: 'Array must contain at least 1 element(s)',
+								path: [],
+							},
+						],
 					},
-				],
-			}),
+				},
+			]),
 		});
 	});
 
@@ -826,30 +818,28 @@ describe('parseObject', () => {
 			data: { '.': [] },
 		});
 
-		expect(run(result, { ',': [] })).toMatchObject({
+		expect(run(result, { ',': [] })).toEqual({
 			success: false,
-			error: expect.objectContaining({
-				issues: [
-					{
-						path: [','],
-						code: 'custom',
-						message: 'Invalid input: Key matching regex /,/ must match schema',
-						params: {
-							issues: [
-								{
-									code: 'too_small',
-									minimum: 1,
-									type: 'array',
-									inclusive: true,
-									exact: false,
-									message: 'Array must contain at least 1 element(s)',
-									path: [],
-								},
-							],
-						},
+			error: new ZodError([
+				{
+					path: [','],
+					code: 'custom',
+					message: 'Invalid input: Key matching regex /,/ must match schema',
+					params: {
+						issues: [
+							{
+								code: 'too_small',
+								minimum: 1,
+								type: 'array',
+								inclusive: true,
+								exact: false,
+								message: 'Array must contain at least 1 element(s)',
+								path: [],
+							},
+						],
 					},
-				],
-			}),
+				},
+			]),
 		});
 
 		expect(result).toMatchZod(expected);

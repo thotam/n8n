@@ -23,9 +23,6 @@ export class HttpCustomAuth implements ICredentialType {
 			placeholder:
 				'{ "headers": { "key" : "value" }, "body": { "key": "value" }, "qs": { "key": "value" } }',
 			default: '',
-			typeOptions: {
-				redactJsonLeaves: true,
-			},
 		},
 	];
 }

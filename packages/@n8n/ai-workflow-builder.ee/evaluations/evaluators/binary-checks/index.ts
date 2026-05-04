@@ -61,8 +61,6 @@ export function createBinaryChecksEvaluator(
 				// Intentionally omit llmCallLimiter: binary-checks LLM judges are small,
 				// cheap calls that should run in parallel, not throttled by the shared limiter.
 				timeoutMs: ctx.timeoutMs,
-				agentTextResponse: ctx.agentTextResponse,
-				existingWorkflow: ctx.datasetInputContext?.existingWorkflow,
 			};
 
 			const results = await Promise.allSettled(

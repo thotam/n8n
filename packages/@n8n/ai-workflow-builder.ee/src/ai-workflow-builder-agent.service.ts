@@ -2,7 +2,6 @@ import { ChatAnthropic } from '@langchain/anthropic';
 import { AIMessage, ToolMessage } from '@langchain/core/messages';
 import type { BaseMessage } from '@langchain/core/messages';
 import { LangChainTracer } from '@langchain/core/tracers/tracer_langchain';
-import { buildProxyHeaders } from '@n8n/api-types';
 import { Logger } from '@n8n/backend-common';
 import { Service } from '@n8n/di';
 import { AiAssistantClient, AiAssistantSDK } from '@n8n_io/ai-assistant-sdk';
@@ -88,10 +87,6 @@ export class AiWorkflowBuilderService {
 		const authHeaders = {
 			// eslint-disable-next-line @typescript-eslint/naming-convention
 			Authorization: `${authResponse.tokenType} ${authResponse.accessToken}`,
-			...buildProxyHeaders({
-				feature: 'workflow-builder',
-				n8nVersion: this.n8nVersion ?? 'unknown',
-			}),
 		};
 
 		return authHeaders;
@@ -220,7 +215,9 @@ export class AiWorkflowBuilderService {
 			tracer: tracingClient
 				? new LangChainTracer({
 						client: tracingClient,
-						projectName: 'code-workflow-builder',
+						projectName: featureFlags?.codeBuilder
+							? 'code-workflow-builder'
+							: 'n8n-workflow-builder',
 					})
 				: undefined,
 			instanceUrl: this.instanceUrl,
@@ -265,6 +262,8 @@ export class AiWorkflowBuilderService {
 		const { agent } = await this.getAgent(user, payload.id, payload.featureFlags);
 		const userId = user?.id?.toString();
 		const workflowId = payload.workflowContext?.currentWorkflow?.id;
+		const isCodeBuilder = payload.featureFlags?.codeBuilder ?? false;
+
 		const threadId = SessionManagerService.generateThreadId(workflowId, userId);
 
 		// Load historical messages from persistent storage to include in initial state.
@@ -312,7 +311,7 @@ export class AiWorkflowBuilderService {
 					userId,
 					payload.id,
 					threadId,
-					true,
+					isCodeBuilder,
 				);
 			} catch (error) {
 				this.logger?.error('Failed to track builder reply telemetry', { error });
@@ -417,9 +416,10 @@ export class AiWorkflowBuilderService {
 		this.onTelemetryEvent('Builder replied to user message', properties);
 	}
 
-	async getSessions(workflowId: string | undefined, user?: IUser) {
+	async getSessions(workflowId: string | undefined, user?: IUser, codeBuilder?: boolean) {
 		const userId = user?.id?.toString();
-		return await this.sessionManager.getSessions(workflowId, userId, 'code-builder');
+		const agentType = codeBuilder ? 'code-builder' : undefined;
+		return await this.sessionManager.getSessions(workflowId, userId, agentType);
 	}
 
 	async getBuilderInstanceCredits(
@@ -444,14 +444,14 @@ export class AiWorkflowBuilderService {
 		workflowId: string,
 		user: IUser,
 		messageId: string,
-		versionCardId?: string,
+		codeBuilder?: boolean,
 	): Promise<boolean> {
+		const agentType = codeBuilder ? 'code-builder' : undefined;
 		return await this.sessionManager.truncateMessagesAfter(
 			workflowId,
 			user.id,
 			messageId,
-			'code-builder',
-			versionCardId,
+			agentType,
 		);
 	}
 

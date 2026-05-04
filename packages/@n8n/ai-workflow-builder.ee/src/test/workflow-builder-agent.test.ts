@@ -7,6 +7,30 @@ import { mock } from 'jest-mock-extended';
 import type { INodeTypeDescription } from 'n8n-workflow';
 import { ApplicationError, OperationalError } from 'n8n-workflow';
 
+jest.mock('@/tools/add-node.tool', () => ({
+	createAddNodeTool: jest.fn().mockReturnValue({ tool: { name: 'add_node' } }),
+}));
+jest.mock('@/tools/connect-nodes.tool', () => ({
+	createConnectNodesTool: jest.fn().mockReturnValue({ tool: { name: 'connect_nodes' } }),
+}));
+jest.mock('@/tools/node-details.tool', () => ({
+	createNodeDetailsTool: jest.fn().mockReturnValue({ tool: { name: 'node_details' } }),
+}));
+jest.mock('@/tools/node-search.tool', () => ({
+	createNodeSearchTool: jest.fn().mockReturnValue({ tool: { name: 'node_search' } }),
+}));
+jest.mock('@/tools/remove-node.tool', () => ({
+	createRemoveNodeTool: jest.fn().mockReturnValue({ tool: { name: 'remove_node' } }),
+}));
+jest.mock('@/tools/update-node-parameters.tool', () => ({
+	createUpdateNodeParametersTool: jest
+		.fn()
+		.mockReturnValue({ tool: { name: 'update_node_parameters' } }),
+}));
+jest.mock('@/tools/get-node-parameter.tool', () => ({
+	createGetNodeParameterTool: jest.fn().mockReturnValue({ tool: { name: 'get_node_parameter' } }),
+}));
+
 jest.mock('@/utils/stream-processor', () => ({
 	createStreamProcessor: jest.fn(),
 	formatMessages: jest.fn(),
@@ -128,9 +152,6 @@ describe('WorkflowBuilderAgent', () => {
 			mockPayload = {
 				id: '12345',
 				message: 'Create a workflow',
-				// Test for plan mode as it's the only case when legacy multi-agent implementation is still in use
-				featureFlags: { planMode: true },
-				mode: 'plan',
 				workflowContext: {
 					currentWorkflow: { id: 'workflow-123' },
 				},
@@ -160,8 +181,6 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '12345',
 				message: validMessage,
-				featureFlags: { planMode: true },
-				mode: 'plan',
 			};
 
 			// Mock the stream processing to return a proper StreamOutput
@@ -328,7 +347,7 @@ describe('WorkflowBuilderAgent', () => {
 		});
 	});
 
-	describe('plan mode routing', () => {
+	describe('hybrid plan+codeBuilder routing', () => {
 		const MockedCodeWorkflowBuilder = CodeWorkflowBuilder as jest.MockedClass<
 			typeof CodeWorkflowBuilder
 		>;
@@ -360,11 +379,11 @@ describe('WorkflowBuilderAgent', () => {
 			);
 		});
 
-		it('should route to multi-agent for initial plan request when planMode enabled', async () => {
+		it('should route to multi-agent for initial plan request when codeBuilder+planMode enabled', async () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a weather alert workflow',
-				featureFlags: { planMode: true },
+				featureFlags: { codeBuilder: true, planMode: true },
 				mode: 'plan',
 			};
 
@@ -390,7 +409,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a weather alert workflow',
-				featureFlags: { planMode: true },
+				featureFlags: { codeBuilder: true, planMode: true },
 				resumeData: { action: 'approve' },
 				resumeInterrupt: mockPlanInterrupt,
 			};
@@ -416,7 +435,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a weather alert workflow',
-				featureFlags: { planMode: true },
+				featureFlags: { codeBuilder: true, planMode: true },
 				resumeData: { action: 'modify', feedback: 'Add error handling' },
 				resumeInterrupt: mockPlanInterrupt,
 			};
@@ -442,7 +461,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a weather alert workflow',
-				featureFlags: { planMode: true },
+				featureFlags: { codeBuilder: true, planMode: true },
 				resumeData: { action: 'reject' },
 				resumeInterrupt: mockPlanInterrupt,
 			};
@@ -468,7 +487,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a simple workflow',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 			};
 
 			const generator = agent.chat(payload);
@@ -522,7 +541,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'How do credentials work?',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 			};
 
 			const results: StreamOutput[] = [];
@@ -547,7 +566,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Build me a Slack notification workflow',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 			};
 
 			const results: StreamOutput[] = [];
@@ -572,7 +591,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'What approach should I take?',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 			};
 
 			const results: StreamOutput[] = [];
@@ -593,7 +612,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Help me',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 			};
 
 			for await (const _ of triageAgent.chat(payload, 'user-456')) {
@@ -615,7 +634,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Help me',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 			};
 
 			const controller = new AbortController();
@@ -652,7 +671,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Build this',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 				workflowContext: { currentWorkflow: { id: 'wf-1' } },
 			};
 
@@ -685,7 +704,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'How do credentials work?',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 				workflowContext: { currentWorkflow: { id: 'wf-1' } },
 			};
 
@@ -722,7 +741,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'What approach should I take?',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 				workflowContext: { currentWorkflow: { id: 'wf-1' } },
 			};
 
@@ -756,7 +775,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Build a workflow',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 				workflowContext: { currentWorkflow: { id: 'wf-1' } },
 			};
 
@@ -783,7 +802,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Fix the Google Sheets error',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 				workflowContext: { currentWorkflow: { id: 'wf-1' } },
 			};
 
@@ -818,7 +837,7 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Test',
-				featureFlags: { mergeAskBuild: true },
+				featureFlags: { codeBuilder: true, mergeAskBuild: true },
 			};
 
 			for await (const _ of triageAgent.chat(payload, 'user-456')) {

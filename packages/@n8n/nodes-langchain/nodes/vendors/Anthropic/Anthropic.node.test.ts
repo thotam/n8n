@@ -288,7 +288,9 @@ describe('Anthropic Node', () => {
 						return undefined;
 				}
 			});
-			getBaseUrlMock.mockResolvedValue('https://api.anthropic.com');
+			executeFunctionsMock.getCredentials.mockResolvedValue({
+				url: 'https://api.anthropic.com',
+			});
 			downloadFileMock.mockResolvedValue({
 				fileContent: Buffer.from('test file content'),
 				mimeType: 'application/pdf',
@@ -341,7 +343,7 @@ describe('Anthropic Node', () => {
 						return undefined;
 				}
 			});
-			getBaseUrlMock.mockResolvedValue('https://api.anthropic.com');
+			executeFunctionsMock.getCredentials.mockResolvedValue({});
 			const mockBinaryData: IBinaryData = {
 				mimeType: 'application/pdf',
 				fileName: 'test.pdf',
@@ -756,7 +758,7 @@ describe('Anthropic Node', () => {
 						return undefined;
 				}
 			});
-			getBaseUrlMock.mockResolvedValue('https://api.anthropic.com');
+			executeFunctionsMock.getCredentials.mockResolvedValue({});
 			apiRequestMock.mockResolvedValue({
 				content: [
 					{

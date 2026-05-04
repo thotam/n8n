@@ -9,9 +9,7 @@ export async function schemaSearch(this: ILoadOptionsFunctions): Promise<INodeLi
 
 	const { db } = await configurePostgres.call(this, credentials, options);
 
-	const response = await db.any(
-		'SELECT schema_name FROM information_schema.schemata ORDER BY schema_name',
-	);
+	const response = await db.any('SELECT schema_name FROM information_schema.schemata');
 
 	return {
 		results: response.map((schema) => ({
@@ -20,7 +18,6 @@ export async function schemaSearch(this: ILoadOptionsFunctions): Promise<INodeLi
 		})),
 	};
 }
-
 export async function tableSearch(this: ILoadOptionsFunctions): Promise<INodeListSearchResult> {
 	const credentials = await this.getCredentials<PostgresNodeCredentials>('postgres');
 	const options = { nodeVersion: this.getNode().typeVersion };
@@ -32,7 +29,7 @@ export async function tableSearch(this: ILoadOptionsFunctions): Promise<INodeLis
 	}) as string;
 
 	const response = await db.any(
-		'SELECT table_name FROM information_schema.tables WHERE table_schema=$1 ORDER BY table_name',
+		'SELECT table_name FROM information_schema.tables WHERE table_schema=$1',
 		[schema],
 	);
 

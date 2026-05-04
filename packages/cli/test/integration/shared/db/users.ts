@@ -82,8 +82,10 @@ export async function createUserWithMfaEnabled(
 
 	const recoveryCodes = mfaService.generateRecoveryCodes(data.numberOfRecoveryCodes);
 
-	const { encryptedSecret, encryptedRecoveryCodes } =
-		await mfaService.encryptSecretAndRecoveryCodes(secret, recoveryCodes);
+	const { encryptedSecret, encryptedRecoveryCodes } = mfaService.encryptSecretAndRecoveryCodes(
+		secret,
+		recoveryCodes,
+	);
 
 	const user = await createUser({
 		mfaEnabled: true,

@@ -37,30 +37,12 @@ import {
 } from '@/app/stores/workflowDocument.store';
 import { useSettingsStore } from '@/app/stores/settings.store';
 
-const hasPublicDisplayCondition = (parameter: INodeProperties, value: boolean) =>
-	parameter.displayOptions?.show?.public?.includes(value) ?? false;
-
-const stripPublicDisplayCondition = (parameter: INodeProperties): INodeProperties => {
-	const displayOptions = parameter.displayOptions;
-	if (!displayOptions?.show?.public) {
-		return parameter;
-	}
-
-	const { public: _public, ...show } = displayOptions.show;
-
-	return {
-		...parameter,
-		displayOptions: {
-			...displayOptions,
-			...(Object.keys(show).length > 0 ? { show } : {}),
-		},
-	};
-};
-
 export function useNodeSettingsParameters() {
 	const workflowsStore = useWorkflowsStore();
 	const workflowDocumentStore = computed(() =>
-		useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+		workflowsStore.workflowId
+			? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+			: undefined,
 	);
 	const nodeTypesStore = useNodeTypesStore();
 	const settingsStore = useSettingsStore();
@@ -150,15 +132,15 @@ export function useNodeSettingsParameters() {
 			value: nodeParameters,
 		};
 
-		const connections = workflowDocumentStore.value.connectionsBySourceNode;
+		const connections = workflowsStore.allConnections;
 
 		const updatedConnections = updateDynamicConnections(node, connections, parameterData);
 
 		if (updatedConnections) {
-			workflowDocumentStore.value.setConnections(updatedConnections);
+			workflowsStore.setConnections(updatedConnections);
 		}
 
-		workflowDocumentStore.value.setNodeParameters(updateInformation);
+		workflowDocumentStore.value?.setNodeParameters(updateInformation);
 
 		void externalHooks.run('nodeSettings.valueChanged', {
 			parameterPath,
@@ -202,44 +184,25 @@ export function useNodeSettingsParameters() {
 			return false;
 		}
 
-		// Cache node type lookup - used multiple times
-		const nodeType = node ? nodeTypesStore.getNodeType(node.type, node.typeVersion) : null;
-		const nodeTypeValue = node?.type ?? '';
-
-		let effectiveParameter = parameter;
-
-		if (
-			displayKey === 'displayOptions' &&
-			nodeTypeValue === CHAT_TRIGGER_NODE_TYPE &&
-			settingsStore.isPublicChatTriggerDisabled
-		) {
-			if (
-				effectiveParameter.name === 'public' ||
-				hasPublicDisplayCondition(effectiveParameter, true)
-			) {
-				return false;
-			}
-
-			if (hasPublicDisplayCondition(effectiveParameter, false)) {
-				effectiveParameter = stripPublicDisplayCondition(effectiveParameter);
-			}
-		}
-
 		// Fast path: hide parameters explicitly marked as cloud-only on cloud deployments
-		if (effectiveParameter.displayOptions?.hideOnCloud && settingsStore.isCloudDeployment) {
+		if (parameter.displayOptions?.hideOnCloud && settingsStore.isCloudDeployment) {
 			return false;
 		}
 
 		// Fast path: if no display/disabled options defined, no need for further checks
-		const hasDisplayOptions = effectiveParameter[displayKey] !== undefined;
+		const hasDisplayOptions = parameter[displayKey] !== undefined;
 
 		// Check custom API call - only compute if needed
 		if (
 			nodeHelpers.isCustomApiCallSelected(nodeParameters) &&
-			mustHideDuringCustomApiCall(effectiveParameter, nodeParameters)
+			mustHideDuringCustomApiCall(parameter, nodeParameters)
 		) {
 			return false;
 		}
+
+		// Cache node type lookup - used multiple times
+		const nodeType = node ? nodeTypesStore.getNodeType(node.type, node.typeVersion) : null;
+		const nodeTypeValue = node?.type ?? '';
 
 		// Auth-related parameter handling - only compute if not in KEEP_AUTH_IN_NDV_FOR_NODES
 		if (!KEEP_AUTH_IN_NDV_FOR_NODES.includes(nodeTypeValue)) {
@@ -247,7 +210,7 @@ export function useNodeSettingsParameters() {
 
 			if (mainNodeAuthField) {
 				// Check if parameter is the main auth field itself
-				if (effectiveParameter.name === mainNodeAuthField.name) {
+				if (parameter.name === mainNodeAuthField.name) {
 					return false;
 				}
 
@@ -255,7 +218,7 @@ export function useNodeSettingsParameters() {
 				// TODO: For now, hide all fields that are used in authentication fields displayOptions
 				// Ideally, we should check if any non-auth field depends on it before hiding it but
 				// since there is no such case, omitting it to avoid additional computation
-				if (isAuthRelatedParameter(getNodeAuthFields(nodeType), effectiveParameter)) {
+				if (isAuthRelatedParameter(getNodeAuthFields(nodeType), parameter)) {
 					return false;
 				}
 			}
@@ -265,7 +228,7 @@ export function useNodeSettingsParameters() {
 		// Remove this check when feature is generally available.
 		if (
 			nodeType?.name === CHAT_TRIGGER_NODE_TYPE &&
-			effectiveParameter.name === 'availableInChat' &&
+			parameter.name === 'availableInChat' &&
 			!settingsStore.isChatFeatureEnabled
 		) {
 			return false;
@@ -289,13 +252,7 @@ export function useNodeSettingsParameters() {
 
 		// Fast path: no keys means nothing to resolve
 		if (keyCount === 0) {
-			return nodeHelpers.displayParameter(
-				nodeParameters,
-				effectiveParameter,
-				path,
-				node,
-				displayKey,
-			);
+			return nodeHelpers.displayParameter(nodeParameters, parameter, path, node, displayKey);
 		}
 
 		// Check if we have any expressions to resolve (scan first to avoid unnecessary work)
@@ -310,13 +267,7 @@ export function useNodeSettingsParameters() {
 
 		// Fast path: no expressions means we can use original parameters directly
 		if (!hasExpressions) {
-			return nodeHelpers.displayParameter(
-				nodeParameters,
-				effectiveParameter,
-				path,
-				node,
-				displayKey,
-			);
+			return nodeHelpers.displayParameter(nodeParameters, parameter, path, node, displayKey);
 		}
 
 		// Resolve expressions - use index-based iteration for better performance
@@ -427,18 +378,12 @@ export function useNodeSettingsParameters() {
 			if (path) {
 				const resolvedValues = deepCopy(nodeParameters);
 				set(resolvedValues, path, nodeParams);
-				return nodeHelpers.displayParameter(
-					resolvedValues,
-					effectiveParameter,
-					path,
-					node,
-					displayKey,
-				);
+				return nodeHelpers.displayParameter(resolvedValues, parameter, path, node, displayKey);
 			}
-			return nodeHelpers.displayParameter(nodeParams, effectiveParameter, '', node, displayKey);
+			return nodeHelpers.displayParameter(nodeParams, parameter, '', node, displayKey);
 		}
 
-		return nodeHelpers.displayParameter(nodeParameters, effectiveParameter, path, node, displayKey);
+		return nodeHelpers.displayParameter(nodeParameters, parameter, path, node, displayKey);
 	}
 
 	return {

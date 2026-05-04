@@ -42,7 +42,6 @@ const userFilterSchema = z.object({
 	mfaEnabled: z.boolean().optional(),
 	fullText: z.string().optional(), // Full text search across firstName, lastName, and email
 	isPending: z.boolean().optional(),
-	projectId: z.string().optional(),
 });
 
 const filterValidatorSchema = z

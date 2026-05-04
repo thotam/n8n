@@ -18,9 +18,11 @@ async function fetchTags() {
 	try {
 		await tagsStore.fetchAll({ force: true, withUsageCount: true });
 	} catch (error) {
-		showError(error, i18n.baseText('tagsManager.showError.onFetch.title'), {
-			message: i18n.baseText('tagsManager.showError.onFetch.message'),
-		});
+		showError(
+			error,
+			i18n.baseText('tagsManager.showError.onFetch.title'),
+			i18n.baseText('tagsManager.showError.onFetch.message'),
+		);
 	}
 }
 
@@ -29,12 +31,13 @@ async function createTag(name: string): Promise<ITag> {
 		return await tagsStore.create(name);
 	} catch (error) {
 		const escapedName = escape(name);
-		showError(error, i18n.baseText('tagsManager.showError.onCreate.title'), {
-			message:
-				i18n.baseText('tagsManager.showError.onCreate.message', {
-					interpolate: { escapedName },
-				}) + ':',
-		});
+		showError(
+			error,
+			i18n.baseText('tagsManager.showError.onCreate.title'),
+			i18n.baseText('tagsManager.showError.onCreate.message', {
+				interpolate: { escapedName },
+			}) + ':',
+		);
 		throw error;
 	}
 }
@@ -49,12 +52,13 @@ async function updateTag(id: string, name: string): Promise<ITag> {
 		return updatedTag;
 	} catch (error) {
 		const escapedName = escape(name);
-		showError(error, i18n.baseText('tagsManager.showError.onUpdate.title'), {
-			message:
-				i18n.baseText('tagsManager.showError.onUpdate.message', {
-					interpolate: { escapedName },
-				}) + ':',
-		});
+		showError(
+			error,
+			i18n.baseText('tagsManager.showError.onUpdate.title'),
+			i18n.baseText('tagsManager.showError.onUpdate.message', {
+				interpolate: { escapedName },
+			}) + ':',
+		);
 		throw error;
 	}
 }
@@ -73,12 +77,13 @@ async function deleteTag(id: string): Promise<boolean> {
 	} catch (error) {
 		const tag = tagsStore.tagsById[id];
 		const escapedName = escape(tag?.name || '');
-		showError(error, i18n.baseText('tagsManager.showError.onDelete.title'), {
-			message:
-				i18n.baseText('tagsManager.showError.onDelete.message', {
-					interpolate: { escapedName },
-				}) + ':',
-		});
+		showError(
+			error,
+			i18n.baseText('tagsManager.showError.onDelete.title'),
+			i18n.baseText('tagsManager.showError.onDelete.message', {
+				interpolate: { escapedName },
+			}) + ':',
+		);
 		throw error;
 	}
 }

@@ -38,11 +38,15 @@ export async function router(this: IExecuteFunctions): Promise<INodeExecutionDat
 					throw new NodeOperationError(this.getNode(), `The resource "${resource}" is not known`);
 			}
 		} catch (error) {
-			if (!this.continueOnFail()) {
-				throw error;
+			if (this.continueOnFail()) {
+				if (resource === 'file' && operation === 'download') {
+					items[i].json = { error: error.message };
+				} else {
+					returnData.push({ json: { error: error.message } });
+				}
+				continue;
 			}
-
-			returnData.push({ json: { error: error.message } });
+			throw error;
 		}
 	}
 

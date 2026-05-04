@@ -35,18 +35,14 @@ export async function getToolParameters(
 		throw mapToNodeOperationError(node, client.error);
 	}
 
-	try {
-		const result = await getAllTools(client.result);
-		const tool = result.find((tool) => tool.name === toolId);
-		if (!tool) {
-			throw new NodeOperationError(this.getNode(), 'Tool not found');
-		}
-
-		const fields = convertJsonSchemaToResourceMapperFields(tool.inputSchema);
-		return {
-			fields,
-		};
-	} finally {
-		await client.result.close();
+	const result = await getAllTools(client.result);
+	const tool = result.find((tool) => tool.name === toolId);
+	if (!tool) {
+		throw new NodeOperationError(this.getNode(), 'Tool not found');
 	}
+
+	const fields = convertJsonSchemaToResourceMapperFields(tool.inputSchema);
+	return {
+		fields,
+	};
 }

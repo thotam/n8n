@@ -250,7 +250,6 @@ export class TestRunnerService {
 		const data: IWorkflowExecutionDataProcess = {
 			executionMode: 'evaluation',
 			pinData,
-			forceFullExecutionData: true,
 			workflowData: {
 				...workflow,
 				settings: {
@@ -337,7 +336,6 @@ export class TestRunnerService {
 			destinationNode: { nodeName: triggerNode.name, mode: 'inclusive' },
 			executionMode: 'manual',
 			runData: {},
-			forceFullExecutionData: true,
 			workflowData: {
 				...workflow,
 				settings: {

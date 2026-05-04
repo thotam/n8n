@@ -41,7 +41,7 @@ describe('evaluation.store.ee', () => {
 	let rootStoreMock: ReturnType<typeof useRootStore>;
 
 	beforeEach(() => {
-		vi.clearAllMocks();
+		vi.restoreAllMocks();
 		setActivePinia(createPinia());
 		store = useEvaluationStore();
 		rootStoreMock = useRootStore();

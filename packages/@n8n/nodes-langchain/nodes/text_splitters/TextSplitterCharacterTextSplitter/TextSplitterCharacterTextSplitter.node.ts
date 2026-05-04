@@ -14,7 +14,7 @@ export class TextSplitterCharacterTextSplitter implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Character Text Splitter',
 		name: 'textSplitterCharacterTextSplitter',
-		icon: 'node:character-text-splitter',
+		icon: 'fa:grip-lines-vertical',
 		iconColor: 'black',
 		group: ['transform'],
 		version: 1,

@@ -8,7 +8,6 @@ export class ProvisioningConfigDto extends Z.class({
 	scopesName: z.string(),
 	scopesInstanceRoleClaimName: z.string(),
 	scopesProjectsRolesClaimName: z.string(),
-	scopesUseExpressionMapping: z.boolean(),
 }) {}
 
 export class ProvisioningConfigPatchDto extends Z.class({
@@ -17,6 +16,4 @@ export class ProvisioningConfigPatchDto extends Z.class({
 	scopesName: z.string().optional().nullable(),
 	scopesInstanceRoleClaimName: z.string().optional().nullable(),
 	scopesProjectsRolesClaimName: z.string().optional().nullable(),
-	scopesUseExpressionMapping: z.boolean().optional().nullable(),
-	deleteProjectRules: z.boolean().optional(),
 }) {}

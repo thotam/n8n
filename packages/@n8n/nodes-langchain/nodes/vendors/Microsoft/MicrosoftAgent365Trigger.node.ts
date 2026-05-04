@@ -124,7 +124,7 @@ export class MicrosoftAgent365Trigger implements INodeType {
 				},
 			},
 			{
-				displayName: 'Enable Microsoft Work IQ Tools for A365',
+				displayName: 'Enable Microsoft MCP Tools',
 				name: 'useMcpTools',
 				type: 'boolean',
 				default: false,
@@ -192,7 +192,7 @@ export class MicrosoftAgent365Trigger implements INodeType {
 						name: 'welcomeMessage',
 						type: 'string',
 						placeholder: "e.g. Hello! I'm here to help you!",
-						default: "Hello! I'm here to help you!",
+						default: '',
 					},
 				],
 			},
@@ -235,13 +235,6 @@ export class MicrosoftAgent365Trigger implements INodeType {
 
 			await agent.adapter.process(req, res, callback);
 
-			if (
-				activityCapture.activity.type === 'event' ||
-				activityCapture.input.trimStart().startsWith('<addmember>')
-			) {
-				return { noWebhookResponse: true };
-			}
-
 			let returnData;
 
 			if (node.typeVersion === 1) {
@@ -255,9 +248,6 @@ export class MicrosoftAgent365Trigger implements INodeType {
 					input: activityCapture.input,
 					output: activityCapture.output,
 					...activity,
-					...(activityCapture.mcpToolLogs?.length
-						? { microsoftMcpToolLogs: activityCapture.mcpToolLogs }
-						: {}),
 				};
 			}
 

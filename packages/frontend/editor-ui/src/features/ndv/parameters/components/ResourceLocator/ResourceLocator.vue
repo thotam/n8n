@@ -55,9 +55,8 @@ import {
 	type FromAIOverride,
 } from '../../utils/fromAIOverride.utils';
 import { completeExpressionSyntax } from '@/app/utils/expressions';
-import { DEBOUNCE_TIME, ExpressionLocalResolveContextSymbol } from '@/app/constants';
+import { ExpressionLocalResolveContextSymbol } from '@/app/constants';
 import { useProjectsStore } from '@/features/collaboration/projects/projects.store';
-import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
 import FromAiOverrideButton from '../ParameterInputOverrides/FromAiOverrideButton.vue';
 import FromAiOverrideField from '../ParameterInputOverrides/FromAiOverrideField.vue';
 import ParameterOverrideSelectableList from '../ParameterInputOverrides/ParameterOverrideSelectableList.vue';
@@ -162,7 +161,6 @@ const rootStore = useRootStore();
 const uiStore = useUIStore();
 const workflowsStore = useWorkflowsStore();
 const projectsStore = useProjectsStore();
-const workflowDocumentStore = injectWorkflowDocumentStore();
 const expressionLocalResolveCtx = inject(ExpressionLocalResolveContextSymbol, undefined);
 
 const appName = computed(() => {
@@ -295,7 +293,7 @@ const currentRequestParams = computed(() => {
 		credentials: props.node?.credentials ?? {},
 		filter: searchFilter.value,
 		projectId: projectsStore.currentProjectId,
-		workflowId: workflowsStore.workflowId,
+		workflowId: workflowsStore.workflow.id,
 	};
 });
 
@@ -414,12 +412,10 @@ const handleAddResourceClick = async () => {
 		let resolvedUrl = redirectUrl;
 
 		if (resolvedUrl.includes('{{$projectId}}')) {
-			const projectId =
-				projectsStore.currentProjectId ??
-				workflowDocumentStore?.value?.homeProject?.id ??
-				projectsStore.personalProject?.id ??
-				'';
-			resolvedUrl = resolvedUrl.replace(/\{\{\$projectId\}\}/g, projectId);
+			resolvedUrl = resolvedUrl.replace(
+				/\{\{\$projectId\}\}/g,
+				projectsStore.currentProjectId ?? '',
+			);
 		}
 
 		hideResourceDropdown();
@@ -525,28 +521,6 @@ watch(
 	(currentValue, oldValue) => {
 		const isUpdated = oldValue !== null && currentValue !== null && oldValue !== currentValue;
 		// Reset value if dependent parameters change
-		if (
-			isUpdated &&
-			props.modelValue &&
-			isResourceLocatorValue(props.modelValue) &&
-			props.modelValue.value !== ''
-		) {
-			emit('update:modelValue', {
-				...props.modelValue,
-				cachedResultName: '',
-				cachedResultUrl: '',
-				value: '',
-			});
-		}
-	},
-);
-
-watch(
-	() => stringify(props.node?.credentials ?? {}),
-	(currentValue, oldValue) => {
-		const emptyCredentials = stringify({});
-		const isUpdated =
-			oldValue !== undefined && oldValue !== emptyCredentials && currentValue !== oldValue;
 		if (
 			isUpdated &&
 			props.modelValue &&
@@ -755,14 +729,14 @@ async function loadInitialResources(): Promise<void> {
 	}
 }
 
-function loadResourcesDebounced(debounceTime: number = DEBOUNCE_TIME.INPUT.SEARCH) {
+function loadResourcesDebounced() {
 	if (currentResponse.value?.error) {
 		// Clear error response immediately when retrying to show loading state
 		delete cachedResponses.value[currentRequestKey.value];
 	}
 
 	void callDebounced(loadResources, {
-		debounceTime,
+		debounceTime: 1000,
 		trailing: true,
 	});
 }
@@ -835,7 +809,7 @@ async function loadResources() {
 			currentNodeParameters: resolvedNodeParameters,
 			credentials: props.node.credentials,
 			projectId: projectsStore.currentProjectId,
-			workflowId: workflowsStore.workflowId,
+			workflowId: workflowsStore.workflow.id,
 		};
 
 		if (params.filter) {
@@ -858,10 +832,10 @@ async function loadResources() {
 		// Store response under the original key to prevent cache pollution
 		setResponse(paramsKey, responseData);
 
-		// Restart if the key changed during the request
-		if (currentRequestKey.value !== paramsKey) {
-			loadResourcesDebounced(0);
-			return;
+		// If the key changed during the request, also store under current key to prevent infinite loading
+		const currentKey = currentRequestKey.value;
+		if (currentKey !== paramsKey) {
+			setResponse(currentKey, responseData);
 		}
 
 		if (params.filter && !hasCompletedASearch.value) {
@@ -883,9 +857,10 @@ async function loadResources() {
 		// Store error under the original key
 		setResponse(paramsKey, errorData);
 
-		// Restart if the key changed during the request
-		if (currentRequestKey.value !== paramsKey) {
-			loadResourcesDebounced(0);
+		// If the key changed during the request, also store under current key to prevent infinite loading
+		const currentKey = currentRequestKey.value;
+		if (currentKey !== paramsKey) {
+			setResponse(currentKey, errorData);
 		}
 	}
 }

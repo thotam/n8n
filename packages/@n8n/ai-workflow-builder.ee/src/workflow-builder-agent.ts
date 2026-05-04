@@ -106,7 +106,9 @@ export interface ExpressionValue {
 
 export interface BuilderFeatureFlags {
 	templateExamples?: boolean;
-	/** Enable pin data generation in code builder (default: true). */
+	/** Enable CodeWorkflowBuilder (default: false). When false, uses legacy multi-agent system. */
+	codeBuilder?: boolean;
+	/** Enable pin data generation in code builder (default: true when codeBuilder is true). */
 	pinData?: boolean;
 	planMode?: boolean;
 	/** Enable introspection tool for diagnostic data collection. Disabled by default. */
@@ -153,9 +155,11 @@ export class WorkflowBuilderAgent {
 	private stageLLMs: StageLLMs;
 	private logger?: Logger;
 	private tracer?: LangChainTracer;
+	private instanceUrl?: string;
 	private runMetadata?: Record<string, unknown>;
 	private onGenerationSuccess?: () => Promise<void>;
 	private nodeDefinitionDirs?: string[];
+	private resourceLocatorCallback?: ResourceLocatorCallback;
 	private onTelemetryEvent?: (event: string, properties: ITelemetryTrackProperties) => void;
 	private assistantHandler?: AssistantHandler;
 	/** Feature flags stored from the first chat call to ensure consistency across a session */
@@ -167,9 +171,11 @@ export class WorkflowBuilderAgent {
 		this.logger = config.logger;
 		this.checkpointer = config.checkpointer;
 		this.tracer = config.tracer;
+		this.instanceUrl = config.instanceUrl;
 		this.runMetadata = config.runMetadata;
 		this.onGenerationSuccess = config.onGenerationSuccess;
 		this.nodeDefinitionDirs = config.nodeDefinitionDirs;
+		this.resourceLocatorCallback = config.resourceLocatorCallback;
 		this.onTelemetryEvent = config.onTelemetryEvent;
 		this.assistantHandler = config.assistantHandler;
 	}
@@ -183,8 +189,11 @@ export class WorkflowBuilderAgent {
 			parsedNodeTypes: this.parsedNodeTypes,
 			stageLLMs: this.stageLLMs,
 			logger: this.logger,
+			instanceUrl: this.instanceUrl,
 			checkpointer: this.checkpointer,
 			featureFlags,
+			onGenerationSuccess: this.onGenerationSuccess,
+			resourceLocatorCallback: this.resourceLocatorCallback,
 			assistantHandler: this.assistantHandler,
 		});
 	}
@@ -215,7 +224,23 @@ export class WorkflowBuilderAgent {
 	) {
 		this.validateMessageLength(payload.message);
 
-		yield* this.routeCodeBuilder(
+		// Feature flag: Route to CodeWorkflowBuilder if enabled (default: false)
+		const useCodeWorkflowBuilder = payload.featureFlags?.codeBuilder ?? false;
+
+		if (useCodeWorkflowBuilder) {
+			yield* this.routeCodeBuilder(
+				payload,
+				userId,
+				abortSignal,
+				externalCallbacks,
+				historicalMessages,
+			);
+			return;
+		}
+
+		// Fall back to legacy multi-agent system
+		this.logger?.debug('Routing to legacy multi-agent system', { userId });
+		yield* this.runMultiAgentSystem(
 			payload,
 			userId,
 			abortSignal,
@@ -315,9 +340,6 @@ export class WorkflowBuilderAgent {
 		userId: string | undefined,
 		abortSignal: AbortSignal | undefined,
 	) {
-		const workflowId = payload.workflowContext?.currentWorkflow?.id;
-		const threadId = SessionManagerService.generateThreadId(workflowId, userId);
-
 		const codeWorkflowBuilder = new CodeWorkflowBuilder({
 			llm: this.stageLLMs.builder,
 			nodeTypes: this.parsedNodeTypes,
@@ -329,8 +351,7 @@ export class WorkflowBuilderAgent {
 			runMetadata: {
 				...this.runMetadata,
 				userMessageId: payload.id,
-				workflowId,
-				ls_thread_id: threadId,
+				workflowId: payload.workflowContext?.currentWorkflow?.id,
 			},
 			onTelemetryEvent: this.onTelemetryEvent,
 			generatePinData: payload.featureFlags?.pinData ?? true,

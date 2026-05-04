@@ -164,8 +164,8 @@ async function onSaveWorkflowClick(): Promise<void> {
 	let currentId: string | undefined = undefined;
 	if (workflowId.value) {
 		currentId = workflowId.value;
-	} else if (route.params.workflowId) {
-		const routeName = route.params.workflowId;
+	} else if (route.params.name) {
+		const routeName = route.params.name;
 		currentId = Array.isArray(routeName) ? routeName[0] : routeName;
 	}
 	if (!currentId) {

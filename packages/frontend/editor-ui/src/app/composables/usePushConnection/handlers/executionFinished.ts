@@ -32,6 +32,7 @@ import {
 import { getTriggerNodeServiceName } from '@/app/utils/nodeTypesUtils';
 import type { ExecutionFinished } from '@n8n/api-types/push/execution';
 import { useI18n } from '@n8n/i18n';
+import { parse } from 'flatted';
 import type {
 	ExecutionStatus,
 	ExpressionError,
@@ -72,7 +73,6 @@ export async function executionFinished(
 	const readyToRunStore = useReadyToRunStore();
 
 	options.workflowState.executingNode.lastAddedExecutingNode = null;
-	options.workflowState.executingNode.clearNodeExecutionQueue();
 
 	// No workflow is actively running, therefore we ignore this event
 	if (typeof workflowsStore.activeExecutionId === 'undefined') {
@@ -207,10 +207,6 @@ export async function fetchExecutionData(
 	executionId: string,
 ): Promise<SimplifiedExecution | undefined> {
 	const workflowsStore = useWorkflowsStore();
-	const workflowDocumentStore = useWorkflowDocumentStore(
-		createWorkflowDocumentId(workflowsStore.workflowId),
-	);
-
 	try {
 		const executionResponse = await workflowsStore.fetchExecutionDataById(executionId);
 		if (!executionResponse?.data) {
@@ -220,8 +216,8 @@ export async function fetchExecutionData(
 		return {
 			id: executionId,
 			workflowId: executionResponse.workflowId,
-			workflowData: workflowDocumentStore.getSnapshot(),
-			data: executionResponse.data,
+			workflowData: workflowsStore.workflow,
+			data: parse(executionResponse.data as unknown as string),
 			status: executionResponse.status,
 			startedAt: workflowsStore.workflowExecutionData?.startedAt as Date,
 			stoppedAt: new Date(),
@@ -279,9 +275,12 @@ export function handleExecutionFinishedWithWaitTill(
 	const workflowsStore = useWorkflowsStore();
 	const settingsStore = useSettingsStore();
 	const workflowSaving = useWorkflowSaving(options);
+	const workflowObject = workflowsStore.workflowObject;
 
-	const workflowDocumentStore = useWorkflowDocumentStore(createWorkflowDocumentId(workflowId));
-	const workflowSettings = workflowDocumentStore.settings;
+	const workflowDocumentStore = workflowId
+		? useWorkflowDocumentStore(createWorkflowDocumentId(workflowId))
+		: undefined;
+	const workflowSettings = workflowDocumentStore?.settings ?? {};
 	const saveManualExecutions =
 		workflowSettings.saveManualExecutions ?? settingsStore.saveManualExecutions;
 
@@ -299,7 +298,7 @@ export function handleExecutionFinishedWithWaitTill(
 	}
 
 	// Workflow did start but had been put to wait
-	useDocumentTitle().setDocumentTitle(workflowDocumentStore.name, 'IDLE');
+	useDocumentTitle().setDocumentTitle(workflowObject.name as string, 'IDLE');
 }
 
 /**
@@ -313,13 +312,11 @@ export function handleExecutionFinishedWithErrorOrCanceled(
 	const i18n = useI18n();
 	const telemetry = useTelemetry();
 	const workflowsStore = useWorkflowsStore();
-	const workflowDocumentStore = useWorkflowDocumentStore(
-		createWorkflowDocumentId(workflowsStore.workflowId),
-	);
 	const documentTitle = useDocumentTitle();
 	const workflowHelpers = useWorkflowHelpers();
+	const workflowObject = workflowsStore.workflowObject;
 
-	documentTitle.setDocumentTitle(workflowDocumentStore.name, 'ERROR');
+	documentTitle.setDocumentTitle(workflowObject.name as string, 'ERROR');
 
 	if (
 		runExecutionData.resultData.error?.name === 'ExpressionError' &&
@@ -327,37 +324,41 @@ export function handleExecutionFinishedWithErrorOrCanceled(
 	) {
 		const error = runExecutionData.resultData.error as ExpressionError;
 
-		const workflowData = workflowDocumentStore.serialize();
-		const eventData: IDataObject = {
-			caused_by_credential: false,
-			error_message: error.description,
-			error_title: error.message,
-			error_type: error.context.type,
-			node_graph_string: JSON.stringify(
-				TelemetryHelpers.generateNodesGraph(
-					workflowData as IWorkflowBase,
-					workflowHelpers.getNodeTypes(),
-				).nodeGraph,
-			),
-			workflow_id: workflowsStore.workflowId,
-		};
+		void workflowHelpers.getWorkflowDataToSave().then((workflowData) => {
+			const eventData: IDataObject = {
+				caused_by_credential: false,
+				error_message: error.description,
+				error_title: error.message,
+				error_type: error.context.type,
+				node_graph_string: JSON.stringify(
+					TelemetryHelpers.generateNodesGraph(
+						workflowData as IWorkflowBase,
+						workflowHelpers.getNodeTypes(),
+					).nodeGraph,
+				),
+				workflow_id: workflowsStore.workflowId,
+			};
 
-		if (
-			error.context.nodeCause &&
-			['paired_item_no_info', 'paired_item_invalid_info'].includes(error.context.type as string)
-		) {
-			const node = workflowDocumentStore.getNodeByName(error.context.nodeCause as string);
+			if (
+				error.context.nodeCause &&
+				['paired_item_no_info', 'paired_item_invalid_info'].includes(error.context.type as string)
+			) {
+				const node = workflowObject.getNode(error.context.nodeCause as string);
 
-			if (node) {
-				eventData.is_pinned = !!workflowDocumentStore.pinData?.[node.name];
-				eventData.mode = node.parameters.mode;
-				eventData.node_type = node.type;
-				eventData.operation = node.parameters.operation;
-				eventData.resource = node.parameters.resource;
+				if (node) {
+					const workflowDocumentStore = workflowsStore.workflowId
+						? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+						: undefined;
+					eventData.is_pinned = !!workflowDocumentStore?.pinData?.[node.name];
+					eventData.mode = node.parameters.mode;
+					eventData.node_type = node.type;
+					eventData.operation = node.parameters.operation;
+					eventData.resource = node.parameters.resource;
+				}
 			}
-		}
 
-		telemetry.track('Instance FE emitted paired item error', eventData);
+			telemetry.track('Instance FE emitted paired item error', eventData);
+		});
 	}
 
 	if (execution.status === 'canceled') {
@@ -412,17 +413,18 @@ export function handleExecutionFinishedWithSuccessOrOther(
 	const toast = useToast();
 	const i18n = useI18n();
 	const nodeTypesStore = useNodeTypesStore();
+	const workflowObject = workflowsStore.workflowObject;
+	const workflowName = workflowObject.name ?? '';
 
-	const workflowDocumentStore = useWorkflowDocumentStore(
-		createWorkflowDocumentId(workflowsStore.workflowId),
-	);
-	const workflowName = workflowDocumentStore.name;
+	const workflowDocumentStore = workflowsStore.workflowId
+		? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+		: undefined;
 
 	useDocumentTitle().setDocumentTitle(workflowName, 'IDLE');
 
 	const workflowExecution = workflowsStore.getWorkflowExecution;
 	if (workflowExecution?.executedNode) {
-		const node = workflowDocumentStore.getNodeByName(workflowExecution.executedNode) ?? null;
+		const node = workflowDocumentStore?.getNodeByName(workflowExecution.executedNode) ?? null;
 		const nodeType = node && nodeTypesStore.getNodeType(node.type, node.typeVersion);
 		const nodeOutput =
 			workflowExecution.data?.resultData?.runData?.[workflowExecution.executedNode];
@@ -479,7 +481,8 @@ export function setRunExecutionData(
 	const runDataExecutedErrorMessage = getRunDataExecutedErrorMessage(execution);
 	const workflowExecution = workflowsStore.getWorkflowExecution;
 
-	workflowState.executingNode.clearNodeExecutionQueue();
+	// @TODO(ckolb): Should this call `clearNodeExecutionQueue` instead?
+	workflowState.executingNode.executingNode.length = 0;
 
 	if (workflowExecution === null) {
 		return;

@@ -74,7 +74,7 @@ export class MemoryManager implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Chat Memory Manager',
 		name: 'memoryManager',
-		icon: 'node:chat-memory-manager',
+		icon: 'fa:database',
 		iconColor: 'black',
 		group: ['transform'],
 		version: [1, 1.1],

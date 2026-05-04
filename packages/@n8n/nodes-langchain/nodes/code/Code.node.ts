@@ -3,7 +3,7 @@ import { makeResolverFromLegacyOptions } from 'vm2';
 import { JavaScriptSandbox } from 'n8n-nodes-base/dist/nodes/Code/JavaScriptSandbox';
 import { getSandboxContext } from 'n8n-nodes-base/dist/nodes/Code/Sandbox';
 import { standardizeOutput } from 'n8n-nodes-base/dist/nodes/Code/utils';
-import { NodeOperationError, NodeConnectionTypes, LOG_LEVELS } from 'n8n-workflow';
+import { NodeOperationError, NodeConnectionTypes } from 'n8n-workflow';
 import type {
 	IExecuteFunctions,
 	INodeExecutionData,
@@ -12,7 +12,6 @@ import type {
 	INodeOutputConfiguration,
 	SupplyData,
 	ISupplyDataFunctions,
-	Logger,
 } from 'n8n-workflow';
 
 // TODO: Add support for execute function. Got already started but got commented out
@@ -143,18 +142,6 @@ function transformLegacyLangchainCode(code: string): string {
 	return transformedCode;
 }
 
-function isLoggerKey(level: string): level is keyof Logger {
-	return level !== 'silent';
-}
-
-export function createSandboxLogger(logger: Logger): Logger {
-	return LOG_LEVELS.filter(isLoggerKey).reduce((result, level) => {
-		result[level] = (...args: Parameters<Logger[keyof Logger]>) =>
-			logger[level].apply(logger, args);
-		return result;
-	}, {} as Logger);
-}
-
 const langchainModules = ['langchain', '@langchain/*'];
 export const vmResolver = makeResolverFromLegacyOptions({
 	external: {
@@ -194,7 +181,7 @@ function getSandbox(
 	context.getNodeOutputs = this.getNodeOutputs.bind(this);
 	context.executeWorkflow = this.executeWorkflow.bind(this);
 	context.getWorkflowDataProxy = this.getWorkflowDataProxy.bind(this);
-	context.logger = createSandboxLogger(this.logger);
+	context.logger = this.logger;
 
 	if (options?.addItems) {
 		context.items = context.$input.all();

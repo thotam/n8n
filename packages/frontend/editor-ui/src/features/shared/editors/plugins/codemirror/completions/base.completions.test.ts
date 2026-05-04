@@ -20,7 +20,6 @@ import uniqBy from 'lodash/uniqBy';
 beforeEach(async () => {
 	setActivePinia(createTestingPinia());
 
-	vi.restoreAllMocks();
 	vi.spyOn(utils, 'receivesNoBinaryData').mockResolvedValue(true); // hide $binary
 	vi.spyOn(utils, 'isSplitInBatchesAbsent').mockReturnValue(false); // show context
 	vi.spyOn(utils, 'hasActiveNode').mockReturnValue(true);

@@ -41,7 +41,6 @@ export const userDetailSchema = userBaseSchema.extend({
 	mfaEnabled: z.boolean().optional(),
 	lastActiveAt: z.string().nullable().optional(),
 	inviteAcceptUrl: z.string().optional(),
-	isManagedByEnv: z.boolean().optional(),
 });
 
 export const usersListSchema = z.object({

@@ -102,7 +102,7 @@ const openRelatedExecution = (row: TestCaseExecutionRecord) => {
 		const { href } = router.resolve({
 			name: VIEWS.EXECUTION_PREVIEW,
 			params: {
-				workflowId: workflowId.value,
+				name: workflowId.value,
 				executionId,
 			},
 		});

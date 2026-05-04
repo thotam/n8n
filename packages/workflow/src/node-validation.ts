@@ -41,7 +41,7 @@ export function validateNodeCredentials(node: INode, nodeType: INodeType): NodeC
 			continue;
 		}
 
-		if (!nodeCredential.id && !nodeCredential.__aiGatewayManaged) {
+		if (!nodeCredential.id) {
 			issues.push({
 				type: 'not-configured',
 				displayName,

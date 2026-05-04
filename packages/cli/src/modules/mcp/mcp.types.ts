@@ -87,8 +87,8 @@ export type WorkflowNotFoundReason =
 	| 'not_available_in_mcp'
 	| 'workflow_not_active'
 	| 'unsupported_trigger'
-	| 'execution_not_found'
-	| 'invalid_pin_data';
+	| 'execution_does_not_exist'
+	| 'execution_workflow_mismatch';
 
 export type UserCalledMCPToolEventPayload = {
 	user_id?: string;
@@ -126,6 +126,5 @@ export type TelemetryAuthContext = {
 
 export type UserWithContext = {
 	user: User | null;
-	actor?: User;
 	context?: TelemetryAuthContext;
 };

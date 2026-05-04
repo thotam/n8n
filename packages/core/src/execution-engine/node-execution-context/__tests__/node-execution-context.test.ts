@@ -23,7 +23,7 @@ describe('NodeExecutionContext', () => {
 	const instanceSettings = mock<InstanceSettings>({
 		instanceId: 'abc123',
 		encryptionKey: 'testEncryptionKey',
-		hmacSignatureSecret: 'test-hmac-secret',
+		hmacSignatureSecret: 'testHmacSignatureSecret',
 	});
 	Container.set(InstanceSettings, instanceSettings);
 
@@ -41,8 +41,6 @@ describe('NodeExecutionContext', () => {
 	});
 	const additionalData = mock<IWorkflowExecuteAdditionalData>({
 		credentialsHelper: mock(),
-		webhookWaitingBaseUrl: 'http://localhost:5678/webhook-waiting',
-		formWaitingBaseUrl: 'http://localhost:5678/form-waiting',
 	});
 
 	const mode: WorkflowExecuteMode = 'manual';
@@ -230,8 +228,6 @@ describe('NodeExecutionContext', () => {
 
 			const mockAdditionalData = mock<IWorkflowExecuteAdditionalData>({
 				credentialsHelper: mockCredentialsHelper,
-				webhookWaitingBaseUrl: 'http://localhost:5678/webhook-waiting',
-				formWaitingBaseUrl: 'http://localhost:5678/form-waiting',
 			});
 
 			const contextWithCredentials = new TestContext(
@@ -255,31 +251,6 @@ describe('NodeExecutionContext', () => {
 				false,
 				undefined,
 			);
-		});
-
-		it('should not build mock credentials in eval mode when the node has other credentials configured but not the requested type', async () => {
-			const testNode = mock<INode>({ type: 'n8n-nodes-base.graphql' });
-			testNode.credentials = { httpHeaderAuth: { id: 'cred1', name: 'Header' } };
-
-			const getCredentialsProperties = jest
-				.fn()
-				.mockReturnValue([{ displayName: 'JSON', name: 'json', type: 'json', default: '' }]);
-			const evalAdditionalData = mock<IWorkflowExecuteAdditionalData>({
-				credentialsHelper: mock({ getCredentialsProperties }),
-				evalLlmMockHandler: jest.fn(),
-				webhookWaitingBaseUrl: 'http://localhost:5678/webhook-waiting',
-				formWaitingBaseUrl: 'http://localhost:5678/form-waiting',
-			});
-
-			const evalContext = new TestContext(workflow, testNode, evalAdditionalData, 'evaluation');
-
-			let resolved: unknown;
-			try {
-				resolved = await evalContext['_getCredentials']('httpCustomAuth');
-			} catch {
-				return;
-			}
-			expect(resolved).toBeUndefined();
 		});
 	});
 
@@ -467,42 +438,29 @@ describe('NodeExecutionContext', () => {
 				mock<IWorkflowExecuteAdditionalData>({
 					executionId: '123',
 					webhookWaitingBaseUrl: 'http://localhost/waiting-webhook',
-					formWaitingBaseUrl: 'http://localhost/form-waiting',
 				}),
 				mode,
 				createRunExecutionData({
+					validateSignature: true,
 					resultData: { runData: {} },
 				}),
 			);
 			nodeTypes.getByNameAndVersion.mockReturnValue(nodeType);
 		});
-		it('should return a resume URL with HMAC signature', () => {
+		it('should return a signed resume URL with no query parameters', () => {
 			const result = testContext.getSignedResumeUrl();
 
-			// URL should contain base path and a signature (64-char hex HMAC-SHA256)
-			expect(result).toMatch(
-				/^http:\/\/localhost\/waiting-webhook\/123\/node456\?signature=[a-f0-9]{64}$/,
+			expect(result).toBe(
+				'http://localhost/waiting-webhook/123/node456?signature=8e48dfd1107c1a736f70e7399493ffc50a2e8edd44f389c5f9c058da961682e7',
 			);
 		});
 
-		it('should return a resume URL with query parameters and HMAC signature', () => {
+		it('should return a signed resume URL with query parameters', () => {
 			const result = testContext.getSignedResumeUrl({ approved: 'true' });
 
-			// URL should contain base path, approved param, and a signature (64-char hex HMAC-SHA256)
-			expect(result).toMatch(
-				/^http:\/\/localhost\/waiting-webhook\/123\/node456\?approved=true&signature=[a-f0-9]{64}$/,
+			expect(result).toBe(
+				'http://localhost/waiting-webhook/123/node456?approved=true&signature=11c5efc97a0d6f2ea9045dba6e397596cba29dc24adb44a9ebd3d1272c991e9b',
 			);
-		});
-
-		it('should generate consistent HMAC signatures for the same URL', () => {
-			const result1 = testContext.getSignedResumeUrl();
-			const result2 = testContext.getSignedResumeUrl();
-
-			// Same URL should produce the same HMAC signature
-			const token1 = new URL(result1).searchParams.get('signature');
-			const token2 = new URL(result2).searchParams.get('signature');
-
-			expect(token1).toBe(token2);
 		});
 	});
 

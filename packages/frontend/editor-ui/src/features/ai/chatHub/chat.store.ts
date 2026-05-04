@@ -39,10 +39,6 @@ import { useSettingsStore } from '@/app/stores/settings.store';
 import { useCredentialsStore } from '@/features/credentials/credentials.store';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import {
-	useWorkflowDocumentStore,
-	createWorkflowDocumentId,
-} from '@/app/stores/workflowDocument.store';
-import {
 	emptyChatModelsResponse,
 	type ChatHubConversationModel,
 	type ChatHubSendMessageRequest,
@@ -545,10 +541,7 @@ export const useChatStore = defineStore(STORES.CHAT_HUB, () => {
 		const workflowsStore = useWorkflowsStore();
 		if (workflowsStore.workflowId !== model.workflowId) return false;
 
-		const workflowDocumentStore = useWorkflowDocumentStore(
-			createWorkflowDocumentId(workflowsStore.workflowId),
-		);
-		const chatTrigger = workflowDocumentStore.allNodes.find(
+		const chatTrigger = workflowsStore.allNodes.find(
 			(node) => node.type === CHAT_TRIGGER_NODE_TYPE,
 		);
 		if (!chatTrigger) return false;
@@ -563,9 +556,6 @@ export const useChatStore = defineStore(STORES.CHAT_HUB, () => {
 	 */
 	function initManualExecutionScaffold() {
 		const workflowsStore = useWorkflowsStore();
-		const workflowDocumentStore = useWorkflowDocumentStore(
-			createWorkflowDocumentId(workflowsStore.workflowId),
-		);
 
 		workflowsStore.workflowExecutionData = {
 			id: IN_PROGRESS_EXECUTION_ID,
@@ -579,7 +569,7 @@ export const useChatStore = defineStore(STORES.CHAT_HUB, () => {
 			data: createRunExecutionData({
 				resultData: { runData: {} },
 			}),
-			workflowData: workflowDocumentStore.getSnapshot(),
+			workflowData: workflowsStore.workflow,
 		};
 
 		// Signal canvas that an execution is pending (null = waiting for execution ID)

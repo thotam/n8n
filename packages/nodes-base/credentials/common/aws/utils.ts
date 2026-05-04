@@ -2,7 +2,6 @@ import {
 	ApplicationError,
 	type IHttpRequestMethods,
 	isObjectEmpty,
-	sanitizeXmlName,
 	type ICredentialTestRequest,
 	type IDataObject,
 	type IHttpRequestOptions,
@@ -331,21 +330,13 @@ export async function assumeRole(
 
 	const responseText = await response.text();
 	const responseData = await new Promise<IDataObject>((resolve, reject) => {
-		parseString(
-			responseText,
-			{
-				explicitArray: false,
-				tagNameProcessors: [sanitizeXmlName],
-				attrNameProcessors: [sanitizeXmlName],
-			},
-			(err: any, data: IDataObject) => {
-				if (err) {
-					reject(err);
-				} else {
-					resolve(data);
-				}
-			},
-		);
+		parseString(responseText, { explicitArray: false }, (err: any, data: IDataObject) => {
+			if (err) {
+				reject(err);
+			} else {
+				resolve(data);
+			}
+		});
 	});
 
 	const assumeRoleResult = (responseData.AssumeRoleResponse as IDataObject)

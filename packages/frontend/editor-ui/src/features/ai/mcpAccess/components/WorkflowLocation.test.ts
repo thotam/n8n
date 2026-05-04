@@ -6,7 +6,7 @@ vi.mock('@/app/router', () => ({
 	default: {
 		resolve: vi.fn(({ name, params }) => {
 			if (name === 'NodeViewExisting') {
-				return { fullPath: `/workflows/${params.workflowId}` };
+				return { fullPath: `/workflows/${params.name}` };
 			}
 			if (name === 'ProjectsWorkflows') {
 				return { fullPath: `/projects/${params.projectId}` };

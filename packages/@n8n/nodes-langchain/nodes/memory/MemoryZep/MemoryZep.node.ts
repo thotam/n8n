@@ -15,12 +15,7 @@ import {
 import { getSessionId } from '@utils/helpers';
 import { logWrapper, getConnectionHintNoticeField } from '@n8n/ai-utilities';
 
-import {
-	expressionSessionKeyProperty,
-	sessionIdOption,
-	sessionKeyProperty,
-	scopedSessionHint,
-} from '../descriptions';
+import { expressionSessionKeyProperty, sessionIdOption, sessionKeyProperty } from '../descriptions';
 
 // Extend ZepCloudMemory to trim white space in messages.
 class WhiteSpaceTrimmedZepCloudMemory extends ZepCloudMemory {
@@ -41,7 +36,7 @@ export class MemoryZep implements INodeType {
 		// eslint-disable-next-line n8n-nodes-base/node-class-description-icon-not-svg
 		icon: 'file:zep.png',
 		group: ['transform'],
-		version: [1, 1.1, 1.2, 1.3, 1.4],
+		version: [1, 1.1, 1.2, 1.3],
 		description: 'Use Zep Memory',
 		defaults: {
 			name: 'Zep',
@@ -118,7 +113,6 @@ export class MemoryZep implements INodeType {
 				},
 			},
 			expressionSessionKeyProperty(1.3),
-			scopedSessionHint(1.4),
 			sessionKeyProperty,
 		],
 	};

@@ -323,25 +323,22 @@ describe('setupResponseNodePromise', () => {
 });
 
 describe('handleHostedChatResponse', () => {
-	it('should send executionStarted: true, executionId, and resumeToken when responseMode is hostedChat', async () => {
+	it('should send executionStarted: true and executionId when responseMode is hostedChat and didSendResponse is false', async () => {
 		const res = {
 			send: jest.fn(),
 			end: jest.fn(),
 		} as unknown as express.Response;
-		const responseMode = 'hostedChat';
+		const executionId = 'testExecutionId';
 		let didSendResponse = false;
-		const executionId = '123';
-		const resumeToken = 'a'.repeat(64);
+		const responseMode = 'hostedChat';
 
-		const result = handleHostedChatResponse(
-			res,
-			responseMode,
-			didSendResponse,
-			executionId,
-			resumeToken,
-		);
+		(res.send as jest.Mock).mockImplementation((data) => {
+			expect(data).toEqual({ executionStarted: true, executionId });
+		});
 
-		expect(res.send).toHaveBeenCalledWith({ executionStarted: true, executionId, resumeToken });
+		const result = handleHostedChatResponse(res, responseMode, didSendResponse, executionId);
+
+		expect(res.send).toHaveBeenCalled();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(res.end).toHaveBeenCalled();
 		expect(result).toBe(true);

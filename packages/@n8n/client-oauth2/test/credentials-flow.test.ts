@@ -15,7 +15,7 @@ describe('CredentialsFlow', () => {
 		nock.restore();
 	});
 
-	beforeEach(() => vi.clearAllMocks());
+	beforeEach(() => jest.clearAllMocks());
 
 	describe('#getToken', () => {
 		const createAuthClient = ({

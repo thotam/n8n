@@ -5,7 +5,6 @@ import { useCredentialsStore } from '@/features/credentials/credentials.store';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { useUsersStore } from '@/features/settings/users/users.store';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
-import { useSettingsStore } from '@/app/stores/settings.store';
 import type { CommunityNodeType } from '@n8n/api-types';
 import { createTestingPinia } from '@pinia/testing';
 import type { INode } from 'n8n-workflow';
@@ -57,7 +56,6 @@ let nodeTypesStore: ReturnType<typeof useNodeTypesStore>;
 let communityNodesStore: ReturnType<typeof useCommunityNodesStore>;
 let credentialsStore: ReturnType<typeof useCredentialsStore>;
 let usersStore: ReturnType<typeof useUsersStore>;
-let settingsStore: ReturnType<typeof useSettingsStore>;
 let toast: ReturnType<typeof useToast>;
 let canvasOperations: ReturnType<typeof useCanvasOperations>;
 
@@ -74,7 +72,6 @@ beforeEach(() => {
 	credentialsStore = useCredentialsStore(pinia);
 	workflowsStore = useWorkflowsStore(pinia);
 	usersStore = useUsersStore(pinia);
-	settingsStore = useSettingsStore(pinia);
 
 	canvasOperations = {
 		initializeUnknownNodes,
@@ -227,63 +224,6 @@ describe('useInstallNode', () => {
 				title: 'settings.communityNodes.messages.install.success',
 				type: 'success',
 			});
-		});
-
-		it('should install verified node with pinned version when unverified packages are disabled', async () => {
-			Object.defineProperty(settingsStore, 'isUnverifiedPackagesEnabled', {
-				value: false,
-				writable: true,
-			});
-			const { installNode } = useInstallNode();
-
-			const result = await installNode({
-				type: 'verified',
-				packageName: 'test-package',
-				nodeType: 'test-node',
-			});
-
-			expect(result.success).toBe(true);
-			expect(nodeTypesStore.getCommunityNodeAttributes).toHaveBeenCalledWith('test-node');
-			expect(communityNodesStore.installPackage).toHaveBeenCalledWith(
-				'test-package',
-				true,
-				'1.0.0',
-			);
-		});
-
-		it('should install verified node as latest when unverified packages are enabled', async () => {
-			Object.defineProperty(settingsStore, 'isUnverifiedPackagesEnabled', {
-				value: true,
-				writable: true,
-			});
-			const { installNode } = useInstallNode();
-
-			const result = await installNode({
-				type: 'verified',
-				packageName: 'test-package',
-				nodeType: 'test-node',
-			});
-
-			expect(result.success).toBe(true);
-			expect(communityNodesStore.installPackage).toHaveBeenCalledWith('test-package');
-			expect(nodeTypesStore.getCommunityNodeAttributes).not.toHaveBeenCalled();
-		});
-
-		it('should install unverified node without version regardless of unverifiedEnabled setting', async () => {
-			Object.defineProperty(settingsStore, 'isUnverifiedPackagesEnabled', {
-				value: false,
-				writable: true,
-			});
-			const { installNode } = useInstallNode();
-
-			const result = await installNode({
-				type: 'unverified',
-				packageName: 'test-package',
-			});
-
-			expect(result.success).toBe(true);
-			expect(communityNodesStore.installPackage).toHaveBeenCalledWith('test-package');
-			expect(nodeTypesStore.getCommunityNodeAttributes).not.toHaveBeenCalled();
 		});
 
 		it('should install unverified node without npm version', async () => {

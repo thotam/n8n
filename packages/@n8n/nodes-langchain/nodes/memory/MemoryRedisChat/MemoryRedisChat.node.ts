@@ -20,7 +20,6 @@ import {
 	sessionKeyProperty,
 	contextWindowLengthProperty,
 	expressionSessionKeyProperty,
-	scopedSessionHint,
 } from '../descriptions';
 
 export class MemoryRedisChat implements INodeType {
@@ -29,7 +28,7 @@ export class MemoryRedisChat implements INodeType {
 		name: 'memoryRedisChat',
 		icon: 'file:redis.svg',
 		group: ['transform'],
-		version: [1, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6],
+		version: [1, 1.1, 1.2, 1.3, 1.4, 1.5],
 		description: 'Stores the chat history in Redis.',
 		defaults: {
 			name: 'Redis Chat Memory',
@@ -94,7 +93,6 @@ export class MemoryRedisChat implements INodeType {
 				},
 			},
 			expressionSessionKeyProperty(1.4),
-			scopedSessionHint(1.6),
 			sessionKeyProperty,
 			{
 				displayName: 'Session Time To Live',

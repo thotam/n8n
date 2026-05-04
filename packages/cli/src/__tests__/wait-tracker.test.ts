@@ -31,14 +31,10 @@ describe('WaitTracker', () => {
 		data: mock({
 			pushRef: 'push_ref',
 			parentExecution: undefined,
-			resultData: {
-				lastNodeExecuted: undefined,
-				runData: {},
-			},
 		}),
 		startedAt: undefined,
 	});
-	execution.workflowData = mock<IWorkflowBase>({ id: 'abcd', nodes: [] });
+	execution.workflowData = mock<IWorkflowBase>({ id: 'abcd' });
 
 	let waitTracker: WaitTracker;
 	beforeEach(() => {
@@ -150,37 +146,13 @@ describe('WaitTracker', () => {
 			);
 		});
 
-		it('should preserve original startedAt timestamp when resuming execution', async () => {
-			const originalStartedAt = new Date('2025-12-02T09:04:47.150Z');
-			const executionWithStartedAt = {
-				...execution,
-				startedAt: originalStartedAt,
-			};
-
-			executionRepository.findSingleExecution
-				.calledWith(execution.id)
-				.mockResolvedValue(executionWithStartedAt);
-
-			await waitTracker.startExecution(execution.id);
-
-			expect(workflowRunner.run).toHaveBeenCalledWith(
-				expect.objectContaining({
-					startedAt: originalStartedAt,
-				}),
-				false,
-				false,
-				execution.id,
-			);
-		});
-
 		describe('parent execution with waiting sub-workflow', () => {
 			const setupParentExecutionTest = (shouldResume: boolean | undefined) => {
 				const parentExecution = mock<IExecutionResponse>({
 					id: 'parent_execution_id',
 					finished: false,
-					data: createRunExecutionData(),
 				});
-				parentExecution.workflowData = mock<IWorkflowBase>({ id: 'parent_workflow_id', nodes: [] });
+				parentExecution.workflowData = mock<IWorkflowBase>({ id: 'parent_workflow_id' });
 				execution.data.parentExecution = {
 					executionId: parentExecution.id,
 					workflowId: parentExecution.workflowData.id,
@@ -338,7 +310,7 @@ describe('WaitTracker', () => {
 					finished: false,
 					status: 'waiting',
 					waitTill: WAIT_INDEFINITELY,
-					workflowData: mock<IWorkflowBase>({ id: 'parent_workflow_id', nodes: [] }),
+					workflowData: mock<IWorkflowBase>({ id: 'parent_workflow_id' }),
 					customData: {},
 					annotation: { tags: [] },
 					createdAt: new Date(),

@@ -118,12 +118,13 @@ export function useNodeCredentialOptions(
 	}
 
 	function isCredentialExisting(credentialType: INodeCredentialDescription): boolean {
-		const credential = node.value?.credentials?.[credentialType.name];
-		// Gateway-managed credentials have no real DB record but are properly configured
-		if (credential?.__aiGatewayManaged) return true;
-		if (!credential?.id) return false;
+		if (!node.value?.credentials?.[credentialType.name]?.id) {
+			return false;
+		}
+		const { id } = node.value.credentials[credentialType.name];
 		const options = getCredentialOptions([credentialType.name]);
-		return !!options.find((option: ICredentialsResponse) => option.id === credential.id);
+
+		return !!options.find((option: ICredentialsResponse) => option.id === id);
 	}
 
 	return {

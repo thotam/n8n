@@ -39,13 +39,10 @@ runs:
 
     - name: Login to DockerHub
       if: inputs.login-dockerhub == 'true'
-      shell: bash
-      env:
-        DOCKER_USER: ${{ inputs.dockerhub-username }}
-        DOCKER_PASS: ${{ inputs.dockerhub-password }}
-      run: |
-        node .github/scripts/retry.mjs --attempts 3 --delay 10 \
-          'echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin'
+      uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+      with:
+        username: ${{ inputs.dockerhub-username }}
+        password: ${{ inputs.dockerhub-password }}
 
     - name: Login to DHI Registry
       if: inputs.login-dhi == 'true'

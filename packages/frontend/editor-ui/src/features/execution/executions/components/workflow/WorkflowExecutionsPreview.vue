@@ -354,7 +354,7 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 					:to="{
 						name: VIEWS.EXECUTION_DEBUG,
 						params: {
-							workflowId: execution.workflowId,
+							name: execution.workflowId,
 							executionId: execution.id,
 						},
 					}"

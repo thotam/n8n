@@ -79,8 +79,7 @@ const respondWithProperty: INodeProperties = {
 export class RespondToWebhook implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Respond to Webhook',
-		icon: 'node:respond-to-webhook',
-		iconColor: 'magenta',
+		icon: { light: 'file:webhook.svg', dark: 'file:webhook.dark.svg' },
 		name: 'respondToWebhook',
 		group: ['transform'],
 		version: [1, 1.1, 1.2, 1.3, 1.4, 1.5],

@@ -16,14 +16,13 @@ import {
 	sleep,
 	removeCircularRefs,
 	NodeConnectionTypes,
+	isDomainAllowed,
 } from 'n8n-workflow';
 import type { Readable } from 'stream';
 
 import type { IAuthDataSanitizeKeys } from '../GenericFunctions';
 import {
-	getAllowedDomains,
 	getOAuth2AdditionalParameters,
-	getSecrets,
 	replaceNullValues,
 	sanitizeUiMessage,
 } from '../GenericFunctions';
@@ -689,24 +688,6 @@ export class HttpRequestV2 implements INodeType {
 			} catch {}
 		}
 
-		let allowedDomains: string | undefined;
-		let secrets: string[] = [];
-		for (const credential of [
-			httpBasicAuth,
-			httpBearerAuth,
-			httpDigestAuth,
-			httpHeaderAuth,
-			httpQueryAuth,
-			oAuth1Api,
-			oAuth2Api,
-		]) {
-			if (credential) {
-				allowedDomains = getAllowedDomains(this.getNode(), credential);
-				secrets.push(...getSecrets(credential));
-				break;
-			}
-		}
-
 		let requestOptions: IRequestOptions & { useStream?: boolean };
 		let setUiParameter: IDataObject;
 
@@ -749,17 +730,57 @@ export class HttpRequestV2 implements INodeType {
 				);
 			}
 
-			if (nodeCredentialType) {
-				let credentialData: ICredentialDataDecryptedObject | undefined;
-				try {
-					credentialData = await this.getCredentials<ICredentialDataDecryptedObject>(
-						nodeCredentialType,
-						itemIndex,
+			const checkDomainRestrictions = async (
+				credentialData: ICredentialDataDecryptedObject,
+				url: string,
+				credentialType?: string,
+			) => {
+				if (credentialData.allowedHttpRequestDomains === 'domains') {
+					const allowedDomains = credentialData.allowedDomains as string;
+
+					if (!allowedDomains || allowedDomains.trim() === '') {
+						throw new NodeOperationError(
+							this.getNode(),
+							'No allowed domains specified. Configure allowed domains or change restriction setting.',
+						);
+					}
+
+					if (!isDomainAllowed(url, { allowedDomains })) {
+						const credentialInfo = credentialType ? ` (${credentialType})` : '';
+						throw new NodeOperationError(
+							this.getNode(),
+							`Domain not allowed: This credential${credentialInfo} is restricted from accessing ${url}. ` +
+								`Only the following domains are allowed: ${allowedDomains}`,
+						);
+					}
+				} else if (credentialData.allowedHttpRequestDomains === 'none') {
+					throw new NodeOperationError(
+						this.getNode(),
+						'This credential is configured to prevent use within an HTTP Request node',
 					);
-				} catch {}
-				if (credentialData) {
-					allowedDomains = getAllowedDomains(this.getNode(), credentialData);
-					secrets = getSecrets(credentialData);
+				}
+			};
+
+			if (httpBasicAuth) await checkDomainRestrictions(httpBasicAuth, url);
+			if (httpBearerAuth) await checkDomainRestrictions(httpBearerAuth, url);
+			if (httpDigestAuth) await checkDomainRestrictions(httpDigestAuth, url);
+			if (httpHeaderAuth) await checkDomainRestrictions(httpHeaderAuth, url);
+			if (httpQueryAuth) await checkDomainRestrictions(httpQueryAuth, url);
+			if (oAuth1Api) await checkDomainRestrictions(oAuth1Api, url);
+			if (oAuth2Api) await checkDomainRestrictions(oAuth2Api, url);
+
+			if (nodeCredentialType) {
+				try {
+					const credentialData = await this.getCredentials(nodeCredentialType, itemIndex);
+					await checkDomainRestrictions(credentialData, url, nodeCredentialType);
+				} catch (error) {
+					if (
+						error.message?.includes('Domain not allowed') ||
+						error.message?.includes('configured to prevent') ||
+						error.message?.includes('No allowed domains specified')
+					) {
+						throw error;
+					}
 				}
 			}
 
@@ -784,7 +805,6 @@ export class HttpRequestV2 implements INodeType {
 				uri: url,
 				gzip: true,
 				rejectUnauthorized: !this.getNodeParameter('allowUnauthorizedCerts', itemIndex, false),
-				allowedDomains,
 			};
 
 			if (fullResponse) {
@@ -1045,7 +1065,7 @@ export class HttpRequestV2 implements INodeType {
 			}
 
 			try {
-				this.sendMessageToUI(sanitizeUiMessage(requestOptions, authDataKeys, secrets));
+				this.sendMessageToUI(sanitizeUiMessage(requestOptions, authDataKeys));
 			} catch (e) {}
 
 			if (authentication === 'genericCredentialType' || authentication === 'none') {

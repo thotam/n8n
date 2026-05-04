@@ -20,13 +20,7 @@ import N8nScrollArea from '../N8nScrollArea/N8nScrollArea.vue';
 interface Props
 	extends Pick<
 			PopoverContentProps,
-			| 'side'
-			| 'align'
-			| 'sideFlip'
-			| 'sideOffset'
-			| 'reference'
-			| 'positionStrategy'
-			| 'collisionPadding'
+			'side' | 'align' | 'sideFlip' | 'sideOffset' | 'reference' | 'positionStrategy'
 		>,
 		Pick<PopoverRootProps, 'open'> {
 	/**
@@ -89,10 +83,8 @@ const props = withDefaults(defineProps<Props>(), {
 	forceMount: false,
 	enableSlideIn: true,
 	scrollType: 'hover',
-	sideOffset: 4,
-	align: 'start',
+	sideOffset: 5,
 	sideFlip: undefined,
-	collisionPadding: 5,
 	suppressAutoFocus: false,
 	zIndex: 999,
 	showArrow: false,
@@ -148,7 +140,6 @@ watch(
 				:side-flip="sideFlip"
 				:align="align"
 				:side-offset="sideOffset"
-				:collision-padding="collisionPadding"
 				:class="[$style.popoverContent, contentClass, { [$style.enableSlideIn]: enableSlideIn }]"
 				:style="{ width, zIndex }"
 				:reference="reference"
@@ -178,28 +169,17 @@ watch(
 
 <style lang="scss" module>
 .popoverContent {
-	--popover--offset--slide-x: 0;
-	--popover--offset--slide-y: 0;
-	--popover--offset--origin-x: center;
-	--popover--offset--origin-y: center;
-
 	border-radius: var(--radius);
 	background-color: var(--color--foreground--tint-2);
 	border: var(--border);
-	// NOTE: In https://github.com/n8n-io/n8n/pull/27429 we'll replace custom shadows with tokens
 	box-shadow:
 		rgba(0, 0, 0, 0.1) 0 10px 15px -3px,
 		rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
 	will-change: transform, opacity;
-	transform-origin: var(--popover--offset--origin-x) var(--popover--offset--origin-y);
 
 	&.enableSlideIn {
-		animation-duration: var(--duration--snappy);
-		animation-timing-function: var(--easing--ease-out);
-
-		&[data-state='open'] {
-			animation-name: popoverIn;
-		}
+		animation-duration: 400ms;
+		animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 	}
 
 	&[data-state='closed'] {
@@ -208,58 +188,62 @@ watch(
 }
 
 .popoverContent[data-state='open'][data-side='top'] {
-	--popover--offset--slide-y: -2px;
-	--popover--offset--origin-y: bottom;
+	animation-name: slideDownAndFade;
 }
 
 .popoverContent[data-state='open'][data-side='right'] {
-	--popover--offset--slide-x: 2px;
-	--popover--offset--origin-x: left;
+	animation-name: slideLeftAndFade;
 }
 
 .popoverContent[data-state='open'][data-side='bottom'] {
-	--popover--offset--slide-y: 2px;
-	--popover--offset--origin-y: top;
+	animation-name: slideUpAndFade;
 }
 
 .popoverContent[data-state='open'][data-side='left'] {
-	--popover--offset--slide-x: -2px;
-	--popover--offset--origin-x: right;
+	animation-name: slideRightAndFade;
 }
 
-.popoverContent[data-state='open'][data-side='top'][data-align='start'],
-.popoverContent[data-state='open'][data-side='bottom'][data-align='start'] {
-	--popover--offset--slide-x: -2px;
-	--popover--offset--origin-x: left;
-}
-
-.popoverContent[data-state='open'][data-side='top'][data-align='end'],
-.popoverContent[data-state='open'][data-side='bottom'][data-align='end'] {
-	--popover--offset--slide-x: 2px;
-	--popover--offset--origin-x: right;
-}
-
-.popoverContent[data-state='open'][data-side='left'][data-align='start'],
-.popoverContent[data-state='open'][data-side='right'][data-align='start'] {
-	--popover--offset--slide-y: -2px;
-	--popover--offset--origin-y: top;
-}
-
-.popoverContent[data-state='open'][data-side='left'][data-align='end'],
-.popoverContent[data-state='open'][data-side='right'][data-align='end'] {
-	--popover--offset--slide-y: 2px;
-	--popover--offset--origin-y: bottom;
-}
-
-@keyframes popoverIn {
+@keyframes slideUpAndFade {
 	from {
 		opacity: 0;
-		transform: translate(var(--popover--offset--slide-x), var(--popover--offset--slide-y))
-			scale(0.96);
+		transform: translateY(2px);
 	}
 	to {
 		opacity: 1;
-		transform: translate(0, 0) scale(1);
+		transform: translateY(0);
+	}
+}
+
+@keyframes slideRightAndFade {
+	from {
+		opacity: 0;
+		transform: translateX(-2px);
+	}
+	to {
+		opacity: 1;
+		transform: translateX(0);
+	}
+}
+
+@keyframes slideDownAndFade {
+	from {
+		opacity: 0;
+		transform: translateY(-2px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes slideLeftAndFade {
+	from {
+		opacity: 0;
+		transform: translateX(2px);
+	}
+	to {
+		opacity: 1;
+		transform: translateX(0);
 	}
 }
 

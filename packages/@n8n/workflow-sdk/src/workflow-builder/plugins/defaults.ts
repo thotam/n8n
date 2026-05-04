@@ -16,11 +16,9 @@ import {
 	disconnectedNodeValidator,
 	expressionPathValidator,
 	expressionPrefixValidator,
-	filterNodeValidator,
 	fromAiValidator,
 	httpRequestValidator,
 	maxNodesValidator,
-	memorySessionKeyValidator,
 	mergeNodeValidator,
 	missingTriggerValidator,
 	noNodesValidator,
@@ -52,12 +50,10 @@ const coreValidators: ValidatorPlugin[] = [
 	httpRequestValidator,
 	toolNodeValidator,
 	fromAiValidator,
-	memorySessionKeyValidator,
 
 	// Node-type validators (medium priority)
 	setNodeValidator,
 	mergeNodeValidator,
-	filterNodeValidator,
 
 	// Expression validators (lower priority)
 	expressionPrefixValidator,

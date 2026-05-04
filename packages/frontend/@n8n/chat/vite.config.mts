@@ -1,6 +1,6 @@
 import { defineConfig, mergeConfig, PluginOption } from 'vite';
 import { resolve } from 'path';
-import { renameSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { renameSync, writeFileSync, readFileSync } from 'fs';
 import vue from '@vitejs/plugin-vue';
 import icons from 'unplugin-icons/vite';
 import dts from 'vite-plugin-dts';
@@ -32,9 +32,7 @@ export default mergeConfig(
 					const cssPath = resolve(__dirname, 'dist', 'chat.css');
 					const newCssPath = resolve(__dirname, 'dist', 'style.css');
 					try {
-						if (existsSync(cssPath)) {
-							renameSync(cssPath, newCssPath);
-						}
+						renameSync(cssPath, newCssPath);
 					} catch (error) {
 						console.error('Failed to rename chat.css file:', error);
 					}

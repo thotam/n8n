@@ -100,7 +100,7 @@ describe('CredentialSharing.ee', () => {
 		// Mock store methods
 		vi.spyOn(usersStore, 'fetchUsers').mockResolvedValue();
 		vi.spyOn(projectsStore, 'getAllProjects').mockResolvedValue();
-		vi.spyOn(projectsStore, 'searchShareableProjects').mockResolvedValue({
+		vi.spyOn(projectsStore, 'searchProjects').mockResolvedValue({
 			count: testProjects.length,
 			data: testProjects,
 		});
@@ -133,7 +133,7 @@ describe('CredentialSharing.ee', () => {
 				binaryDataS3: false,
 				workerView: false,
 				advancedPermissions: false,
-
+				apiKeyScopes: false,
 				workflowDiffs: false,
 				namedVersions: false,
 				provisioning: true,
@@ -145,7 +145,6 @@ describe('CredentialSharing.ee', () => {
 				},
 				customRoles: false,
 				personalSpacePolicy: false,
-				dataRedaction: false,
 			});
 	});
 
@@ -279,7 +278,7 @@ describe('CredentialSharing.ee', () => {
 				binaryDataS3: false,
 				workerView: false,
 				advancedPermissions: false,
-
+				apiKeyScopes: false,
 				workflowDiffs: false,
 				provisioning: true,
 				showNonProdBanner: false,
@@ -290,7 +289,6 @@ describe('CredentialSharing.ee', () => {
 				},
 				customRoles: false,
 				personalSpacePolicy: false,
-				dataRedaction: false,
 			});
 
 			const credential = createCredential();

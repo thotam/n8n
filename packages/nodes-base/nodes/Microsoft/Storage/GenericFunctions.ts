@@ -15,7 +15,7 @@ import type {
 	ICredentialDataDecryptedObject,
 	IRequestOptions,
 } from 'n8n-workflow';
-import { NodeApiError, sanitizeXmlName } from 'n8n-workflow';
+import { NodeApiError } from 'n8n-workflow';
 import { Parser } from 'xml2js';
 import { firstCharLowerCase, parseBooleans, parseNumbers } from 'xml2js/lib/processors';
 
@@ -128,8 +128,7 @@ export async function handleErrorPostReceive(
 
 		const parser = new Parser({
 			explicitArray: false,
-			tagNameProcessors: [sanitizeXmlName, firstCharLowerCase],
-			attrNameProcessors: [sanitizeXmlName],
+			tagNameProcessors: [firstCharLowerCase],
 		});
 		const { error } =
 			((await parser.parseStringPromise(data[0].json as unknown as string)) as {
@@ -372,8 +371,7 @@ export async function parseBlobList(
 ): Promise<{ blobs: IDataObject[]; maxResults?: number; nextMarker?: string }> {
 	const parser = new Parser({
 		explicitArray: false,
-		tagNameProcessors: [sanitizeXmlName, firstCharLowerCase, (name) => name.replace('-', '')],
-		attrNameProcessors: [sanitizeXmlName],
+		tagNameProcessors: [firstCharLowerCase, (name) => name.replace('-', '')],
 		valueProcessors: [
 			function (value, name) {
 				if (
@@ -455,8 +453,7 @@ export async function parseContainerList(
 ): Promise<{ containers: IDataObject[]; maxResults?: number; nextMarker?: string }> {
 	const parser = new Parser({
 		explicitArray: false,
-		tagNameProcessors: [sanitizeXmlName, firstCharLowerCase, (name) => name.replace('-', '')],
-		attrNameProcessors: [sanitizeXmlName],
+		tagNameProcessors: [firstCharLowerCase, (name) => name.replace('-', '')],
 		valueProcessors: [
 			function (value, name) {
 				if (

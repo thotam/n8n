@@ -14,11 +14,7 @@ import { getResolvables, updateDisplayOptions } from '@utils/utilities';
 
 import { numberInputsProperty } from '../../helpers/descriptions';
 import { modifySelectQuery, rowToExecutionData } from '../../helpers/utils';
-import {
-	loadAlaSqlSandbox,
-	resetSandboxCache,
-	runAlaSqlInSandbox,
-} from '../../helpers/sandbox-utils';
+import { loadAlaSqlSandbox, runAlaSqlInSandbox } from '../../helpers/sandbox-utils';
 
 type OperationOptions = {
 	emptyQueryResult: 'success' | 'empty';
@@ -82,24 +78,17 @@ const displayOptions = {
 export const description = updateDisplayOptions(displayOptions, properties);
 
 const prepareError = (node: INode, error: Error) => {
-	const raw = typeof error === 'string' ? error : error.message;
-	const isDisposed = /isolate.*dispos|memory limit|exhausted/i.test(raw);
-	const isTimeout = /script execution timed out/i.test(raw);
-
-	if (isDisposed) resetSandboxCache();
-
-	const message = isDisposed
-		? 'Dataset too large for the SQL sandbox'
-		: isTimeout
-			? 'SQL query exceeded the 30 second execution limit'
-			: 'Issue while executing query';
-	const description = isDisposed
-		? 'Try filtering or aggregating upstream, or split the input into smaller batches before the Merge node.'
-		: isTimeout
-			? 'Simplify the query (remove unnecessary JOINs) or reduce the number of input rows.'
-			: raw;
-
-	throw new NodeOperationError(node, error, { message, description, itemIndex: 0 });
+	let message = '';
+	if (typeof error === 'string') {
+		message = error;
+	} else {
+		message = error.message;
+	}
+	throw new NodeOperationError(node, error, {
+		message: 'Issue while executing query',
+		description: message,
+		itemIndex: 0,
+	});
 };
 
 async function executeSelectWithMappedPairedItems(

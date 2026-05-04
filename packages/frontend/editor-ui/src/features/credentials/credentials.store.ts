@@ -44,8 +44,6 @@ export const useCredentialsStore = defineStore(STORES.CREDENTIALS, () => {
 	type CredentialTestStatus = 'pending' | 'success' | 'error';
 	const credentialTestResults = ref(new Map<string, CredentialTestStatus>());
 
-	const pendingOAuthRefresh = ref(false);
-
 	const isCredentialTestedOk = (id: string): boolean => {
 		return credentialTestResults.value.get(id) === 'success';
 	};
@@ -522,7 +520,6 @@ export const useCredentialsStore = defineStore(STORES.CREDENTIALS, () => {
 		getCredentialTranslation,
 		setCredentialSharedWith,
 		claimFreeAiCredits,
-		pendingOAuthRefresh,
 	};
 });
 

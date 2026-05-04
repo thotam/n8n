@@ -8,11 +8,12 @@ import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { useSourceControlStore } from '@/features/integrations/sourceControl.ee/sourceControl.store';
 import { useSettingsStore } from '@/app/stores/settings.store';
 import { useUIStore } from '@/app/stores/ui.store';
+import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { useCollaborationStore } from '@/features/collaboration/collaboration/collaboration.store';
 import { useFocusedNodesStore } from '@/features/ai/assistant/focusedNodes.store';
 import { useI18n } from '@n8n/i18n';
 import { getResourcePermissions } from '@n8n/permissions';
-import type { INode, INodeTypeDescription } from 'n8n-workflow';
+import type { INode, INodeTypeDescription, Workflow } from 'n8n-workflow';
 import { NodeHelpers, WEBHOOK_NODE_TYPE } from 'n8n-workflow';
 import { computed, type ComputedRef } from 'vue';
 import { isPresent } from '@/app/utils/typesUtils';
@@ -47,11 +48,14 @@ export function useContextMenuItems(targetNodeIds: ComputedRef<string[]>): Compu
 	const uiStore = useUIStore();
 	const settingsStore = useSettingsStore();
 	const nodeTypesStore = useNodeTypesStore();
+	const workflowsStore = useWorkflowsStore();
 	const workflowDocumentStore = injectWorkflowDocumentStore();
 	const sourceControlStore = useSourceControlStore();
 	const collaborationStore = useCollaborationStore();
 	const focusedNodesStore = useFocusedNodesStore();
 	const i18n = useI18n();
+
+	const workflowObject = computed(() => workflowsStore.workflowObject as Workflow);
 
 	const workflowPermissions = computed(
 		() => getResourcePermissions(workflowDocumentStore?.value?.scopes).workflow,
@@ -102,18 +106,12 @@ export function useContextMenuItems(targetNodeIds: ComputedRef<string[]>): Compu
 	};
 
 	const isExecutable = (node: INodeUi) => {
-		if (!workflowDocumentStore?.value) return false;
-
+		const workflowNode = workflowObject.value.getNode(node.name) as INode;
 		const nodeType = nodeTypesStore.getNodeType(
-			node.type,
-			node.typeVersion,
+			workflowNode.type,
+			workflowNode.typeVersion,
 		) as INodeTypeDescription;
-
-		return NodeHelpers.isExecutable(
-			{ expression: workflowDocumentStore.value.getExpressionHandler() },
-			node,
-			nodeType,
-		);
+		return NodeHelpers.isExecutable(workflowObject.value, workflowNode, nodeType);
 	};
 
 	const isWebhookNode = (node: INodeUi) => {

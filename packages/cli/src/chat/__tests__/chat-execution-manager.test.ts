@@ -31,7 +31,6 @@ describe('ChatExecutionManager', () => {
 
 	beforeEach(() => {
 		jest.restoreAllMocks();
-		jest.clearAllMocks();
 	});
 
 	it('should handle errors from getRunData gracefully', async () => {

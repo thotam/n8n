@@ -101,9 +101,7 @@ export class SourceControlGitService {
 		if (!(await this.hasRemote(sourceControlPreferences.repositoryUrl))) {
 			if (sourceControlPreferences.connected && sourceControlPreferences.repositoryUrl) {
 				const instanceOwner = await this.ownershipService.getInstanceOwner();
-				await this.initRepository(sourceControlPreferences, instanceOwner, {
-					tolerateTrackingFetchFailure: true,
-				});
+				await this.initRepository(sourceControlPreferences, instanceOwner);
 			}
 		}
 
@@ -224,7 +222,6 @@ export class SourceControlGitService {
 			'repositoryUrl' | 'branchName' | 'initRepo' | 'connectionType'
 		>,
 		user: User,
-		options?: { tolerateTrackingFetchFailure?: boolean },
 	): Promise<void> {
 		if (!this.git) {
 			throw new UnexpectedError('Git is not initialized (Promise)');
@@ -256,7 +253,7 @@ export class SourceControlGitService {
 			user.email ?? SOURCE_CONTROL_DEFAULT_EMAIL,
 		);
 
-		await this.trackRemoteIfReady(branchName, options?.tolerateTrackingFetchFailure);
+		await this.trackRemoteIfReady(branchName);
 
 		if (initRepo) {
 			try {
@@ -274,18 +271,10 @@ export class SourceControlGitService {
 	 * If this is a new local repository being set up after remote is ready,
 	 * then set this local to start tracking remote's target branch.
 	 */
-	private async trackRemoteIfReady(targetBranch: string, tolerateFetchFailure: boolean = false) {
+	private async trackRemoteIfReady(targetBranch: string) {
 		if (!this.git) return;
 
-		try {
-			await this.fetch();
-		} catch (error) {
-			if (!tolerateFetchFailure) {
-				throw error;
-			}
-			this.logger.warn('Failed to fetch during remote tracking setup', { error });
-			return; // Don't fail startup initialization for recoverable remote issues
-		}
+		await this.fetch();
 
 		const { currentBranch, branches: remoteBranches } = await this.getBranches();
 
@@ -494,41 +483,11 @@ export class SourceControlGitService {
 		return statusResult;
 	}
 
-	/**
-	 * Returns all file paths that have ever been committed under the given directory
-	 * on the current branch. Scoped to the current branch (ancestors of HEAD) so that
-	 * data tables pushed by other instances on different branches are not mistaken
-	 * for previously-synced resources on this instance.
-	 */
-	async getHistoricallyTrackedFiles(directory: string): Promise<Set<string>> {
-		if (!this.git) {
-			throw new UnexpectedError('Git is not initialized (getHistoricallyTrackedFiles)');
-		}
-		try {
-			const output = await this.git.raw([
-				'log',
-				'--pretty=format:',
-				'--name-only',
-				'--',
-				`${directory}/`,
-			]);
-			const files = new Set(
-				output
-					.split('\n')
-					.map((line) => line.trim())
-					.filter((line) => line.length > 0),
-			);
-			return files;
-		} catch {
-			return new Set();
-		}
-	}
-
 	async getFileContent(filePath: string, commit: string = 'HEAD'): Promise<string> {
+		if (!this.git) {
+			throw new UnexpectedError('Git is not initialized (getFileContent)');
+		}
 		try {
-			if (!this.git) {
-				throw new UnexpectedError('Git is not initialized (getFileContent)');
-			}
 			const content = await this.git.show([`${commit}:${filePath}`]);
 			return content;
 		} catch (error) {

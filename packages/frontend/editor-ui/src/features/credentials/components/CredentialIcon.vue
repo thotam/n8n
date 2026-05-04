@@ -4,7 +4,6 @@ import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { useRootStore } from '@n8n/stores/useRootStore';
 import { useUIStore } from '@/app/stores/ui.store';
 import { getThemedValue } from '@/app/utils/nodeTypesUtils';
-import { getNodeIconSource } from '@/app/utils/nodeIcon';
 import type { ICredentialType } from 'n8n-workflow';
 import { computed } from 'vue';
 import { N8nNodeIcon } from '@n8n/design-system';
@@ -25,23 +24,21 @@ const credentialWithIcon = computed(() => getCredentialWithIcon(props.credential
 
 const theme = computed(() => props.theme ?? uiStore.appliedTheme);
 
-// Route through getNodeIconSource so named icons (e.g. HTTP Request's `node:http-request`)
-// resolve correctly — reading `iconUrl` alone misses them and falls back to the `?` placeholder.
-const referencedNodeIconSource = computed(() => {
+const nodeBasedIconUrl = computed(() => {
 	const icon = getThemedValue(credentialWithIcon.value?.icon, theme.value);
-	if (!icon?.startsWith('node:')) return undefined;
-	const nodeType = nodeTypesStore.getNodeType(icon.replace('node:', ''));
-	if (!nodeType) return undefined;
-	return getNodeIconSource(nodeType, null, null);
+	if (!icon?.startsWith('node:')) return null;
+	return nodeTypesStore.getNodeType(icon.replace('node:', ''))?.iconUrl;
 });
 
 const iconSource = computed(() => {
-	if (referencedNodeIconSource.value?.type === 'file') {
-		return referencedNodeIconSource.value.src;
-	}
+	const themeIconUrl = getThemedValue(
+		nodeBasedIconUrl.value ?? credentialWithIcon.value?.iconUrl,
+		theme.value,
+	);
 
-	const themeIconUrl = getThemedValue(credentialWithIcon.value?.iconUrl, theme.value);
-	if (!themeIconUrl) return undefined;
+	if (!themeIconUrl) {
+		return undefined;
+	}
 
 	return rootStore.baseUrl + themeIconUrl;
 });
@@ -53,20 +50,12 @@ const iconType = computed(() => {
 });
 
 const iconName = computed(() => {
-	if (referencedNodeIconSource.value?.type === 'icon') {
-		return referencedNodeIconSource.value.name;
-	}
-
-	const icon = getThemedValue(credentialWithIcon.value?.icon, theme.value);
+	const icon = getThemedValue(credentialWithIcon.value?.icon, uiStore.appliedTheme);
 	if (!icon?.startsWith('fa:')) return undefined;
 	return icon.replace('fa:', '');
 });
 
 const iconColor = computed(() => {
-	if (referencedNodeIconSource.value?.type === 'icon' && referencedNodeIconSource.value.color) {
-		return referencedNodeIconSource.value.color;
-	}
-
 	const { iconColor: color } = credentialWithIcon.value ?? {};
 	if (!color) return undefined;
 	return `var(--node--icon--color--${color})`;

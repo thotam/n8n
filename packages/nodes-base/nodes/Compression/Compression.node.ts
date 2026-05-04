@@ -47,7 +47,7 @@ export class Compression implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Compression',
 		name: 'compression',
-		icon: 'node:compression',
+		icon: 'fa:file-archive',
 		iconColor: 'green',
 		group: ['transform'],
 		subtitle: '={{$parameter["operation"]}}',
@@ -55,6 +55,7 @@ export class Compression implements INodeType {
 		description: 'Compress and decompress files',
 		defaults: {
 			name: 'Compression',
+			color: '#408000',
 		},
 		usableAsTool: true,
 		inputs: [NodeConnectionTypes.Main],

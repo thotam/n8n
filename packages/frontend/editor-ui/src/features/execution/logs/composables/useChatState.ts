@@ -10,13 +10,12 @@ import {
 import { useRootStore } from '@n8n/stores/useRootStore';
 import MessageWithButtons from '@n8n/chat/components/MessageWithButtons.vue';
 import { chatEventBus } from '@n8n/chat/event-buses';
-import type { ChatOptions, SendMessageResponse } from '@n8n/chat/types';
+import type { ChatMessage, ChatOptions, SendMessageResponse } from '@n8n/chat/types';
 import { v4 as uuid } from 'uuid';
 import type { ComputedRef, Ref } from 'vue';
 import { computed, ref, toValue, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useLogsStore } from '@/app/stores/logs.store';
-import { usePushConnectionStore } from '@/app/stores/pushConnection.store';
 import { restoreChatHistory } from '@/features/execution/logs/logs.utils';
 import { type INode, type INodeParameters, NodeHelpers } from 'n8n-workflow';
 import { isChatNode } from '@/app/utils/aiUtils';
@@ -26,6 +25,7 @@ import { MessageComponentKey } from '@n8n/chat/constants/messageComponents';
 
 interface ChatState {
 	currentSessionId: ComputedRef<string>;
+	messages: ComputedRef<ChatMessage[]>;
 	previousChatMessages: ComputedRef<string[]>;
 	refreshSession: () => void;
 	displayExecution: (executionId: string) => void;
@@ -48,7 +48,9 @@ export function useChatState(
 	const locale = useI18n();
 	const workflowsStore = useWorkflowsStore();
 	const workflowDocumentStore = computed(() =>
-		useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+		workflowsStore.workflowId
+			? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+			: undefined,
 	);
 	const workflowState = injectWorkflowState();
 	const rootStore = useRootStore();
@@ -56,7 +58,6 @@ export function useChatState(
 	const router = useRouter();
 	const nodeHelpers = useNodeHelpers();
 	const nodeTypesStore = useNodeTypesStore();
-	const pushConnectionStore = usePushConnectionStore();
 	const { runWorkflow } = useRunWorkflow({ router });
 
 	const webhookRegistered = ref(false);
@@ -69,7 +70,7 @@ export function useChatState(
 
 	const previousChatMessages = computed(() => workflowsStore.getPastChatMessages);
 	const chatTriggerNode = computed(
-		() => workflowDocumentStore.value.allNodes.find(isChatNode) ?? null,
+		() => (workflowDocumentStore.value?.allNodes ?? []).find(isChatNode) ?? null,
 	);
 
 	// Resolve the effective value for an options sub-parameter: returns the
@@ -175,30 +176,6 @@ export function useChatState(
 		isRegistering.value = true;
 
 		try {
-			// Wait for the push connection — webhook registration and execution
-			// events require it. In preview iframes the WebSocket handshake may
-			// still be in progress when the first message is sent.
-			if (!pushConnectionStore.isConnected) {
-				await new Promise<void>((resolve, reject) => {
-					let stop = () => {};
-					const timeout = setTimeout(() => {
-						stop();
-						reject(new Error('Push connection timeout'));
-					}, 10_000);
-					stop = watch(
-						() => pushConnectionStore.isConnected,
-						(connected) => {
-							if (connected) {
-								clearTimeout(timeout);
-								stop();
-								resolve();
-							}
-						},
-						{ immediate: true },
-					);
-				});
-			}
-
 			// Clear any existing execution to allow fresh webhook registration
 			workflowState.setWorkflowExecutionData(null);
 			workflowState.setActiveExecutionId(undefined);
@@ -220,11 +197,7 @@ export function useChatState(
 				workflowsStore.chatPartialExecutionDestinationNode = null;
 			}
 
-			const response = await runWorkflow(runWorkflowOptions);
-
-			if (!response) {
-				throw new Error('Failed to register chat webhook');
-			}
+			await runWorkflow(runWorkflowOptions);
 
 			webhookRegistered.value = true;
 		} finally {
@@ -260,7 +233,7 @@ export function useChatState(
 			messageComponents: {
 				[MessageComponentKey.WITH_BUTTONS]: MessageWithButtons,
 			},
-			messageHistory: isReadOnly ? restoredChatMessages.value : messages.value,
+			messageHistory: messages.value,
 			disabled: ref(isReadOnly),
 			i18n: {
 				en: {
@@ -327,7 +300,6 @@ export function useChatState(
 		restoreChatHistory(
 			workflowsStore.workflowExecutionData,
 			locale.baseText('chat.window.chat.response.empty'),
-			locale.baseText('chat.window.chat.response.redacted'),
 		),
 	);
 
@@ -347,7 +319,7 @@ export function useChatState(
 	function displayExecution(executionId: string) {
 		const route = router.resolve({
 			name: VIEWS.EXECUTION_PREVIEW,
-			params: { workflowId: workflowsStore.workflowId, executionId },
+			params: { name: workflowsStore.workflowId, executionId },
 		});
 		window.open(route.href, '_blank');
 	}
@@ -365,6 +337,9 @@ export function useChatState(
 
 	return {
 		currentSessionId: computed(() => logsStore.chatSessionId),
+		messages: computed(() =>
+			isReadOnly ? restoredChatMessages.value : logsStore.chatSessionMessages,
+		),
 		previousChatMessages,
 		refreshSession,
 		displayExecution,

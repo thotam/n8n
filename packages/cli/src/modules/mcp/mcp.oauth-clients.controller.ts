@@ -68,7 +68,7 @@ export class McpOAuthClientsController {
 		});
 
 		try {
-			await this.mcpOAuthService.deleteClient(clientId, req.user.id);
+			await this.mcpOAuthService.deleteClient(clientId);
 
 			this.logger.info('OAuth client deleted successfully', {
 				clientId,

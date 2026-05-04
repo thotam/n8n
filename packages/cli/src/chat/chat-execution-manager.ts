@@ -61,6 +61,10 @@ export class ChatExecutionManager {
 			unflattenData: true,
 		});
 	}
+	async checkIfExecutionExists(executionId: string) {
+		return await this.executionRepository.findSingleExecution(executionId);
+	}
+
 	private getWorkflow(execution: IExecutionResponse) {
 		const { workflowData } = execution;
 		return new Workflow({

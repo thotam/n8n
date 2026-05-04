@@ -27,7 +27,7 @@ test.use({
  *     → Credential status returned (missing / configured)
  */
 test.describe(
-	'Dynamic Credentials: execution-status @capability:dynamic-credentials @licensed',
+	'Dynamic Credentials: execution-status @capability:dynamic-credentials',
 	{
 		annotation: [{ type: 'owner', description: 'Identity & Access' }],
 	},

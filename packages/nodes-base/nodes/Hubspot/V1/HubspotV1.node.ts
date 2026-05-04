@@ -93,7 +93,7 @@ export class HubspotV1 implements INodeType {
 							value: 'apiKey',
 						},
 						{
-							name: 'Service Key',
+							name: 'APP Token',
 							value: 'appToken',
 						},
 						{

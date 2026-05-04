@@ -3,8 +3,14 @@ import { useEventSourceClient } from '../useEventSourceClient';
 import { MockEventSource } from './mockEventSource';
 
 describe('useEventSourceClient', () => {
+	let mockEventSource: MockEventSource;
+
 	beforeEach(() => {
-		vi.stubGlobal('EventSource', MockEventSource);
+		mockEventSource = new MockEventSource('http://test.com');
+
+		// @ts-expect-error - mock EventSource
+		global.EventSource = vi.fn(() => mockEventSource);
+
 		vi.useFakeTimers();
 	});
 
@@ -20,7 +26,7 @@ describe('useEventSourceClient', () => {
 		const { connect } = useEventSourceClient({ url, onMessage });
 		connect();
 
-		expect(MockEventSource.init).toHaveBeenCalledWith(url, { withCredentials: true });
+		expect(EventSource).toHaveBeenCalledWith(url, { withCredentials: true });
 	});
 
 	test('should update connection status on successful connection', () => {
@@ -30,7 +36,7 @@ describe('useEventSourceClient', () => {
 		});
 		connect();
 
-		MockEventSource.getInstance().simulateConnectionOpen();
+		mockEventSource.simulateConnectionOpen();
 
 		expect(isConnected.value).toBe(true);
 	});
@@ -40,7 +46,7 @@ describe('useEventSourceClient', () => {
 		const { connect } = useEventSourceClient({ url: 'http://test.com', onMessage });
 		connect();
 
-		MockEventSource.getInstance().simulateMessageEvent('test data');
+		mockEventSource.simulateMessageEvent('test data');
 
 		expect(onMessage).toHaveBeenCalledWith('test data');
 	});
@@ -53,13 +59,13 @@ describe('useEventSourceClient', () => {
 		connect();
 
 		// Simulate successful connection
-		MockEventSource.getInstance().simulateConnectionOpen();
+		mockEventSource.simulateConnectionOpen();
 		expect(isConnected.value).toBe(true);
 
 		disconnect();
 
 		expect(isConnected.value).toBe(false);
-		expect(MockEventSource.getInstance().close).toHaveBeenCalled();
+		expect(mockEventSource.close).toHaveBeenCalled();
 	});
 
 	test('should handle connection loss', () => {
@@ -68,19 +74,19 @@ describe('useEventSourceClient', () => {
 			onMessage: vi.fn(),
 		});
 		connect();
-		expect(MockEventSource.init).toHaveBeenCalledTimes(1);
+		expect(EventSource).toHaveBeenCalledTimes(1);
 
 		// Simulate successful connection
-		MockEventSource.getInstance().simulateConnectionOpen();
+		mockEventSource.simulateConnectionOpen();
 		expect(isConnected.value).toBe(true);
 
 		// Simulate connection loss
-		MockEventSource.getInstance().simulateConnectionClose();
+		mockEventSource.simulateConnectionClose();
 		expect(isConnected.value).toBe(false);
 
 		// Advance timer to trigger reconnect
 		vi.advanceTimersByTime(1_000);
-		expect(MockEventSource.init).toHaveBeenCalledTimes(2);
+		expect(EventSource).toHaveBeenCalledTimes(2);
 	});
 
 	test('sendMessage should be a noop function', () => {
@@ -91,7 +97,7 @@ describe('useEventSourceClient', () => {
 		connect();
 
 		// Simulate successful connection
-		MockEventSource.getInstance().simulateConnectionOpen();
+		mockEventSource.simulateConnectionOpen();
 
 		const message = 'test message';
 		// Should not throw error and should do nothing
@@ -105,18 +111,18 @@ describe('useEventSourceClient', () => {
 		});
 		connect();
 
-		MockEventSource.getInstance().simulateConnectionOpen();
-		MockEventSource.getInstance().simulateConnectionClose();
+		mockEventSource.simulateConnectionOpen();
+		mockEventSource.simulateConnectionClose();
 
 		// First reconnection attempt after 1 second
 		vi.advanceTimersByTime(1_000);
-		expect(MockEventSource.init).toHaveBeenCalledTimes(2);
+		expect(EventSource).toHaveBeenCalledTimes(2);
 
-		MockEventSource.getInstance().simulateConnectionClose();
+		mockEventSource.simulateConnectionClose();
 
 		// Second reconnection attempt after 2 seconds
 		vi.advanceTimersByTime(2_000);
-		expect(MockEventSource.init).toHaveBeenCalledTimes(3);
+		expect(EventSource).toHaveBeenCalledTimes(3);
 	});
 
 	test('should reset connection attempts on successful connection', () => {
@@ -127,21 +133,21 @@ describe('useEventSourceClient', () => {
 		connect();
 
 		// First connection attempt
-		MockEventSource.getInstance().simulateConnectionOpen();
-		MockEventSource.getInstance().simulateConnectionClose();
+		mockEventSource.simulateConnectionOpen();
+		mockEventSource.simulateConnectionClose();
 
 		// First reconnection attempt
 		vi.advanceTimersByTime(1_000);
-		expect(MockEventSource.init).toHaveBeenCalledTimes(2);
+		expect(EventSource).toHaveBeenCalledTimes(2);
 
 		// Successful connection
-		MockEventSource.getInstance().simulateConnectionOpen();
+		mockEventSource.simulateConnectionOpen();
 
 		// Connection lost again
-		MockEventSource.getInstance().simulateConnectionClose();
+		mockEventSource.simulateConnectionClose();
 
 		// Should start with initial delay again
 		vi.advanceTimersByTime(1_000);
-		expect(MockEventSource.init).toHaveBeenCalledTimes(3);
+		expect(EventSource).toHaveBeenCalledTimes(3);
 	});
 });

@@ -7,7 +7,6 @@ import type {
 	ExecutionStatus,
 	WorkflowExecuteMode,
 } from 'n8n-workflow';
-import type { ExecutionRedactionQueryDto } from '@n8n/api-types';
 import type {
 	ExecutionFilterType,
 	ExecutionsQueryFilter,
@@ -191,15 +190,11 @@ export const useExecutionsStore = defineStore('executions', () => {
 		}
 	}
 
-	async function fetchExecution(
-		id: string,
-		queryParams?: ExecutionRedactionQueryDto,
-	): Promise<IExecutionResponse | undefined> {
+	async function fetchExecution(id: string): Promise<IExecutionResponse | undefined> {
 		const response = await makeRestApiRequest<IExecutionFlattedResponse>(
 			rootStore.restApiContext,
 			'GET',
 			`/executions/${id}`,
-			queryParams,
 		);
 
 		return response ? unflattenExecutionData(response) : undefined;

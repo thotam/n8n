@@ -338,7 +338,7 @@ describe('useWorkflowResourcesLocator', () => {
 
 			expect(routerMock.resolve as any).toHaveBeenCalledWith({
 				name: 'NodeViewExisting',
-				params: { workflowId: 'test-workflow-id' },
+				params: { name: 'test-workflow-id' },
 			});
 			expect(url).toBe('/workflow/test-workflow-id');
 		});

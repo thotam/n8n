@@ -188,20 +188,16 @@ export function checkConditions(conditions: unknown[], actualValues: unknown[]):
 					return (propertyValue as number) >= from && (propertyValue as number) <= to;
 				}
 				if (key === 'includes') {
-					if (typeof propertyValue !== 'string') return false;
-					return propertyValue.includes(targetValue as string);
+					return (propertyValue as string).includes(targetValue as string);
 				}
 				if (key === 'startsWith') {
-					if (typeof propertyValue !== 'string') return false;
-					return propertyValue.startsWith(targetValue as string);
+					return (propertyValue as string).startsWith(targetValue as string);
 				}
 				if (key === 'endsWith') {
-					if (typeof propertyValue !== 'string') return false;
-					return propertyValue.endsWith(targetValue as string);
+					return (propertyValue as string).endsWith(targetValue as string);
 				}
 				if (key === 'regex') {
-					if (typeof propertyValue !== 'string') return false;
-					return new RegExp(targetValue as string).test(propertyValue);
+					return new RegExp(targetValue as string).test(propertyValue as string);
 				}
 				if (key === 'exists') {
 					return propertyValue !== null && propertyValue !== undefined && propertyValue !== '';

@@ -8,8 +8,7 @@ export class RemoveDuplicates extends VersionedNodeType {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'Remove Duplicates',
 			name: 'removeDuplicates',
-			icon: 'node:remove-duplicates',
-			iconColor: 'azure',
+			icon: 'file:removeDuplicates.svg',
 			group: ['transform'],
 			defaultVersion: 2,
 			description: 'Delete items with matching field values',

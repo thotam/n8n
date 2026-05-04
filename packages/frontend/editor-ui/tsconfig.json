@@ -1,6 +1,7 @@
 {
 	"extends": "@n8n/typescript-config/tsconfig.frontend.json",
 	"compilerOptions": {
+		"baseUrl": ".",
 		"moduleResolution": "bundler",
 		"rootDirs": [
 			".",
@@ -9,7 +10,7 @@
 			"../@n8n/chat/src",
 			"../@n8n/design-system/src"
 		],
-		"noEmit": true,
+		"outDir": "dist",
 		"types": [
 			"vitest/globals",
 			"unplugin-icons/types/vue",

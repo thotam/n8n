@@ -64,10 +64,8 @@ jest.mock('../cli/webhook', () => ({
 }));
 
 jest.mock('../harness/evaluation-helpers', () => ({
-	collectAgentTextResponse: jest.fn().mockResolvedValue(''),
 	consumeGenerator: (...args: unknown[]): unknown => mockConsumeGenerator(...args),
 	getChatPayload: (...args: unknown[]): unknown => mockGetChatPayload(...args),
-	extractSubgraphMetrics: jest.fn().mockReturnValue({}),
 	createWorkflowGenerator: () =>
 		jest.fn().mockResolvedValue({ name: 'Test', nodes: [], connections: {} }),
 }));

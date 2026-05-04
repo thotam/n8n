@@ -23,15 +23,11 @@ import {
 } from '@n8n/decorators';
 import { Role as RoleDTO } from '@n8n/permissions';
 
-import { EventService } from '@/events/event.service';
 import { RoleService } from '@/services/role.service';
 
 @RestController('/roles')
 export class RoleController {
-	constructor(
-		private readonly roleService: RoleService,
-		private readonly eventService: EventService,
-	) {}
+	constructor(private readonly roleService: RoleService) {}
 
 	@Get('/')
 	async getAllRoles(
@@ -85,50 +81,33 @@ export class RoleController {
 	@GlobalScope('role:manage')
 	@Licensed(LICENSE_FEATURES.CUSTOM_ROLES)
 	async updateRole(
-		req: AuthenticatedRequest,
+		_req: AuthenticatedRequest,
 		_res: Response,
 		@Param('slug') slug: string,
 		@Body updateRole: UpdateRoleDto,
 	): Promise<RoleDTO> {
-		const result = await this.roleService.updateCustomRole(slug, updateRole);
-		this.eventService.emit('custom-role-updated', {
-			userId: req.user.id,
-			roleSlug: result.slug,
-			scopes: result.scopes,
-		});
-		return result;
+		return await this.roleService.updateCustomRole(slug, updateRole);
 	}
 
 	@Delete('/:slug')
 	@GlobalScope('role:manage')
 	@Licensed(LICENSE_FEATURES.CUSTOM_ROLES)
 	async deleteRole(
-		req: AuthenticatedRequest,
+		_req: AuthenticatedRequest,
 		_res: Response,
 		@Param('slug') slug: string,
 	): Promise<RoleDTO> {
-		const result = await this.roleService.removeCustomRole(slug);
-		this.eventService.emit('custom-role-deleted', {
-			userId: req.user.id,
-			roleSlug: result.slug,
-		});
-		return result;
+		return await this.roleService.removeCustomRole(slug);
 	}
 
 	@Post('/')
 	@GlobalScope('role:manage')
 	@Licensed(LICENSE_FEATURES.CUSTOM_ROLES)
 	async createRole(
-		req: AuthenticatedRequest,
+		_req: AuthenticatedRequest,
 		_res: Response,
 		@Body createRole: CreateRoleDto,
 	): Promise<RoleDTO> {
-		const result = await this.roleService.createCustomRole(createRole);
-		this.eventService.emit('custom-role-created', {
-			userId: req.user.id,
-			roleSlug: result.slug,
-			scopes: result.scopes,
-		});
-		return result;
+		return await this.roleService.createCustomRole(createRole);
 	}
 }

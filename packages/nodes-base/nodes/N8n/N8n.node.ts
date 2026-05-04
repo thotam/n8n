@@ -15,8 +15,7 @@ export class N8n implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'n8n',
 		name: 'n8n',
-		icon: 'node:n8n',
-		iconColor: 'pink-red',
+		icon: 'file:n8n.svg',
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',

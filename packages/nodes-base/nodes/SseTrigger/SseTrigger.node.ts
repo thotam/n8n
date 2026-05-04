@@ -12,7 +12,7 @@ export class SseTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'SSE Trigger',
 		name: 'sseTrigger',
-		icon: 'node:sse-trigger',
+		icon: 'fa:cloud-download-alt',
 		iconColor: 'dark-blue',
 		group: ['trigger'],
 		version: 1,
@@ -21,6 +21,7 @@ export class SseTrigger implements INodeType {
 		activationMessage: 'You can now make calls to your SSE URL to trigger executions.',
 		defaults: {
 			name: 'SSE Trigger',
+			color: '#225577',
 		},
 		triggerPanel: {
 			header: '',

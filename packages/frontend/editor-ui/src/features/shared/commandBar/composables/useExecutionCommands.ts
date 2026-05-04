@@ -35,7 +35,7 @@ export function useExecutionCommands(): CommandGroup {
 	const message = useMessage();
 	const telemetry = useTelemetry();
 
-	const workflowId = computed(() => route.params.workflowId as string);
+	const workflowId = computed(() => route.params.name as string);
 
 	const activeExecution = computed(() => {
 		return executionsStore.activeExecution as ExecutionSummary & {
@@ -122,13 +122,13 @@ export function useExecutionCommands(): CommandGroup {
 				await router
 					.replace({
 						name: VIEWS.EXECUTION_PREVIEW,
-						params: { workflowId: workflowId.value, executionId: nextExecution.id },
+						params: { name: workflowId.value, executionId: nextExecution.id },
 					})
 					.catch(() => {});
 			} else {
 				await router.replace({
 					name: VIEWS.EXECUTION_HOME,
-					params: { workflowId: workflowId.value },
+					params: { name: workflowId.value },
 				});
 			}
 
@@ -190,7 +190,7 @@ export function useExecutionCommands(): CommandGroup {
 		void router.push({
 			name: VIEWS.EXECUTION_DEBUG,
 			params: {
-				workflowId: activeExecution.value.workflowId,
+				name: activeExecution.value.workflowId,
 				executionId: activeExecution.value.id,
 			},
 		});

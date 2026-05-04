@@ -32,8 +32,7 @@ export class Code implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Code',
 		name: 'code',
-		icon: 'node:code',
-		iconColor: 'amber',
+		icon: 'file:code.svg',
 		group: ['transform'],
 		version: [1, 2],
 		defaultVersion: 2,

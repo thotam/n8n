@@ -5,13 +5,11 @@ import { onMounted, ref } from 'vue';
 import { useUIStore } from '@/app/stores/ui.store';
 import { createEventBus } from '@n8n/utils/event-bus';
 import { useTelemetry } from '@/app/composables/useTelemetry';
-import { useToast } from '@/app/composables/useToast';
 import { useI18n } from '@n8n/i18n';
 import { useNDVStore } from '@/features/ndv/shared/ndv.store';
 
 import { N8nButton, N8nInput, N8nInputLabel, N8nNotice } from '@n8n/design-system';
 const telemetry = useTelemetry();
-const toast = useToast();
 const i18n = useI18n();
 
 const uiStore = useUIStore();
@@ -82,24 +80,13 @@ function sendTelemetry(
 }
 
 async function onImport() {
-	try {
-		const { useImportCurlCommand } = await import('@/app/composables/useImportCurlCommand');
-		const { importCurlCommand } = useImportCurlCommand({
-			onImportSuccess,
-			onImportFailure,
-			onAfterImport,
-		});
-		importCurlCommand(curlCommand);
-	} catch {
-		// Handles WASM loading failures (e.g. wrong MIME type for tree-sitter.wasm)
-		toast.showToast({
-			title: i18n.baseText('importCurlParameter.showError.failedToLoad.title'),
-			message: i18n.baseText('importCurlParameter.showError.failedToLoad.message'),
-			type: 'error',
-			duration: 0,
-		});
-		onImportFailure({ invalidProtocol: false });
-	}
+	const { useImportCurlCommand } = await import('@/app/composables/useImportCurlCommand');
+	const { importCurlCommand } = useImportCurlCommand({
+		onImportSuccess,
+		onImportFailure,
+		onAfterImport,
+	});
+	importCurlCommand(curlCommand);
 }
 </script>
 

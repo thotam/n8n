@@ -33,11 +33,6 @@ export const expressionPrefixValidator: ValidatorPlugin = {
 			return issues;
 		}
 
-		// Skip HTML template node - it uses {{ }} natively for template expressions
-		if (node.type === 'n8n-nodes-base.html') {
-			return issues;
-		}
-
 		const params = node.config?.parameters;
 		if (!params) {
 			return issues;

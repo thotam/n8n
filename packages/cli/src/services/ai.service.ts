@@ -16,8 +16,6 @@ import { License } from '../license';
 export class AiService {
 	private client: AiAssistantClient | undefined;
 
-	private initPromise: Promise<void> | undefined;
-
 	constructor(
 		private readonly licenseService: License,
 		private readonly globalConfig: GlobalConfig,
@@ -52,40 +50,38 @@ export class AiService {
 	}
 
 	async chat(payload: AiChatRequestDto, user: IUser) {
-		const client = await this.getClient();
-		return await client.chat(payload, { id: user.id });
+		if (!this.client) {
+			await this.init();
+		}
+		assert(this.client, 'Assistant client not setup');
+
+		return await this.client.chat(payload, { id: user.id });
 	}
 
 	async applySuggestion(payload: AiApplySuggestionRequestDto, user: IUser) {
-		const client = await this.getClient();
-		return await client.applySuggestion(payload, { id: user.id });
+		if (!this.client) {
+			await this.init();
+		}
+		assert(this.client, 'Assistant client not setup');
+
+		return await this.client.applySuggestion(payload, { id: user.id });
 	}
 
 	async askAi(payload: AiAskRequestDto, user: IUser) {
-		const client = await this.getClient();
-		return await client.askAi(payload, { id: user.id });
-	}
-
-	/** Whether the AI service proxy is enabled (license + base URL configured). */
-	isProxyEnabled(): boolean {
-		return this.licenseService.isAiAssistantEnabled() && !!this.globalConfig.aiAssistant.baseUrl;
-	}
-
-	/** Return the initialized AiAssistantClient. Initializes lazily if needed. */
-	async getClient(): Promise<AiAssistantClient> {
 		if (!this.client) {
-			this.initPromise ??= this.init();
-			await this.initPromise;
-			if (!this.client) {
-				this.initPromise = undefined; // allow retry after license activation
-			}
+			await this.init();
 		}
-		assert(this.client, 'AI Assistant client not initialized');
-		return this.client;
+		assert(this.client, 'Assistant client not setup');
+
+		return await this.client.askAi(payload, { id: user.id });
 	}
 
 	async createFreeAiCredits(user: IUser) {
-		const client = await this.getClient();
-		return await client.generateAiCreditsCredentials(user);
+		if (!this.client) {
+			await this.init();
+		}
+		assert(this.client, 'Assistant client not setup');
+
+		return await this.client.generateAiCreditsCredentials(user);
 	}
 }

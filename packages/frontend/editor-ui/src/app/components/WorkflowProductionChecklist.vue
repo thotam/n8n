@@ -7,6 +7,7 @@ import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import type { ActionType, WorkflowSettings } from '@/app/composables/useWorkflowsCache';
 import { useWorkflowSettingsCache } from '@/app/composables/useWorkflowsCache';
 import { useUIStore } from '@/app/stores/ui.store';
+import type { IWorkflowDb } from '@/Interface';
 import {
 	WORKFLOW_SETTINGS_MODAL_KEY,
 	WORKFLOW_ACTIVE_MODAL_KEY,
@@ -22,11 +23,16 @@ import { useMessage } from '@/app/composables/useMessage';
 import { useTelemetry } from '@/app/composables/useTelemetry';
 import { useSourceControlStore } from '@/features/integrations/sourceControl.ee/sourceControl.store';
 import { MCP_DOCS_PAGE_URL, MCP_SETTINGS_VIEW } from '@/features/ai/mcpAccess/mcp.constants';
+import { useMcp } from '@/features/ai/mcpAccess/composables/useMcp';
 
 import { N8nSuggestedActions } from '@n8n/design-system';
 import { useSettingsStore } from '@/app/stores/settings.store';
 import { useUsersStore } from '@/features/settings/users/users.store';
 import { WorkflowDocumentStoreKey } from '@/app/constants/injectionKeys';
+
+const props = defineProps<{
+	workflow: IWorkflowDb;
+}>();
 
 const i18n = useI18n();
 const router = useRouter();
@@ -38,15 +44,16 @@ const message = useMessage();
 const telemetry = useTelemetry();
 const sourceControlStore = useSourceControlStore();
 const settingsStore = useSettingsStore();
+const { isEligibleForMcpAccess } = useMcp();
 const usersStore = useUsersStore();
 const workflowDocumentStore = inject(WorkflowDocumentStoreKey, null);
 
 const isPopoverOpen = ref(false);
 const cachedSettings = ref<WorkflowSettings | null>(null);
 
-const nodes = computed(() => workflowDocumentStore?.value?.allNodes ?? []);
 const hasAINode = computed(() => {
-	return nodes.value.some((node) => {
+	const nodes = props.workflow.nodes;
+	return nodes.some((node) => {
 		const nodeType = nodeTypesStore.getNodeType(node.type, node.typeVersion);
 		return nodeType?.codex?.categories?.includes('AI');
 	});
@@ -57,23 +64,24 @@ const hasEvaluationSetOutputsNode = computed((): boolean => {
 });
 
 const hasErrorWorkflow = computed(() => {
-	const errorWorkflow = workflowDocumentStore?.value?.settings?.errorWorkflow;
-	return !!errorWorkflow;
+	return !!props.workflow.settings?.errorWorkflow;
 });
 
 const isErrorWorkflow = computed(() => {
-	return nodes.value.some(
+	return props.workflow.nodes.some(
 		(node) => node.type === ERROR_TRIGGER_NODE_TYPE && node.disabled !== true,
 	);
 });
 
 const hasSavedTimeNodes = computed(() => {
-	return nodes.value.some((node) => node.type === TIME_SAVED_NODE_TYPE && node.disabled !== true);
+	if (!props.workflow?.nodes) return false;
+	return props.workflow.nodes.some(
+		(node) => node.type === TIME_SAVED_NODE_TYPE && node.disabled !== true,
+	);
 });
 
 const hasTimeSaved = computed(() => {
-	const timeSavedPerExecution = workflowDocumentStore?.value?.settings?.timeSavedPerExecution;
-	return timeSavedPerExecution !== undefined || hasSavedTimeNodes.value;
+	return props.workflow.settings?.timeSavedPerExecution !== undefined || hasSavedTimeNodes.value;
 });
 
 const isActivationModalOpen = computed(() => {
@@ -96,6 +104,10 @@ const isMcpAccessEnabled = computed(() => {
 });
 
 const canToggleInstanceMCPAccess = computed(() => isOwner.value || isAdmin.value);
+
+const isWorkflowEligibleForMcpAccess = computed(() => {
+	return isEligibleForMcpAccess(props.workflow);
+});
 
 const availableActions = computed(() => {
 	if (workflowsCache.isCacheLoading.value) {
@@ -169,7 +181,7 @@ const availableActions = computed(() => {
 		moreInfoLink: string;
 		completed: boolean;
 	} | null {
-		if (!isMcpModuleEnabled.value) return null;
+		if (!isMcpModuleEnabled.value || !isWorkflowEligibleForMcpAccess.value) return null;
 
 		const baseAction = {
 			title: i18n.baseText('mcp.productionChecklist.title'),
@@ -203,17 +215,15 @@ const availableActions = computed(() => {
 			...baseAction,
 			id: 'workflow-mcp-access',
 			description: i18n.baseText('mcp.productionChecklist.workflow.description'),
-			completed: workflowDocumentStore?.value?.settings?.availableInMCP ?? false,
+			completed: props.workflow.settings?.availableInMCP ?? false,
 		};
 	}
 });
 
 async function loadWorkflowSettings() {
-	if (workflowDocumentStore?.value?.workflowId) {
+	if (props.workflow.id) {
 		// todo add global config
-		cachedSettings.value = await workflowsCache.getMergedWorkflowSettings(
-			workflowDocumentStore?.value.workflowId,
-		);
+		cachedSettings.value = await workflowsCache.getMergedWorkflowSettings(props.workflow.id);
 	}
 }
 
@@ -223,7 +233,7 @@ async function handleActionClick(actionId: string) {
 			// Navigate to evaluations
 			await router.push({
 				name: VIEWS.EVALUATION_EDIT,
-				params: { workflowId: workflowDocumentStore?.value?.workflowId },
+				params: { name: props.workflow.id },
 			});
 			break;
 		case 'errorWorkflow':
@@ -257,10 +267,7 @@ async function handleIgnoreClick(actionId: string) {
 		return;
 	}
 
-	await workflowsCache.ignoreSuggestedAction(
-		workflowDocumentStore?.value?.workflowId ?? '',
-		actionId,
-	);
+	await workflowsCache.ignoreSuggestedAction(props.workflow.id, actionId);
 	await loadWorkflowSettings();
 
 	telemetry.track('user clicked ignore suggested action', {
@@ -317,7 +324,7 @@ watch(
 			}
 
 			// Update firstActivatedAt after opening popover
-			await workflowsCache.updateFirstActivatedAt(workflowDocumentStore?.value?.workflowId ?? '');
+			await workflowsCache.updateFirstActivatedAt(props.workflow.id);
 		}
 	},
 );

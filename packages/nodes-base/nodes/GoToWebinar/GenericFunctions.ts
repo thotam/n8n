@@ -36,6 +36,7 @@ export async function goToWebinarApiRequest(
 
 	const options: IRequestOptions = {
 		headers: {
+			'user-agent': 'n8n',
 			Accept: 'application/json',
 			'Content-Type': 'application/json',
 		},

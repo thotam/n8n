@@ -1,9 +1,7 @@
 import { MANUAL_TRIGGER_NODE_DISPLAY_NAME } from '../../../config/constants';
 import { test, expect } from '../../../fixtures/base';
 
-test.use({ capability: { env: { TEST_ISOLATION: 'node-creator-categories' } } });
-
-test.skip(
+test.describe(
 	'Node Creator Categories',
 	{
 		annotation: [{ type: 'owner', description: 'Adore' }],
@@ -87,7 +85,7 @@ test.skip(
 			await n8n.canvas.nodeCreator.open();
 			await n8n.canvas.nodeCreator.searchFor('Customer Datastore (n8n training)');
 			await n8n.canvas.nodeCreator.selectItem('Customer Datastore (n8n training)');
-			await n8n.page.pause();
+
 			await expect(n8n.canvas.nodeCreator.getActivationCallout()).toBeVisible();
 		});
 

@@ -1,5 +1,6 @@
 import { Logger } from '@n8n/backend-common';
-import { AuthenticatedRequest, UserRepository } from '@n8n/db';
+import type { AuthenticatedRequest } from '@n8n/db';
+import { UserRepository } from '@n8n/db';
 import { Service } from '@n8n/di';
 import type { NextFunction, Response } from 'express';
 import { DateTime } from 'luxon';

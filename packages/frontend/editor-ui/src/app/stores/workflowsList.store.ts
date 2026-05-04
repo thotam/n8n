@@ -8,7 +8,6 @@ import * as workflowsApi from '@/app/api/workflows';
 import { makeRestApiRequest, type WorkflowHistory } from '@n8n/rest-api-client';
 import { computed, ref } from 'vue';
 import { isPresent } from '@/app/utils/typesUtils';
-import { useFavoritesStore } from '@/app/stores/favorites.store';
 
 export const useWorkflowsListStore = defineStore(STORES.WORKFLOWS_LIST, () => {
 	const rootStore = useRootStore();
@@ -209,7 +208,6 @@ export const useWorkflowsListStore = defineStore(STORES.WORKFLOWS_LIST, () => {
 	async function deleteWorkflow(id: string) {
 		await makeRestApiRequest(rootStore.restApiContext, 'DELETE', `/workflows/${id}`);
 		removeWorkflow(id);
-		useFavoritesStore().removeFavoriteLocally(id, 'workflow');
 	}
 
 	async function archiveWorkflowInList(

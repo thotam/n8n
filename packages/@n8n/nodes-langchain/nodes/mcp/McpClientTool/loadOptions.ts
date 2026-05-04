@@ -35,15 +35,11 @@ export async function getTools(this: ILoadOptionsFunctions): Promise<INodeProper
 		throw mapToNodeOperationError(node, client.error);
 	}
 
-	try {
-		const tools = await getAllTools(client.result);
-		return tools.map((tool) => ({
-			name: tool.name,
-			value: tool.name,
-			description: tool.description,
-			inputSchema: tool.inputSchema,
-		}));
-	} finally {
-		await client.result.close();
-	}
+	const tools = await getAllTools(client.result);
+	return tools.map((tool) => ({
+		name: tool.name,
+		value: tool.name,
+		description: tool.description,
+		inputSchema: tool.inputSchema,
+	}));
 }

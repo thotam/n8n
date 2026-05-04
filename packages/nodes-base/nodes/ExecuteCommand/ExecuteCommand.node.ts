@@ -46,13 +46,14 @@ export class ExecuteCommand implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Execute Command',
 		name: 'executeCommand',
-		icon: 'node:execute-command',
+		icon: 'fa:terminal',
 		iconColor: 'crimson',
 		group: ['transform'],
 		version: 1,
 		description: 'Executes a command on the host',
 		defaults: {
 			name: 'Execute Command',
+			color: '#886644',
 		},
 		usableAsTool: true,
 		inputs: [NodeConnectionTypes.Main],

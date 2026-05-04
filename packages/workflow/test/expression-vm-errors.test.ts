@@ -1,9 +1,7 @@
 import { TimeoutError, MemoryLimitError, SecurityViolationError } from '@n8n/expression-runtime';
 import type { IExpressionEvaluator } from '@n8n/expression-runtime';
-import { mock } from 'vitest-mock-extended';
 
 import { ExpressionError } from '../src/errors/expression.error';
-import { ExpressionExtensionError } from '../src/errors/expression-extension.error';
 import { Expression } from '../src/expression';
 import { Workflow } from '../src/workflow';
 import * as Helpers from './helpers';
@@ -37,24 +35,22 @@ describe('Expression VM error handling', () => {
 		nodeTypes,
 	});
 
-	let originalEngine: 'legacy' | 'vm';
+	let originalEngine: 'current' | 'vm';
 	let originalEvaluator: IExpressionEvaluator | undefined;
 
-	beforeEach(async () => {
+	beforeEach(() => {
 		originalEngine = Expression.getActiveImplementation();
 		originalEvaluator = (Expression as any).vmEvaluator;
-		await workflow.expression.acquireIsolate();
 	});
 
-	afterEach(async () => {
-		await workflow.expression.releaseIsolate();
+	afterEach(() => {
 		Expression.setExpressionEngine(originalEngine);
 		(Expression as any).vmEvaluator = originalEvaluator;
 	});
 
-	function setVmEvaluator(evaluator: Pick<IExpressionEvaluator, 'evaluate'>) {
+	function setVmEvaluator(evaluator: Partial<IExpressionEvaluator>) {
 		Expression.setExpressionEngine('vm');
-		(Expression as any).vmEvaluator = mock<IExpressionEvaluator>(evaluator);
+		(Expression as any).vmEvaluator = evaluator;
 	}
 
 	const evaluate = (expr: string) =>
@@ -123,74 +119,6 @@ describe('Expression VM error handling', () => {
 			'Cannot access "constructor" due to security concerns',
 		);
 		expect((caught as ExpressionError).cause).toBe(securityError);
-	});
-
-	it('should preserve description when reconstructing ExpressionError across isolate boundary', () => {
-		const expressionError = new ExpressionError('something went wrong', {
-			description: 'A human-readable description',
-		});
-		const connectionInputData = [
-			{
-				json: {
-					get boom(): never {
-						throw expressionError;
-					},
-				},
-			},
-		];
-
-		let caught: unknown;
-		try {
-			workflow.expression.getParameterValue(
-				'={{ $json.boom }}',
-				null,
-				0,
-				0,
-				'node',
-				connectionInputData,
-				'manual',
-				{},
-			);
-		} catch (error) {
-			caught = error;
-		}
-
-		expect(caught).toBeInstanceOf(ExpressionError);
-		expect(caught).toEqual(expressionError);
-	});
-
-	it('should preserve description when reconstructing ExpressionExtensionError across isolate boundary', () => {
-		const expressionExtensionError = new ExpressionExtensionError('extension failed', {
-			description: 'Extension-specific description',
-		});
-		const connectionInputData = [
-			{
-				json: {
-					get boom(): never {
-						throw expressionExtensionError;
-					},
-				},
-			},
-		];
-
-		let caught: unknown;
-		try {
-			workflow.expression.getParameterValue(
-				'={{ $json.boom }}',
-				null,
-				0,
-				0,
-				'node',
-				connectionInputData,
-				'manual',
-				{},
-			);
-		} catch (error) {
-			caught = error;
-		}
-
-		expect(caught).toBeInstanceOf(ExpressionExtensionError);
-		expect(caught).toEqual(expressionExtensionError);
 	});
 
 	it('should convert built-in SyntaxError to ExpressionError', () => {

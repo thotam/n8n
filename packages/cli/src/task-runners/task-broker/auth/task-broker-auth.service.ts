@@ -1,21 +1,21 @@
-import { TaskRunnersConfig } from '@n8n/config';
+import { GlobalConfig } from '@n8n/config';
 import { Time } from '@n8n/constants';
 import { Service } from '@n8n/di';
 import { randomBytes, timingSafeEqual } from 'crypto';
 
 import { CacheService } from '@/services/cache/cache.service';
 
+const GRANT_TOKEN_TTL = 15 * Time.seconds.toMilliseconds;
+
 @Service()
 export class TaskBrokerAuthService {
-	private readonly authToken = Buffer.from(this.runnersConfig.authToken);
-
-	private get grantTokenTtlInMs() {
-		return this.runnersConfig.grantTokenTtl * Time.seconds.toMilliseconds;
-	}
+	private readonly authToken = Buffer.from(this.globalConfig.taskRunners.authToken);
 
 	constructor(
-		private readonly runnersConfig: TaskRunnersConfig,
+		private readonly globalConfig: GlobalConfig,
 		private readonly cacheService: CacheService,
+		// For unit testing purposes
+		private readonly grantTokenTtl = GRANT_TOKEN_TTL,
 	) {}
 
 	isValidAuthToken(token: string) {
@@ -32,7 +32,7 @@ export class TaskBrokerAuthService {
 		const grantToken = this.generateGrantToken();
 
 		const key = this.cacheKeyForGrantToken(grantToken);
-		await this.cacheService.set(key, '1', this.grantTokenTtlInMs);
+		await this.cacheService.set(key, '1', this.grantTokenTtl);
 
 		return grantToken;
 	}

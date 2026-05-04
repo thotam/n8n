@@ -23,23 +23,6 @@ import * as chatAPI from '@/features/ai/assistant/assistant.api';
 import * as telemetryModule from '@/app/composables/useTelemetry';
 import type { Telemetry } from '@/app/plugins/telemetry';
 import type { ChatUI } from '@n8n/design-system/types/assistant';
-import type { INodeUi } from '@/Interface';
-
-const { mockWorkflowDocumentStore } = vi.hoisted(() => ({
-	mockWorkflowDocumentStore: {
-		allNodes: [] as INodeUi[],
-		name: '',
-		settings: {},
-		getPinDataSnapshot: vi.fn().mockReturnValue({}),
-		getNodeByName: vi.fn().mockReturnValue(null),
-		getSnapshot: vi.fn().mockReturnValue({}),
-	},
-}));
-
-vi.mock('@/app/stores/workflowDocument.store', () => ({
-	useWorkflowDocumentStore: vi.fn().mockReturnValue(mockWorkflowDocumentStore),
-	createWorkflowDocumentId: vi.fn().mockReturnValue('test-id'),
-}));
 
 let settingsStore: ReturnType<typeof useSettingsStore>;
 let posthogStore: ReturnType<typeof usePostHog>;
@@ -81,7 +64,6 @@ describe('AI Assistant store', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		currentRouteParams = {};
-		mockWorkflowDocumentStore.allNodes = [];
 		setActivePinia(createPinia());
 		settingsStore = useSettingsStore();
 		settingsStore.setSettings(
@@ -483,11 +465,8 @@ describe('AI Assistant store', () => {
 		const assistantStore = useAssistantStore();
 		const workflowsStore = useWorkflowsStore();
 
-		// Set workflow id so workflowDocumentStore is created
-		workflowsStore.workflow.id = 'test-wf';
-
 		// Add a node to the workflow
-		mockWorkflowDocumentStore.allNodes = [
+		workflowsStore.workflow.nodes = [
 			{
 				id: '1',
 				type: 'n8n-nodes-base.start',
@@ -496,7 +475,7 @@ describe('AI Assistant store', () => {
 				position: [250, 250],
 				parameters: {},
 			},
-		] as INodeUi[];
+		];
 
 		assistantStore.trackUserOpenedAssistant({
 			task: 'placeholder',
@@ -509,7 +488,7 @@ describe('AI Assistant store', () => {
 			task: 'placeholder',
 			has_existing_session: false,
 			instance_id: '',
-			workflow_id: 'test-wf',
+			workflow_id: '',
 			canvas_status: 'existing_workflow',
 			node_type: undefined,
 			error: undefined,

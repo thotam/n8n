@@ -32,7 +32,7 @@ export class TextClassifier implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Text Classifier',
 		name: 'textClassifier',
-		icon: 'node:text-classifier',
+		icon: 'fa:tags',
 		iconColor: 'black',
 		group: ['transform'],
 		version: [1, 1.1],

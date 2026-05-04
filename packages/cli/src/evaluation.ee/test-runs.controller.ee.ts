@@ -9,6 +9,7 @@ import { NotFoundError } from '@/errors/response-errors/not-found.error';
 import { TestRunnerService } from '@/evaluation.ee/test-runner/test-runner.service.ee';
 import { TestRunsRequest } from '@/evaluation.ee/test-runs.types.ee';
 import { listQueryMiddleware } from '@/middlewares';
+import { getSharedWorkflowIds } from '@/public-api/v1/handlers/workflows/workflows.service';
 import { Telemetry } from '@/telemetry';
 import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 
@@ -22,21 +23,15 @@ export class TestRunsController {
 		private readonly telemetry: Telemetry,
 	) {}
 
-	private async assertUserHasAccessToWorkflow(workflowId: string, user: User) {
-		const workflow = await this.workflowFinderService.findWorkflowForUser(workflowId, user, [
-			'workflow:read',
-		]);
-
-		if (!workflow) {
-			throw new NotFoundError('Workflow not found');
-		}
-	}
-
 	/**
 	 * Get the test run (or just check that it exists and the user has access to it)
 	 */
 	private async getTestRun(testRunId: string, workflowId: string, user: User) {
-		await this.assertUserHasAccessToWorkflow(workflowId, user);
+		const sharedWorkflowsIds = await getSharedWorkflowIds(user, ['workflow:read']);
+
+		if (!sharedWorkflowsIds.includes(workflowId)) {
+			throw new NotFoundError('Test run not found');
+		}
 
 		const testRun = await this.testRunRepository.findOne({
 			where: { id: testRunId },
@@ -50,8 +45,6 @@ export class TestRunsController {
 	@Get('/:workflowId/test-runs', { middlewares: listQueryMiddleware })
 	async getMany(req: TestRunsRequest.GetMany) {
 		const { workflowId } = req.params;
-
-		await this.assertUserHasAccessToWorkflow(workflowId, req.user);
 
 		return await this.testRunRepository.getMany(workflowId, req.listQueryOptions);
 	}
@@ -113,11 +106,20 @@ export class TestRunsController {
 	async create(req: TestRunsRequest.Create, res: express.Response) {
 		const { workflowId } = req.params;
 
-		await this.assertUserHasAccessToWorkflow(workflowId, req.user);
+		const workflow = await this.workflowFinderService.findWorkflowForUser(workflowId, req.user, [
+			'workflow:read',
+		]);
+
+		if (!workflow) {
+			// user trying to access a workflow they do not own
+			// and was not shared to them
+			// Or does not exist.
+			return res.status(404).json({ message: 'Not Found' });
+		}
 
 		// We do not await for the test run to complete
-		void this.testRunnerService.runTest(req.user, workflowId);
+		void this.testRunnerService.runTest(req.user, workflow.id);
 
-		res.status(202).json({ success: true });
+		return res.status(202).json({ success: true });
 	}
 }

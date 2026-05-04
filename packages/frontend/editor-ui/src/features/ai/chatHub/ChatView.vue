@@ -636,7 +636,7 @@ function openNewAgentCreator() {
 }
 
 function handleOpenWorkflow(workflowId: string) {
-	const routeData = router.resolve({ name: VIEWS.WORKFLOW, params: { workflowId } });
+	const routeData = router.resolve({ name: VIEWS.WORKFLOW, params: { name: workflowId } });
 
 	window.open(routeData.href, '_blank');
 }
@@ -715,16 +715,12 @@ function onFilesDropped(files: File[]) {
 					:show-artifact-icon="
 						artifacts.allArtifacts.value.length > 0 && artifacts.isViewerCollapsed.value
 					"
-					:has-dynamic-credentials="dynamicCreds.hasDynamicCredentials.value"
 					@select-model="handleSelectModel"
 					@edit-custom-agent="handleEditAgent"
 					@create-custom-agent="openNewAgentCreator"
 					@select-credential="selectCredential"
 					@open-workflow="handleOpenWorkflow"
 					@reopen-artifact="artifacts.handleOpenViewer"
-					@toggle-dynamic-credentials="
-						isDynamicCredentialsDrawerOpen = !isDynamicCredentialsDrawerOpen
-					"
 				/>
 
 				<N8nScrollArea

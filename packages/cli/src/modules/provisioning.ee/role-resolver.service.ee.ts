@@ -7,8 +7,6 @@ import { Expression, type IDataObject } from 'n8n-workflow';
 import { withProjectContext } from './claims-context.builder';
 import type {
 	ProjectInfo,
-	ResolvedInstanceRole,
-	ResolvedProjectRole,
 	ResolvedRoles,
 	RoleMappingConfig,
 	RoleMappingRule,
@@ -71,32 +69,27 @@ export class RoleResolverService {
 		rules: RoleMappingRule[],
 		context: RoleResolverContext,
 		fallback: string,
-	): ResolvedInstanceRole {
+	): string {
 		for (const rule of rules) {
 			if (!rule.enabled) continue;
 			if (this.evaluateExpression(rule.expression, context)) {
-				return {
-					role: rule.role,
-					matchedRuleId: rule.id,
-					expression: rule.expression,
-					isFallback: false,
-				};
+				return rule.role;
 			}
 		}
-		return { role: fallback, matchedRuleId: null, expression: null, isFallback: true };
+		return fallback;
 	}
 
 	private resolveProjectRoles(
 		rules: RoleMappingRule[],
 		context: RoleResolverContext,
 		projects: Map<string, ProjectInfo>,
-	): Map<string, ResolvedProjectRole> {
-		const matched = new Map<string, ResolvedProjectRole>();
+	): Map<string, string> {
+		const result = new Map<string, string>();
 
 		for (const rule of rules) {
 			if (!rule.enabled) continue;
 			if (!rule.projectId) continue;
-			if (matched.has(rule.projectId)) continue;
+			if (result.has(rule.projectId)) continue;
 
 			const project = projects.get(rule.projectId);
 			if (!project) {
@@ -108,16 +101,11 @@ export class RoleResolverService {
 
 			const enrichedContext = withProjectContext(context, project);
 			if (this.evaluateExpression(rule.expression, enrichedContext)) {
-				matched.set(rule.projectId, {
-					projectId: rule.projectId,
-					role: rule.role,
-					matchedRuleId: rule.id,
-					expression: rule.expression,
-				});
+				result.set(rule.projectId, rule.role);
 			}
 		}
 
-		return matched;
+		return result;
 	}
 
 	private evaluateExpression(expression: string, context: RoleResolverContext): boolean {

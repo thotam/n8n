@@ -139,7 +139,6 @@ describe('RoleCacheService', () => {
 					systemRole: true,
 					roleType: 'project' as const,
 					projectRelations: [],
-					roleMappingRules: [],
 					createdAt: new Date(),
 					updatedAt: new Date(),
 					setUpdateDate: () => {},
@@ -166,7 +165,6 @@ describe('RoleCacheService', () => {
 					updatedAt: new Date(),
 					roleType: 'credential' as const,
 					projectRelations: [],
-					roleMappingRules: [],
 					scopes: [
 						{
 							slug: 'credential:read' as const,
@@ -233,7 +231,6 @@ describe('RoleCacheService', () => {
 					systemRole: false,
 					roleType: 'workflow' as const,
 					projectRelations: [],
-					roleMappingRules: [],
 					createdAt: new Date(),
 					updatedAt: new Date(),
 					setUpdateDate: () => {},

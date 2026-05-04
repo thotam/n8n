@@ -16,8 +16,7 @@ export class AiTransform implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'AI Transform',
 		name: 'aiTransform',
-		icon: 'node:ai-transform',
-		iconColor: 'violet',
+		icon: 'file:aitransform.svg',
 		group: ['transform'],
 		version: 1,
 		description: 'Modify data based on instructions written in plain english',

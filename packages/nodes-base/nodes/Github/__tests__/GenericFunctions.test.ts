@@ -53,6 +53,7 @@ describe('GenericFunctions', () => {
 				'githubApi',
 				{
 					method: 'GET',
+					headers: { 'User-Agent': 'n8n' },
 					body: {},
 					qs: undefined,
 					uri: 'https://api.github.com/repos/test-owner/test-repo',
@@ -102,6 +103,7 @@ describe('GenericFunctions', () => {
 				'githubApi',
 				{
 					method: 'GET',
+					headers: { 'User-Agent': 'n8n' },
 					body: {},
 					qs: { ref: 'main' },
 					uri: 'https://api.github.com/repos/test-owner/test-repo/contents/README.md',

@@ -43,7 +43,7 @@ reviews:
 
     ## Step 4: Design System Style Rules
 
-    Follow `.claude/plugins/n8n/skills/design-system-rules/SKILL.md` for all CSS/SCSS/Vue style
+    Follow `.agents/design-system-style-rules.md` for all CSS/SCSS/Vue style
     review guidance.
 
     Enforcement level:
@@ -213,7 +213,7 @@ reviews:
         humans handle edge cases.
     - name: Design System Tokens
       description: |-
-        Follow `.claude/plugins/n8n/skills/design-system-rules/SKILL.md`.
+        Follow `.agents/design-system-style-rules.md`.
 
         Apply balanced enforcement:
         - Strong warning: hard-coded visual values, legacy token usage, and

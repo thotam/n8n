@@ -13,7 +13,6 @@ import {
 import { useCanvasOperations } from '@/app/composables/useCanvasOperations';
 import { removePreviewToken } from '@/features/shared/nodeCreator/nodeCreator.utils';
 import { useTelemetry } from '@/app/composables/useTelemetry';
-import { useSettingsStore } from '@/app/stores/settings.store';
 
 type InstallNodeProps = {
 	type: 'verified' | 'unverified';
@@ -45,14 +44,15 @@ export function useInstallNode() {
 	const credentialsStore = useCredentialsStore();
 	const workflowsStore = useWorkflowsStore();
 	const workflowDocumentStore = computed(() =>
-		useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+		workflowsStore.workflowId
+			? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+			: undefined,
 	);
 	const userStore = useUsersStore();
 	const loading = ref(false);
 	const toast = useToast();
 	const canvasOperations = useCanvasOperations();
 	const telemetry = useTelemetry();
-	const settingsStore = useSettingsStore();
 
 	const getNpmVersion = async (key: string) => {
 		const communityNodeAttributes = await nodeTypesStore.getCommunityNodeAttributes(key);
@@ -81,7 +81,7 @@ export function useInstallNode() {
 
 		try {
 			loading.value = true;
-			if (props.type === 'verified' && !settingsStore.isUnverifiedPackagesEnabled) {
+			if (props.type === 'verified') {
 				await communityNodesStore.installPackage(
 					props.packageName,
 					true,
@@ -102,7 +102,7 @@ export function useInstallNode() {
 			// update parameters and webhooks for freshly installed nodes
 			// rename types from preview version to the actual version
 			const nodeType = props.nodeType;
-			const allNodes = workflowDocumentStore.value.allNodes;
+			const allNodes = workflowDocumentStore.value?.allNodes ?? [];
 			if (nodeType && allNodes.length) {
 				const nodesToUpdate = allNodes.filter((node) => node.type === removePreviewToken(nodeType));
 				canvasOperations.initializeUnknownNodes(nodesToUpdate);

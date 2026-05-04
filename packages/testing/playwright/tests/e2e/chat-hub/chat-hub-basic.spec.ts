@@ -1,4 +1,5 @@
 import { test, expect, chatHubTestConfig } from './fixtures';
+import { CredentialModal } from '../../../pages/components/CredentialModal';
 
 test.use(chatHubTestConfig);
 
@@ -31,6 +32,8 @@ test.describe(
 			n8n,
 			anthropicApiKey,
 		}) => {
+			const credModal = new CredentialModal(n8n.page.getByTestId('editCredential-modal'));
+
 			await n8n.navigate.toChatHub();
 			await n8n.chatHubChat.dismissWelcomeScreen();
 
@@ -45,9 +48,9 @@ test.describe(
 				.getVisiblePopoverMenuItem('Configure credentials', { exact: true })
 				.click();
 
-			await n8n.canvas.credentialModal.fillField('apiKey', anthropicApiKey);
-			await n8n.canvas.credentialModal.save();
-			await n8n.canvas.credentialModal.close();
+			await credModal.fillField('apiKey', anthropicApiKey);
+			await credModal.save();
+			await credModal.close();
 
 			await expect(n8n.chatHubChat.getModelSelectorButton()).toContainText(/claude/i); // auto-select a model
 

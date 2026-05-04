@@ -4,6 +4,7 @@
 		"@n8n/typescript-config/tsconfig.backend.json"
 	],
 	"compilerOptions": {
+		"baseUrl": ".",
 		"paths": {
 			"src/*": ["./src/*"],
 			"src": ["./src"]

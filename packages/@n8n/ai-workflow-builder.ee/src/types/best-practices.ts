@@ -1,4 +1,17 @@
+import type { WorkflowTechniqueType } from './categorization';
+
 /**
- * Re-export best practices types from the shared @n8n/workflow-sdk/prompts package.
+ * Interface for best practices documentation for a specific workflow technique
  */
-export type { BestPracticesDocument } from '@n8n/workflow-sdk/prompts/best-practices';
+export interface BestPracticesDocument {
+	/** The workflow technique this documentation covers */
+	readonly technique: WorkflowTechniqueType;
+
+	/** Version of the documentation */
+	readonly version: string;
+
+	/**
+	 * Returns the full documentation as a markdown-formatted string
+	 */
+	getDocumentation(): string;
+}

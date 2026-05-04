@@ -24,7 +24,6 @@ import { customObjectFields, customObjectOperations } from './CustomObjectDescri
 import { documentFields, documentOperations } from './DocumentDescription';
 import { flowFields, flowOperations } from './FlowDescription';
 import {
-	escapeSoqlString,
 	getQuery,
 	salesforceApiRequest,
 	salesforceApiRequestAllItems,
@@ -390,9 +389,6 @@ export class Salesforce implements INodeType {
 				if (resource === 'customObject') {
 					resource = this.getNodeParameter('customObject', 0) as string;
 				}
-
-				resource = escapeSoqlString(resource as string);
-
 				const qs = {
 					q: `SELECT Id, Name, SobjectType, IsActive FROM RecordType WHERE SobjectType = '${resource}'`,
 				};
@@ -1289,7 +1285,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, 'Lead', returnAll, 0);
+								qs.q = getQuery(options, 'Lead', returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -1472,21 +1468,6 @@ export class Salesforce implements INodeType {
 						if (additionalFields.emailBouncedReason !== undefined) {
 							body.EmailBouncedReason = additionalFields.emailBouncedReason as string;
 						}
-						if (additionalFields.middleName !== undefined) {
-							body.MiddleName = additionalFields.middleName as string;
-						}
-						if (additionalFields.suffix !== undefined) {
-							body.Suffix = additionalFields.suffix as string;
-						}
-						if (additionalFields.hasOptedOutOfEmail !== undefined) {
-							body.HasOptedOutOfEmail = additionalFields.hasOptedOutOfEmail as boolean;
-						}
-						if (additionalFields.pronouns !== undefined) {
-							body.Pronouns = additionalFields.pronouns as string;
-						}
-						if (additionalFields.genderIdentity !== undefined) {
-							body.GenderIdentity = additionalFields.genderIdentity as string;
-						}
 						if (additionalFields.customFieldsUi) {
 							const customFields = (additionalFields.customFieldsUi as IDataObject)
 								.customFieldsValues as IDataObject[];
@@ -1617,21 +1598,6 @@ export class Salesforce implements INodeType {
 						if (updateFields.emailBouncedReason !== undefined) {
 							body.EmailBouncedReason = updateFields.emailBouncedReason as string;
 						}
-						if (updateFields.middleName !== undefined) {
-							body.MiddleName = updateFields.middleName as string;
-						}
-						if (updateFields.suffix !== undefined) {
-							body.Suffix = updateFields.suffix as string;
-						}
-						if (updateFields.hasOptedOutOfEmail !== undefined) {
-							body.HasOptedOutOfEmail = updateFields.hasOptedOutOfEmail as boolean;
-						}
-						if (updateFields.pronouns !== undefined) {
-							body.Pronouns = updateFields.pronouns as string;
-						}
-						if (updateFields.genderIdentity !== undefined) {
-							body.GenderIdentity = updateFields.genderIdentity as string;
-						}
 						if (updateFields.customFieldsUi) {
 							const customFields = (updateFields.customFieldsUi as IDataObject)
 								.customFieldsValues as IDataObject[];
@@ -1663,7 +1629,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, 'Contact', returnAll, 0);
+								qs.q = getQuery(options, 'Contact', returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -1815,7 +1781,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, customObject, returnAll, 0);
+								qs.q = getQuery(options, customObject, returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -2049,7 +2015,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, 'Opportunity', returnAll, 0);
+								qs.q = getQuery(options, 'Opportunity', returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -2337,7 +2303,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, 'Account', returnAll, 0);
+								qs.q = getQuery(options, 'Account', returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -2552,7 +2518,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, 'Case', returnAll, 0);
+								qs.q = getQuery(options, 'Case', returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -2815,7 +2781,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, 'Task', returnAll, 0);
+								qs.q = getQuery(options, 'Task', returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -2947,7 +2913,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, 'Attachment', returnAll, 0);
+								qs.q = getQuery(options, 'Attachment', returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -3002,7 +2968,7 @@ export class Salesforce implements INodeType {
 						const options = this.getNodeParameter('options', i);
 						try {
 							if (returnAll) {
-								qs.q = getQuery(options, 'User', returnAll, 0);
+								qs.q = getQuery(options, 'User', returnAll);
 								responseData = await salesforceApiRequestAllItems.call(
 									this,
 									'records',
@@ -3096,14 +3062,14 @@ export class Salesforce implements INodeType {
 					{ itemData: { item: i } },
 				);
 
-				returnData.push.apply(returnData, executionData);
+				returnData.push(...executionData);
 			} catch (error) {
 				if (this.continueOnFail()) {
 					const executionErrorData = this.helpers.constructExecutionMetaData(
 						this.helpers.returnJsonArray({ error: error.message }),
 						{ itemData: { item: i } },
 					);
-					returnData.push.apply(returnData, executionErrorData);
+					returnData.push(...executionErrorData);
 					continue;
 				}
 				throw error;

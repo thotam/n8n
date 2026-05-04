@@ -44,7 +44,7 @@ export class ExternalSecretsSettingsStore {
 			return {};
 		}
 
-		this.cache = await this.decrypt(encryptedSettings);
+		this.cache = this.decrypt(encryptedSettings);
 		return this.cache;
 	}
 
@@ -59,7 +59,7 @@ export class ExternalSecretsSettingsStore {
 	 * Save all provider settings to database and update cache
 	 */
 	async save(settings: ExternalSecretsSettings): Promise<void> {
-		const encryptedSettings = await this.encrypt(settings);
+		const encryptedSettings = this.encrypt(settings);
 
 		await this.settingsRepo.upsert(
 			{
@@ -124,8 +124,8 @@ export class ExternalSecretsSettingsStore {
 	/**
 	 * Decrypt settings from database
 	 */
-	private async decrypt(encryptedData: string): Promise<ExternalSecretsSettings> {
-		const decryptedData = await this.cipher.decryptV2(encryptedData);
+	private decrypt(encryptedData: string): ExternalSecretsSettings {
+		const decryptedData = this.cipher.decrypt(encryptedData);
 
 		try {
 			return jsonParse<ExternalSecretsSettings>(decryptedData);
@@ -139,7 +139,7 @@ export class ExternalSecretsSettingsStore {
 	/**
 	 * Encrypt settings for database storage
 	 */
-	private async encrypt(settings: ExternalSecretsSettings): Promise<string> {
-		return await this.cipher.encryptV2(settings);
+	private encrypt(settings: ExternalSecretsSettings): string {
+		return this.cipher.encrypt(settings);
 	}
 }

@@ -192,9 +192,11 @@ describe('useReadyToRunStore', () => {
 				// Expected to throw
 			}
 
-			expect(mockShowError).toHaveBeenCalledWith(error, 'freeAi.credits.showError.claim.title', {
-				message: 'freeAi.credits.showError.claim.message',
-			});
+			expect(mockShowError).toHaveBeenCalledWith(
+				error,
+				'freeAi.credits.showError.claim.title',
+				'freeAi.credits.showError.claim.message',
+			);
 		});
 	});
 
@@ -216,7 +218,7 @@ describe('useReadyToRunStore', () => {
 			);
 			expect(mockPush).toHaveBeenCalledWith({
 				name: 'NodeViewExisting',
-				params: { workflowId: 'workflow-123' },
+				params: { name: 'workflow-123' },
 			});
 		});
 
@@ -326,7 +328,7 @@ describe('useReadyToRunStore', () => {
 			expect(mockCreateNewWorkflow).toHaveBeenCalled();
 			expect(mockPush).toHaveBeenCalledWith({
 				name: 'NodeViewExisting',
-				params: { workflowId: 'workflow-123' },
+				params: { name: 'workflow-123' },
 			});
 		});
 

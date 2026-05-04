@@ -37,9 +37,8 @@ export type IMenuItem = {
 	disabledReason?: string;
 	notification?: boolean;
 	size?: 'medium' | 'small';
-	preview?: boolean;
+	beta?: boolean;
 	new?: boolean;
-	creditsTag?: string;
 };
 
 export interface ICustomMenuItem {

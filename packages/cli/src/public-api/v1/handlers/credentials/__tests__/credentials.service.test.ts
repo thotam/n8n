@@ -2,11 +2,9 @@ import type { CredentialsEntity, Project, SharedCredentials, User } from '@n8n/d
 import { CredentialsRepository, GLOBAL_OWNER_ROLE, GLOBAL_MEMBER_ROLE } from '@n8n/db';
 import { Container } from '@n8n/di';
 import { mock } from 'jest-mock-extended';
-import { Cipher, CipherAes256GCM, CipherAes256CBC, EncryptionKeyProxy } from 'n8n-core';
+import { Cipher } from 'n8n-core';
 import type { InstanceSettings } from 'n8n-core';
 import type { GenericValue, IDataObject, INodeProperties } from 'n8n-workflow';
-
-import { buildSharedForCredential, toJsonSchema, updateCredential } from '../credentials.service';
 
 import { CredentialsService } from '@/credentials/credentials.service';
 import { ExternalSecretsConfig } from '@/modules/external-secrets.ee/external-secrets.config';
@@ -14,13 +12,10 @@ import { SecretsProviderAccessCheckService } from '@/modules/external-secrets.ee
 import * as checkAccess from '@/permissions.ee/check-access';
 import type { IDependency } from '@/public-api/types';
 
+import { buildSharedForCredential, toJsonSchema, updateCredential } from '../credentials.service';
+
 // Set up real Cipher with mocked InstanceSettings for encryption
-const cipher = new Cipher(
-	mock<InstanceSettings>({ encryptionKey: 'test-encryption-key' }),
-	new CipherAes256GCM(),
-	new CipherAes256CBC(),
-	new EncryptionKeyProxy(),
-);
+const cipher = new Cipher(mock<InstanceSettings>({ encryptionKey: 'test-encryption-key' }));
 Container.set(Cipher, cipher);
 
 describe('CredentialsService', () => {
@@ -422,7 +417,6 @@ describe('CredentialsService', () => {
 
 		const credentialsService = new CredentialsService(
 			mock(), // credentialsRepository
-			mock(),
 			mock(), // sharedCredentialsRepository
 			mock(), // ownershipService
 			mock(), // logger
@@ -494,11 +488,11 @@ describe('CredentialsService', () => {
 				credentialsRepository.findOne = jest.fn().mockResolvedValue(existingCredential);
 				credentialsRepository.update = jest.fn().mockResolvedValue(undefined);
 				// mock credential that doesn't have secret expression yet
-				jest.mocked(credentialsService.decrypt).mockResolvedValue({ apiKey: 'regular-secret' });
+				jest.mocked(credentialsService.decrypt).mockReturnValue({ apiKey: 'regular-secret' });
 
 				await expect(
-					updateCredential(existingCredential, memberUser, {
-						data: { apiKey: '{{ $secrets.vault.myKey }}' },
+					updateCredential('cred-id', memberUser, {
+						data: { apiKey: '{{ $secrets.myKey }}' },
 					}),
 				).rejects.toThrow('Lacking permissions to reference external secrets in credentials');
 			});
@@ -519,11 +513,11 @@ describe('CredentialsService', () => {
 				// Mock credential that already has secret expression
 				jest
 					.mocked(credentialsService.decrypt)
-					.mockResolvedValue({ apiKey: '{{ $secrets.vault.oldKey }}' });
+					.mockReturnValue({ apiKey: '{{ $secrets.oldKey }}' });
 
 				await expect(
-					updateCredential(existingCredential, memberUser, {
-						data: { apiKey: '{{ $secrets.vault.newKey }}' },
+					updateCredential('cred-id', memberUser, {
+						data: { apiKey: '{{ $secrets.newKey }}' },
 					}),
 				).rejects.toThrow('Lacking permissions to reference external secrets in credentials');
 			});
@@ -542,7 +536,7 @@ describe('CredentialsService', () => {
 
 				credentialsRepository.findOne = jest.fn().mockResolvedValue(existingCredential);
 				credentialsRepository.update = jest.fn().mockResolvedValue(undefined);
-				jest.mocked(credentialsService.decrypt).mockResolvedValue({
+				jest.mocked(credentialsService.decrypt).mockReturnValue({
 					apiKey: 'currentPlainTextValue',
 				});
 				jest
@@ -551,7 +545,7 @@ describe('CredentialsService', () => {
 				mockExternalSecretsConfig.externalSecretsForProjects = true;
 
 				await expect(
-					updateCredential(existingCredential, ownerUser, {
+					updateCredential(existingCredential.id, ownerUser, {
 						data: { apiKey: secretExpression },
 					}),
 				).rejects.toThrow(
@@ -572,13 +566,11 @@ describe('CredentialsService', () => {
 				credentialsRepository.update = jest.fn().mockResolvedValue(undefined);
 
 				// Mock credential that has existing secret expression
-				jest
-					.mocked(credentialsService.decrypt)
-					.mockResolvedValue({ apiKey: '{{ $secrets.vault.myKey }}' });
+				jest.mocked(credentialsService.decrypt).mockReturnValue({ apiKey: '{{ $secrets.myKey }}' });
 
 				credentialsRepository.update = jest.fn().mockResolvedValue(undefined);
 
-				await updateCredential(existingCredential, memberUser, {
+				await updateCredential('cred-id', memberUser, {
 					name: 'Updated Name',
 				});
 			});
@@ -596,11 +588,11 @@ describe('CredentialsService', () => {
 				credentialsRepository.update = jest.fn().mockResolvedValue(undefined);
 
 				// Mock credential not using any external secret expressions
-				jest.mocked(credentialsService.decrypt).mockResolvedValue({ apiKey: 'regular-key' });
+				jest.mocked(credentialsService.decrypt).mockReturnValue({ apiKey: 'regular-key' });
 
 				credentialsRepository.update = jest.fn().mockResolvedValue(undefined);
 
-				await updateCredential(existingCredential, memberUser, {
+				await updateCredential('cred-id', memberUser, {
 					data: { apiKey: 'another-regular-key' },
 				});
 			});
@@ -616,14 +608,14 @@ describe('CredentialsService', () => {
 				});
 				credentialsRepository.findOne = jest.fn().mockResolvedValue(existingCredential);
 				credentialsRepository.update = jest.fn().mockResolvedValue(undefined);
-				jest.mocked(credentialsService.decrypt).mockResolvedValue({ apiKey: 'regular-key' });
+				jest.mocked(credentialsService.decrypt).mockReturnValue({ apiKey: 'regular-key' });
 				jest
 					.mocked(mockSecretsProviderAccessCheckService.isProviderAvailableInProject)
 					.mockResolvedValue(true);
 				credentialsRepository.update = jest.fn().mockResolvedValue(undefined);
 
-				await updateCredential(existingCredential, ownerUser, {
-					data: { apiKey: '{{ $secrets.vault.myKey }}' },
+				await updateCredential('cred-id', ownerUser, {
+					data: { apiKey: '{{ $secrets.myKey }}' },
 				});
 			});
 		});

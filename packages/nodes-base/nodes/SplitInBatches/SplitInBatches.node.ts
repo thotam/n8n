@@ -10,7 +10,7 @@ export class SplitInBatches extends VersionedNodeType {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'Split In Batches',
 			name: 'splitInBatches',
-			icon: 'node:loop-over-items',
+			icon: 'fa:th-large',
 			iconColor: 'dark-green',
 			group: ['organization'],
 			description: 'Split data into batches and iterate over each batch',

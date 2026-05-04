@@ -33,5 +33,4 @@ export const FOLDER_LIST_ITEM_ACTIONS = {
 	CHOWN: 'change_owner',
 	TAGS: 'manage_tags',
 	DELETE: 'delete',
-	TOGGLE_FAVORITE: 'toggleFavorite',
 };

@@ -21,17 +21,14 @@ vi.mock('@/features/ndv/shared/ndv.store', () => ({
 	useNDVStore: () => ({ activeNode: null }),
 }));
 
-const { mockWorkflowDocumentStore } = vi.hoisted(() => ({
-	mockWorkflowDocumentStore: {
+const { mockDocumentStore } = vi.hoisted(() => ({
+	mockDocumentStore: {
 		allNodes: [] as INodeUi[],
-		name: '',
-		settings: {},
-		getPinDataSnapshot: () => ({}),
 	},
 }));
 
 vi.mock('@/app/stores/workflowDocument.store', () => ({
-	useWorkflowDocumentStore: vi.fn().mockReturnValue(mockWorkflowDocumentStore),
+	useWorkflowDocumentStore: vi.fn().mockReturnValue(mockDocumentStore),
 	createWorkflowDocumentId: vi.fn().mockReturnValue('test-id'),
 }));
 
@@ -87,11 +84,10 @@ describe('useNodeMention', () => {
 		workflowsStore = useWorkflowsStore();
 		focusedNodesStore = useFocusedNodesStore();
 
-		// @ts-expect-error -- mock readonly getter
-		workflowsStore.workflowId = 'test-wf';
+		workflowsStore.workflow.id = 'test-workflow';
 		// @ts-expect-error -- mock readonly property for focusedNodesStore which still reads workflowsStore.allNodes
 		workflowsStore.allNodes = mockNodes;
-		mockWorkflowDocumentStore.allNodes = mockNodes;
+		mockDocumentStore.allNodes = mockNodes;
 	});
 
 	describe('handleInput - @ trigger conditions', () => {

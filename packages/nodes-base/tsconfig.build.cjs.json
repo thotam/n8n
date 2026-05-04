@@ -16,9 +16,7 @@
 	"exclude": [
 		"node_modules",
 		"nodes/**/*.test.ts",
-		"nodes/**/test/**",
 		"credentials/**/*.test.ts",
-		"credentials/**/test/**",
 		"utils/**/*.test.ts",
 		"test/**",
 		"../core/nodes-testing"

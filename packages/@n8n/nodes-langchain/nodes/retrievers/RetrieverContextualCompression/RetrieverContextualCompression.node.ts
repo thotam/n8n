@@ -16,7 +16,7 @@ export class RetrieverContextualCompression implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Contextual Compression Retriever',
 		name: 'retrieverContextualCompression',
-		icon: 'node:contextual-compression-retriever',
+		icon: 'fa:box-open',
 		iconColor: 'black',
 		group: ['transform'],
 		version: 1,

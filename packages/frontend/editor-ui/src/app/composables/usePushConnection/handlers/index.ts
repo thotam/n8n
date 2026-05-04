@@ -16,4 +16,3 @@ export * from './workflowActivated';
 export * from './workflowAutoDeactivated';
 export * from './workflowDeactivated';
 export * from './workflowFailedToActivate';
-export * from './workflowSettingsUpdated';

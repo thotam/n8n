@@ -7,7 +7,6 @@ import {
 	generateOffsets,
 	getGenericHints,
 	getNewNodePosition,
-	getNodeViewTab,
 	updateViewportToContainNodes,
 	DEFAULT_NODE_SIZE,
 	snapPositionToGrid,
@@ -28,8 +27,6 @@ import type { GraphNode } from '@vue-flow/core';
 import { v4 as uuid } from 'uuid';
 import { createTestingPinia } from '@pinia/testing';
 import { setActivePinia } from 'pinia';
-import { MAIN_HEADER_TABS, VIEWS } from '@/app/constants';
-import type { RouteLocation } from 'vue-router';
 
 describe('getGenericHints', () => {
 	let mockWorkflowNode: MockProxy<INode>;
@@ -66,7 +63,7 @@ describe('getGenericHints', () => {
 			nodeOutputData: mockNodeOutputData,
 			hasMultipleInputItems,
 			hasNodeRun,
-			getNodeByName: () => null,
+			nodes: {},
 			connections: {},
 		});
 
@@ -92,7 +89,7 @@ describe('getGenericHints', () => {
 			nodeOutputData: mockNodeOutputData,
 			hasMultipleInputItems,
 			hasNodeRun,
-			getNodeByName: () => null,
+			nodes: {},
 			connections: {},
 		});
 
@@ -131,7 +128,7 @@ describe('getGenericHints', () => {
 			nodeOutputData: mockNodeOutputData,
 			hasMultipleInputItems,
 			hasNodeRun,
-			getNodeByName: () => null,
+			nodes: {},
 			connections: {},
 		});
 
@@ -156,7 +153,7 @@ describe('getGenericHints', () => {
 			nodeOutputData: mockNodeOutputData,
 			hasMultipleInputItems,
 			hasNodeRun,
-			getNodeByName: () => null,
+			nodes: {},
 			connections: {},
 		});
 
@@ -181,7 +178,7 @@ describe('getGenericHints', () => {
 			nodeOutputData: mockNodeOutputData,
 			hasMultipleInputItems,
 			hasNodeRun,
-			getNodeByName: () => null,
+			nodes: {},
 			connections: {},
 		});
 
@@ -207,7 +204,7 @@ describe('getGenericHints', () => {
 			nodeOutputData: mockNodeOutputData,
 			hasMultipleInputItems,
 			hasNodeRun,
-			getNodeByName: () => null,
+			nodes: {},
 			connections: {},
 		});
 
@@ -636,48 +633,5 @@ describe('canUsePosition', () => {
 		const pos1: XYPosition = [0, 0];
 		const pos2: XYPosition = [0, DEFAULT_NODE_SIZE[1] + 1];
 		expect(canUsePosition(pos1, pos2)).toBe(true);
-	});
-});
-
-describe('getNodeViewTab', () => {
-	function createRouteLocation(overrides: Partial<RouteLocation>): RouteLocation {
-		return {
-			matched: [],
-			fullPath: '/',
-			query: {},
-			hash: '',
-			redirectedFrom: undefined,
-			path: '/',
-			params: {},
-			name: undefined,
-			meta: {},
-			...overrides,
-		} as RouteLocation;
-	}
-
-	it('should return WORKFLOW for routes with nodeView meta', () => {
-		const route = createRouteLocation({ meta: { nodeView: true } });
-		expect(getNodeViewTab(route)).toBe(MAIN_HEADER_TABS.WORKFLOW);
-	});
-
-	it.each([VIEWS.WORKFLOW_EXECUTIONS, VIEWS.EXECUTION_PREVIEW, VIEWS.EXECUTION_HOME])(
-		'should return EXECUTIONS for %s route',
-		(viewName) => {
-			const route = createRouteLocation({ name: viewName });
-			expect(getNodeViewTab(route)).toBe(MAIN_HEADER_TABS.EXECUTIONS);
-		},
-	);
-
-	it.each([VIEWS.EVALUATION_EDIT, VIEWS.EVALUATION_RUNS_DETAIL])(
-		'should return EVALUATION for %s route',
-		(viewName) => {
-			const route = createRouteLocation({ name: viewName });
-			expect(getNodeViewTab(route)).toBe(MAIN_HEADER_TABS.EVALUATION);
-		},
-	);
-
-	it('should return null for unrecognized routes', () => {
-		const route = createRouteLocation({ name: 'SomeOtherView' });
-		expect(getNodeViewTab(route)).toBeNull();
 	});
 });

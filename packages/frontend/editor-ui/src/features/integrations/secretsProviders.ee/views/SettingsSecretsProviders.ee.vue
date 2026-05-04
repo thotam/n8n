@@ -124,12 +124,9 @@ async function handleActivate(providerKey: string) {
 		toast.showError(
 			error,
 			i18n.baseText('settings.secretsProviderConnections.actions.activate.error.title'),
-			{
-				message: i18n.baseText(
-					'settings.secretsProviderConnections.actions.activate.error.description',
-					{ interpolate: { provider: providerKey } },
-				),
-			},
+			i18n.baseText('settings.secretsProviderConnections.actions.activate.error.description', {
+				interpolate: { provider: providerKey },
+			}),
 		);
 	}
 }

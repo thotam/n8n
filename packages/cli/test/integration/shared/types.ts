@@ -37,7 +37,6 @@ type EndpointGroup =
 	| 'debug'
 	| 'project'
 	| 'role'
-	| 'roleMappingRule'
 	| 'dynamic-node-parameters'
 	| 'apiKeys'
 	| 'evaluation'
@@ -49,8 +48,7 @@ type EndpointGroup =
 	| 'data-table'
 	| 'third-party-licenses'
 	| 'mcp'
-	| 'workflowDependencies'
-	| 'encryption-keys';
+	| 'workflowDependencies';
 
 type ModuleName =
 	| 'insights'
@@ -62,8 +60,7 @@ type ModuleName =
 	| 'log-streaming'
 	| 'ldap'
 	| 'redaction'
-	| 'source-control'
-	| 'token-exchange';
+	| 'source-control';
 
 export interface SetupProps {
 	endpointGroups?: EndpointGroup[];

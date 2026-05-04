@@ -24,11 +24,6 @@ export class UserFilter extends BaseFilter {
 	@Expose()
 	isOwner?: boolean;
 
-	@IsString()
-	@IsOptional()
-	@Expose()
-	projectId?: string;
-
 	static async fromString(rawFilter: string) {
 		return await this.toFilter(rawFilter, UserFilter);
 	}

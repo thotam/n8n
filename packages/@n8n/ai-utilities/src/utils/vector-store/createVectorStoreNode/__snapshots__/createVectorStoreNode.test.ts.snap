@@ -33,39 +33,6 @@ exports[`createVectorStoreNode retrieve mode supplies vector store as data 1`] =
         "required": true,
       },
     },
-    "outputs": {
-      "ai_tool": {
-        "displayOptions": {
-          "show": {
-            "mode": [
-              "retrieve-as-tool",
-            ],
-          },
-        },
-        "required": true,
-      },
-      "ai_vectorStore": {
-        "displayOptions": {
-          "show": {
-            "mode": [
-              "retrieve",
-            ],
-          },
-        },
-        "required": true,
-      },
-      "main": {
-        "displayOptions": {
-          "show": {
-            "mode": [
-              "insert",
-              "load",
-              "update",
-            ],
-          },
-        },
-      },
-    },
   },
   "codex": {
     "categories": [

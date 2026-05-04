@@ -17,7 +17,7 @@ vi.mock('@/app/components/NodeIcon.vue', () => ({
 
 const renderComponent = createComponentRenderer(NodeIssueItem);
 
-function formatNodeIssueMessage(value: string | string[]) {
+function formatIssueMessage(value: string | string[]) {
 	return Array.isArray(value) ? value.join(', ') : value;
 }
 
@@ -38,7 +38,7 @@ describe('NodeIssueItem', () => {
 			props: {
 				issue: { node: 'Linear', type: 'parameters', value: 'Missing API key' },
 				getNodeType: vi.fn(),
-				formatNodeIssueMessage,
+				formatIssueMessage,
 			},
 		});
 
@@ -56,7 +56,7 @@ describe('NodeIssueItem', () => {
 			props: {
 				issue: { node: 'Linear', type: 'parameters', value: 'Missing API key' },
 				getNodeType: vi.fn(() => nodeType),
-				formatNodeIssueMessage,
+				formatIssueMessage,
 			},
 		});
 
@@ -74,7 +74,7 @@ describe('NodeIssueItem', () => {
 			props: {
 				issue: { node: 'Linear', type: 'parameters', value: 'Missing API key' },
 				getNodeType: vi.fn(() => nodeType),
-				formatNodeIssueMessage,
+				formatIssueMessage,
 			},
 		});
 

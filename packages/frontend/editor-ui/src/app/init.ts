@@ -30,7 +30,6 @@ import { useRootStore } from '@n8n/stores/useRootStore';
 import { h } from 'vue';
 import { useRolesStore } from '@/app/stores/roles.store';
 import { useDataTableStore } from '@/features/core/dataTable/dataTable.store';
-import { useFavoritesStore } from '@/app/stores/favorites.store';
 import { hasPermission } from '@/app/utils/rbac/permissions';
 
 export const state = {
@@ -75,7 +74,6 @@ export async function initializeCore() {
 	ssoStore.initialize({
 		authenticationMethod: settingsStore.userManagement
 			.authenticationMethod as UserManagementAuthenticationMethod,
-		managedByEnv: settingsStore.settings.sso.managedByEnv,
 		config: settingsStore.settings.sso,
 		features: {
 			saml: settingsStore.isEnterpriseFeatureEnabled[EnterpriseEditionFeature.Saml],
@@ -121,7 +119,6 @@ export async function initializeAuthenticatedFeatures(
 	const bannersStore = useBannersStore();
 	const versionsStore = useVersionsStore();
 	const dataTableStore = useDataTableStore();
-	const favoritesStore = useFavoritesStore();
 
 	if (!settingsStore.isPreviewMode) {
 		usersStore.setUserQuota(settingsStore.userManagement.quota);
@@ -207,10 +204,6 @@ export async function initializeAuthenticatedFeatures(
 		rolesStore.fetchRoles(),
 	]);
 
-	await projectsStore.refreshCurrentProject();
-
-	void favoritesStore.fetchFavorites();
-
 	// Initialize modules
 	registerModuleResources();
 	registerModuleProjectTabs();
@@ -237,34 +230,12 @@ function registerAuthenticationHooks() {
 	const telemetry = useTelemetry();
 	const RBACStore = useRBACStore();
 	const settingsStore = useSettingsStore();
-	const ssoStore = useSSOStore();
-	const favoritesStore = useFavoritesStore();
 
 	usersStore.registerLoginHook(async (user) => {
 		await settingsStore.getSettings();
 
-		// Re-initialize SSO store with authenticated settings.
-		// Before login, public settings omit callbackUrl, leaving it empty.
-		// Without this, navigating to SSO settings after login shows an empty redirect URL.
-		ssoStore.initialize({
-			authenticationMethod: settingsStore.userManagement
-				.authenticationMethod as UserManagementAuthenticationMethod,
-			managedByEnv: settingsStore.settings.sso.managedByEnv,
-			config: settingsStore.settings.sso,
-			features: {
-				saml: settingsStore.isEnterpriseFeatureEnabled[EnterpriseEditionFeature.Saml],
-				ldap: settingsStore.isEnterpriseFeatureEnabled[EnterpriseEditionFeature.Ldap],
-				oidc: settingsStore.isEnterpriseFeatureEnabled[EnterpriseEditionFeature.Oidc],
-			},
-		});
-
 		RBACStore.setGlobalScopes(user.globalScopes ?? []);
-		telemetry.identify({
-			instanceId: rootStore.instanceId,
-			versionCli: rootStore.versionCli,
-			userId: user.id,
-			userRole: user.role,
-		});
+		telemetry.identify(rootStore.instanceId, user.id, rootStore.versionCli);
 		postHogStore.init(user.featureFlags);
 		npsSurveyStore.setupNpsSurveyOnLogin(user.id, user.settings);
 		void settingsStore.getModuleSettings();
@@ -278,6 +249,5 @@ function registerAuthenticationHooks() {
 		cloudPlanStore.reset();
 		telemetry.reset();
 		RBACStore.setGlobalScopes([]);
-		favoritesStore.reset();
 	});
 }

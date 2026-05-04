@@ -17,7 +17,6 @@ import {
 	type IRun,
 	type WorkflowExecuteMode,
 } from 'n8n-workflow';
-import assert from 'node:assert';
 
 import type { TypeUnit } from '@/modules/insights/database/entities/insights-shared';
 import { InsightsMetadataRepository } from '@/modules/insights/database/repositories/insights-metadata.repository';
@@ -96,7 +95,9 @@ describe('workflowExecuteAfterHandler', () => {
 		// ASSERT
 		const metadata = await insightsMetadataRepository.findOneBy({ workflowId: workflow.id });
 
-		assert(metadata, 'Expected metadata to exist');
+		if (!metadata) {
+			return fail('expected metadata to exist');
+		}
 
 		expect(metadata).toMatchObject({
 			workflowId: workflow.id,
@@ -217,7 +218,9 @@ describe('workflowExecuteAfterHandler', () => {
 		// ASSERT
 		const metadata = await insightsMetadataRepository.findOneBy({ workflowId: workflow.id });
 
-		assert(metadata, 'Expected metadata to exist');
+		if (!metadata) {
+			return fail('expected metadata to exist');
+		}
 
 		expect(metadata).toMatchObject({
 			workflowId: workflow.id,
@@ -624,76 +627,6 @@ describe('workflowExecuteAfterHandler - flushEvents', () => {
 		} finally {
 			jest.useRealTimers();
 		}
-	});
-
-	test('flushEvents rounds fractional time_saved_min for PostgreSQL BIGINT on insights_raw.value', async () => {
-		repoMocks.insertInsightsRaw.mockClear();
-		workflow.settings = {
-			timeSavedMode: 'dynamic',
-		};
-		const ctx = mock<WorkflowExecuteAfterContext>({
-			workflow,
-			runData: mock<IRun>({
-				mode: 'webhook',
-				status: 'success',
-				startedAt: startedAt.toJSDate(),
-				stoppedAt: stoppedAt.toJSDate(),
-				data: {
-					resultData: {
-						runData: {
-							timeSavedNode: [{ metadata: { timeSaved: { minutes: 5.4 } } }],
-						},
-					},
-				},
-			}),
-		});
-
-		await insightsCollectionService.handleWorkflowExecuteAfter(ctx);
-		await insightsCollectionService.flushEvents();
-
-		expect(repoMocks.insertInsightsRaw).toHaveBeenCalledWith(
-			expect.arrayContaining([expect.objectContaining({ type: 'time_saved_min', value: 5 })]),
-		);
-	});
-
-	test.each<{ label: string; timeSavedPerExecution: number }>([
-		{ label: 'NaN', timeSavedPerExecution: Number.NaN },
-		{ label: 'Infinity', timeSavedPerExecution: Number.POSITIVE_INFINITY },
-	])(
-		'flushEvents normalizes time_saved_min to 0 when timeSavedPerExecution is $label (PostgreSQL BIGINT)',
-		async ({ timeSavedPerExecution }) => {
-			repoMocks.insertInsightsRaw.mockClear();
-			workflow.settings = {
-				timeSavedMode: 'fixed',
-				timeSavedPerExecution,
-			};
-			const ctx = mock<WorkflowExecuteAfterContext>({ workflow, runData });
-
-			await insightsCollectionService.handleWorkflowExecuteAfter(ctx);
-			await insightsCollectionService.flushEvents();
-
-			expect(repoMocks.insertInsightsRaw).toHaveBeenCalledWith(
-				expect.arrayContaining([expect.objectContaining({ type: 'time_saved_min', value: 0 })]),
-			);
-		},
-	);
-
-	test('flushEvents normalizes runtime_ms to 0 when runtime is NaN (PostgreSQL BIGINT)', async () => {
-		repoMocks.insertInsightsRaw.mockClear();
-		const badRuntimeRunData = mock<IRun>({
-			mode: 'trigger',
-			status: 'success',
-			startedAt: new Date(Number.NaN),
-			stoppedAt: stoppedAt.toJSDate(),
-		});
-		const ctx = mock<WorkflowExecuteAfterContext>({ workflow, runData: badRuntimeRunData });
-
-		await insightsCollectionService.handleWorkflowExecuteAfter(ctx);
-		await insightsCollectionService.flushEvents();
-
-		expect(repoMocks.insertInsightsRaw).toHaveBeenCalledWith(
-			expect.arrayContaining([expect.objectContaining({ type: 'runtime_ms', value: 0 })]),
-		);
 	});
 
 	test('waits for ongoing flush during shutdown', async () => {

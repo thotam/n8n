@@ -22,7 +22,6 @@ import { useToast } from '@/app/composables/useToast';
 import { useWorkflowActivate } from '@/app/composables/useWorkflowActivate';
 import { useCredentialsStore } from '@/features/credentials/credentials.store';
 import { OPEN_AI_API_CREDENTIAL_TYPE } from 'n8n-workflow';
-import { useSettingsStore } from '@/app/stores/settings.store';
 import type { INodeUi } from '@/Interface';
 import type { IUsedCredential } from '@/features/credentials/credentials.types';
 import WorkflowActivationErrorMessage from '@/app/components/WorkflowActivationErrorMessage.vue';
@@ -37,10 +36,9 @@ const i18n = useI18n();
 
 const workflowsStore = useWorkflowsStore();
 const workflowDocumentStore = computed(() =>
-	useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+	useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflow.id)),
 );
 const credentialsStore = useCredentialsStore();
-const settingsStore = useSettingsStore();
 const { showMessage } = useToast();
 const workflowActivate = useWorkflowActivate();
 const publishing = ref(false);
@@ -60,15 +58,11 @@ const containsTrigger = computed((): boolean => {
 
 const wfHasAnyChanges = computed(() => {
 	return (
-		workflowDocumentStore.value?.versionId !== workflowDocumentStore.value?.activeVersion?.versionId
+		workflowsStore.workflow.versionId !== workflowDocumentStore.value?.activeVersion?.versionId
 	);
 });
 
-const nodesWithValidationIssues = computed(
-	() => workflowDocumentStore.value.nodesWithValidationIssues,
-);
-
-const hasNodeIssues = computed(() => workflowDocumentStore.value.hasPublishBlockingIssues);
+const hasNodeIssues = computed(() => workflowsStore.nodesIssuesExist);
 
 const inputsDisabled = computed(() => {
 	return (
@@ -103,18 +97,18 @@ function onModalOpened() {
 }
 
 onMounted(() => {
-	const currentVersionData = workflowDocumentStore.value?.versionData;
+	const versionData = workflowsStore.versionData;
 
 	if (!versionName.value) {
-		if (currentVersionData?.name) {
-			versionName.value = currentVersionData.name;
+		if (versionData?.name) {
+			versionName.value = versionData.name;
 		} else {
-			versionName.value = generateVersionLabelFromId(workflowDocumentStore.value?.versionId ?? '');
+			versionName.value = generateVersionLabelFromId(workflowsStore.workflow.versionId);
 		}
 	}
 
-	if (!description.value && currentVersionData?.description) {
-		description.value = currentVersionData.description;
+	if (!description.value && versionData?.description) {
+		description.value = versionData.description;
 	}
 
 	modalBus.on('opened', onModalOpened);
@@ -162,23 +156,10 @@ const shouldShowFreeAiCreditsWarning = computed((): boolean => {
 	);
 });
 
-const aiGatewayWarningNodes = computed((): INodeUi[] => {
-	if (!settingsStore.isAiGatewayEnabled) return [];
-	return (workflowDocumentStore.value?.allNodes ?? []).filter(
-		(node) =>
-			!node.disabled &&
-			Object.values(node.credentials ?? {}).some((cred) => cred.__aiGatewayManaged === true),
-	);
-});
-
-const aiGatewayWarningNodeNames = computed(() =>
-	aiGatewayWarningNodes.value.map((n) => n.name).join(', '),
-);
-
 async function displayActivationError() {
 	let errorMessage: string | VNode;
 	try {
-		const errorData = await workflowsStore.getActivationError(workflowsStore.workflowId);
+		const errorData = await workflowsStore.getActivationError(workflowsStore.workflow.id);
 
 		if (errorData === undefined) {
 			errorMessage = i18n.baseText(
@@ -212,8 +193,8 @@ async function handlePublish() {
 
 	// Activate the workflow
 	const { success, errorHandled } = await workflowActivate.publishWorkflow(
-		workflowsStore.workflowId,
-		workflowDocumentStore.value?.versionId ?? '',
+		workflowsStore.workflow.id,
+		workflowsStore.workflow.versionId,
 		{
 			name: versionName.value,
 			description: description.value,
@@ -221,8 +202,8 @@ async function handlePublish() {
 	);
 
 	if (success) {
-		workflowDocumentStore.value?.setVersionData({
-			versionId: workflowDocumentStore.value?.versionId ?? '',
+		workflowsStore.setWorkflowVersionData({
+			versionId: workflowsStore.workflow.versionId,
 			name: versionName.value,
 			description: description.value,
 		});
@@ -238,7 +219,7 @@ async function handlePublish() {
 		}
 
 		telemetry.track('User published version from canvas', {
-			workflow_id: workflowsStore.workflowId,
+			workflow_id: workflowsStore.workflow.id,
 		});
 
 		// For now, just close the modal after successful activation
@@ -269,39 +250,21 @@ async function handlePublish() {
 		</template>
 		<template #content>
 			<div :class="$style.content">
-				<N8nCallout
-					v-if="aiGatewayWarningNodes.length > 0"
-					theme="warning"
-					:iconless="true"
-					data-test-id="workflow-publish-ai-gateway-warning"
-				>
-					{{
-						i18n.baseText('workflows.publishModal.aiGatewayWarning.header', {
-							adjustToNumber: aiGatewayWarningNodes.length,
-						})
-					}}
-					<strong>{{ aiGatewayWarningNodeNames }}</strong>
-					{{
-						i18n.baseText('workflows.publishModal.aiGatewayWarning.body', {
-							adjustToNumber: aiGatewayWarningNodes.length,
-						})
-					}}
-				</N8nCallout>
 				<N8nCallout v-if="activeCalloutId === 'noTrigger'" theme="danger" icon="status-error">
 					{{ i18n.baseText('workflows.publishModal.noTriggerMessage') }}
 				</N8nCallout>
 				<N8nCallout v-else-if="activeCalloutId === 'nodeIssues'" theme="danger" icon="status-error">
 					{{
 						i18n.baseText('workflowActivator.showMessage.activeChangedNodesIssuesExistTrue.title', {
-							interpolate: { count: nodesWithValidationIssues.length },
-							adjustToNumber: nodesWithValidationIssues.length,
+							interpolate: { count: workflowsStore.nodesWithIssues.length },
+							adjustToNumber: workflowsStore.nodesWithIssues.length,
 						})
 					}}
 					<ul :class="$style.nodeLinks">
-						<li v-for="node in nodesWithValidationIssues" :key="node.id">
+						<li v-for="node in workflowsStore.nodesWithIssues" :key="node.id">
 							<N8nLink
 								size="small"
-								:to="`/workflow/${workflowsStore.workflowId}/${node.id}`"
+								:to="`/workflow/${workflowsStore.workflow.id}/${node.id}`"
 								@click="modalBus.emit('close')"
 								>{{ node.name }}</N8nLink
 							>

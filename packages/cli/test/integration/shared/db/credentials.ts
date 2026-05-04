@@ -16,7 +16,7 @@ export async function encryptCredentialData(
 	const coreCredential = createCredentialsFromCredentialsEntity(credential, true);
 
 	// @ts-ignore
-	await coreCredential.setData(credential.data);
+	coreCredential.setData(credential.data);
 
 	return Object.assign(credential, coreCredential.getDataToSave());
 }
@@ -25,7 +25,7 @@ export async function decryptCredentialData(credential: ICredentialsDb): Promise
 	const { createCredentialsFromCredentialsEntity } = await import('@/credentials-helper');
 	const coreCredential = createCredentialsFromCredentialsEntity(credential);
 
-	return await coreCredential.getData();
+	return coreCredential.getData();
 }
 
 const emptyAttributes = {

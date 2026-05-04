@@ -39,7 +39,9 @@ export function useNodeMention(options: UseNodeMentionOptions = {}): UseNodeMent
 	const focusedNodesStore = useFocusedNodesStore();
 	const workflowsStore = useWorkflowsStore();
 	const workflowDocumentStore = computed(() =>
-		useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+		workflowsStore.workflowId
+			? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+			: undefined,
 	);
 
 	const showDropdown = ref(false);
@@ -52,7 +54,7 @@ export function useNodeMention(options: UseNodeMentionOptions = {}): UseNodeMent
 
 	const filteredNodes = computed(() => {
 		const query = searchQuery.value.toLowerCase();
-		const allNodes = workflowDocumentStore.value.allNodes;
+		const allNodes = workflowDocumentStore.value?.allNodes ?? [];
 		const confirmedIds = new Set(focusedNodesStore.confirmedNodeIds);
 
 		let result = allNodes.filter((node) => !confirmedIds.has(node.id));
@@ -66,7 +68,7 @@ export function useNodeMention(options: UseNodeMentionOptions = {}): UseNodeMent
 
 	// Close dropdown when workflow nodes change (e.g. paste, import) to ensure fresh data
 	watch(
-		() => workflowDocumentStore.value.allNodes.length,
+		() => (workflowDocumentStore.value?.allNodes ?? []).length,
 		() => {
 			if (showDropdown.value) {
 				closeDropdown();

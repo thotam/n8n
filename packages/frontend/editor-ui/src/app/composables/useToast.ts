@@ -8,7 +8,15 @@ import { useUIStore } from '@/app/stores/ui.store';
 import { useI18n } from '@n8n/i18n';
 import { useExternalHooks } from './useExternalHooks';
 import { VIEWS } from '@/app/constants';
+import type { ApplicationError } from 'n8n-workflow';
 import { useStyles } from './useStyles';
+
+export interface NotificationErrorWithNodeAndDescription extends ApplicationError {
+	node: {
+		name: string;
+	};
+	description: string;
+}
 
 const stickyNotificationQueue: NotificationHandle[] = [];
 
@@ -21,12 +29,6 @@ export function useToast() {
 	const { APP_Z_INDEXES } = useStyles();
 
 	function showMessage(messageData: Partial<NotificationOptions>, track = true) {
-		const suppressed = uiStore.areNotificationsSuppressed;
-		const allowErrors = uiStore.allowErrorNotificationsWhenSuppressed;
-		if (suppressed && !(allowErrors && messageData.type === 'error')) {
-			return { close: () => {} } as NotificationHandle;
-		}
-
 		const messageDefaults: Partial<Omit<NotificationOptions, 'message'>> = {
 			dangerouslyUseHTMLString: true,
 			position: 'bottom-right',
@@ -128,7 +130,9 @@ export function useToast() {
 		return notification;
 	}
 
-	function collapsableDetails(description: string) {
+	function collapsableDetails({ description, node }: NotificationErrorWithNodeAndDescription) {
+		if (!description) return '';
+
 		const errorDescription =
 			description.length > 500 ? `${description.slice(0, 500)}...` : description;
 
@@ -141,19 +145,13 @@ export function useToast() {
 					>
 						${i18n.baseText('showMessage.showDetails')}
 					</summary>
-					<p>${errorDescription}</p>
+					<p>${node.name}: ${errorDescription}</p>
 				</details>
 			`;
 	}
 
-	function showError(
-		e: Error | unknown,
-		title: string,
-		options?: { message?: string; description?: string },
-	) {
-		const error = e as Error & { description?: string };
-		const message = options?.message;
-		const description = options?.description ?? error.description;
+	function showError(e: Error | unknown, title: string, message?: string) {
+		const error = e as NotificationErrorWithNodeAndDescription;
 		const messageLine = message ? `${message}<br/>` : '';
 		showMessage(
 			{
@@ -161,7 +159,7 @@ export function useToast() {
 				message: `
 					${messageLine}
 					<i>${error.message}</i>
-					${description ? collapsableDetails(description) : ''}`,
+					${collapsableDetails(error)}`,
 				type: 'error',
 				duration: 0,
 			},

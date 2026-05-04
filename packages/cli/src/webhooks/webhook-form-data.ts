@@ -27,12 +27,8 @@ export const createMultiFormDataParser = (maxFormDataSizeInMb: number) => {
 			// TODO: pass a custom `fileWriteStreamHandler` to create binary data files directly
 		});
 
-		return await new Promise((resolve, reject) => {
-			form.parse(req, (error, data, files) => {
-				if (error) {
-					reject(error);
-					return;
-				}
+		return await new Promise((resolve) => {
+			form.parse(req, async (_err, data, files) => {
 				normalizeFormData(data);
 				normalizeFormData(files);
 				resolve({ data, files });

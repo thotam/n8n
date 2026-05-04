@@ -31,13 +31,8 @@ describe('SubworkflowPolicyChecker', () => {
 		urlService,
 	);
 
-	beforeEach(() => {
-		jest.clearAllMocks();
+	afterEach(() => {
 		jest.restoreAllMocks();
-		ownershipService.getWorkflowProjectCached.mockReset();
-		ownershipService.getPersonalProjectOwnerCached.mockReset();
-		accessService.hasReadAccess.mockReset();
-		urlService.getInstanceBaseUrl.mockReset();
 	});
 
 	describe('no caller policy', () => {

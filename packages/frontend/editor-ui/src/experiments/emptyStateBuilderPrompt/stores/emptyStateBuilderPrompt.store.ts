@@ -79,7 +79,7 @@ export const useEmptyStateBuilderPromptStore = defineStore(
 
 			await router.push({
 				name: VIEWS.WORKFLOW,
-				params: { workflowId: workflow.id },
+				params: { name: workflow.id },
 			});
 		}
 
@@ -117,7 +117,7 @@ export const useEmptyStateBuilderPromptStore = defineStore(
 
 			await router.push({
 				name: VIEWS.WORKFLOW,
-				params: { workflowId: workflow.id },
+				params: { name: workflow.id },
 			});
 		}
 

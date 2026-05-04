@@ -221,36 +221,25 @@ export class OwnershipService {
 		});
 	}
 
-	async setupOwner(
-		payload: OwnerSetupRequestDto,
-		options?: { overwriteExisting?: boolean; passwordIsHashed?: boolean },
-	) {
+	async setupOwner(payload: OwnerSetupRequestDto) {
 		const { email, firstName, lastName, password } = payload;
-
-		if (!options?.overwriteExisting && (await this.hasInstanceOwner())) {
+		if (await this.hasInstanceOwner()) {
 			this.logger.debug(
 				'Request to claim instance ownership failed because instance owner already exists',
 			);
 			throw new BadRequestError('Instance owner already setup');
 		}
 
-		let shellUser = await this.userRepository.findOne({
+		let shellUser = await this.userRepository.findOneOrFail({
 			where: { role: { slug: GLOBAL_OWNER_ROLE.slug } },
 			relations: ['role'],
 		});
 
-		if (!shellUser) {
-			this.logger.error('Could not find shell user with global:owner role');
-			throw new BadRequestError('Instance owner shell user not found');
-		}
-
-		shellUser.email = email.toLowerCase();
+		shellUser.email = email;
 		shellUser.firstName = firstName;
 		shellUser.lastName = lastName;
 		shellUser.lastActiveAt = new Date();
-		shellUser.password = options?.passwordIsHashed
-			? password
-			: await this.passwordUtility.hash(password);
+		shellUser.password = await this.passwordUtility.hash(password);
 
 		shellUser = await this.userRepository.save(shellUser, { transaction: false });
 

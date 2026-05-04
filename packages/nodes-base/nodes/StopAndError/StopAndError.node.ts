@@ -17,13 +17,14 @@ export class StopAndError implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Stop and Error',
 		name: 'stopAndError',
-		icon: 'node:stop-and-error',
+		icon: 'fa:exclamation-triangle',
 		iconColor: 'red',
 		group: ['input'],
 		version: 1,
 		description: 'Throw an error in the workflow',
 		defaults: {
 			name: 'Stop and Error',
+			color: '#ff0000',
 		},
 		inputs: [NodeConnectionTypes.Main],
 

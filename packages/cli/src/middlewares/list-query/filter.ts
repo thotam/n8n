@@ -1,6 +1,6 @@
-import type { RequestHandler } from 'express';
+import type { NextFunction, Response } from 'express';
 
-import { appendListQueryOptions } from '@/requests';
+import type { ListQuery } from '@/requests';
 import * as ResponseHelper from '@/response-helper';
 import { toError } from '@/utils';
 
@@ -8,10 +8,14 @@ import { CredentialsFilter } from './dtos/credentials.filter.dto';
 import { UserFilter } from './dtos/user.filter.dto';
 import { WorkflowFilter } from './dtos/workflow.filter.dto';
 
-export const filterListQueryMiddleware: RequestHandler = async (req, res, next) => {
+export const filterListQueryMiddleware = async (
+	req: ListQuery.Request,
+	res: Response,
+	next: NextFunction,
+) => {
 	const { filter: rawFilter } = req.query;
 
-	if (!rawFilter || typeof rawFilter !== 'string') return next();
+	if (!rawFilter) return next();
 
 	let Filter;
 
@@ -30,7 +34,7 @@ export const filterListQueryMiddleware: RequestHandler = async (req, res, next) 
 
 		if (Object.keys(filter).length === 0) return next();
 
-		appendListQueryOptions(req, { filter });
+		req.listQueryOptions = { ...req.listQueryOptions, filter };
 
 		next();
 	} catch (maybeError) {

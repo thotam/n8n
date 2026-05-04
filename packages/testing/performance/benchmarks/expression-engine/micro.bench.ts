@@ -19,17 +19,15 @@ import {
 } from 'n8n-workflow/src/expression-sandboxing';
 
 // Top-level await — vitest bench doesn't support beforeAll
+const bridge = new IsolatedVmBridge({ timeout: 5000 });
 const evaluator = new ExpressionEvaluator({
-	createBridge: () => new IsolatedVmBridge({ timeout: 5000 }),
-	maxCodeCacheSize: 1024,
+	bridge,
 	hooks: {
 		before: [ThisSanitizer],
 		after: [PrototypeSanitizer, DollarSignValidator],
 	},
 });
 await evaluator.initialize();
-const caller = {};
-await evaluator.acquire(caller);
 
 const testData: Record<string, unknown> = {
 	$json: { id: 123, name: 'test', email: 'test@example.com' },
@@ -39,12 +37,12 @@ const testData: Record<string, unknown> = {
 
 // Script Compilation
 bench('vm micro: Script Compilation - cache hit (repeated expression)', () => {
-	evaluator.evaluate('$json.id', testData, caller);
+	evaluator.evaluate('$json.id', testData);
 });
 
 let counter = 0;
 bench('vm micro: Script Compilation - cache miss (unique expressions)', () => {
-	evaluator.evaluate(`$json.id + ${counter++}`, testData, caller);
+	evaluator.evaluate(`$json.id + ${counter++}`, testData);
 });
 
 // Data Complexity
@@ -57,11 +55,11 @@ const deepData: Record<string, unknown> = {
 };
 
 bench('vm micro: Data Complexity - shallow access (depth 1)', () => {
-	evaluator.evaluate('$json.value', shallowData, caller);
+	evaluator.evaluate('$json.value', shallowData);
 });
 
 bench('vm micro: Data Complexity - deep access (depth 6)', () => {
-	evaluator.evaluate('$json.a.b.c.d.e.value', deepData, caller);
+	evaluator.evaluate('$json.a.b.c.d.e.value', deepData);
 });
 
 // Array Element Access
@@ -72,9 +70,9 @@ const arrayData: Record<string, unknown> = {
 };
 
 bench('vm micro: Array Element Access - single element', () => {
-	evaluator.evaluate('$json.items[0].id', arrayData, caller);
+	evaluator.evaluate('$json.items[0].id', arrayData);
 });
 
 bench('vm micro: Array Element Access - map 100 elements', () => {
-	evaluator.evaluate('$json.items.map(i => i.id)', arrayData, caller);
+	evaluator.evaluate('$json.items.map(i => i.id)', arrayData);
 });

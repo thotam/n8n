@@ -3,14 +3,13 @@ import { computed } from 'vue';
 
 import type { IMenuItem } from '@n8n/design-system/types';
 
-import N8nActionPill from '../N8nActionPill/ActionPill.vue';
+import BetaTag from '../BetaTag/BetaTag.vue';
 import N8nIcon from '../N8nIcon';
 import type { IconName } from '../N8nIcon/icons';
 import N8nRoute from '../N8nRoute';
 import N8nTag from '../N8nTag';
 import N8nText from '../N8nText';
 import N8nTooltip from '../N8nTooltip';
-import PreviewTag from '../PreviewTag/PreviewTag.vue';
 
 const props = defineProps<{
 	item: IMenuItem;
@@ -135,14 +134,13 @@ const tooltipPlacement = computed(() => {
 					>
 						{{ item.label }}
 					</N8nText>
-					<PreviewTag v-if="!compact && item.preview" />
+					<BetaTag v-if="!compact && item.beta" />
 					<N8nTag
 						v-if="!compact && item.new"
 						:clickable="false"
 						text="New"
 						:class="$style.newTag"
 					/>
-					<N8nActionPill v-if="!compact && item.creditsTag" size="small" :text="item.creditsTag" />
 				</div>
 				<N8nIcon v-if="item.children && !compact" icon="chevron-right" color="text-light" />
 			</N8nRoute>

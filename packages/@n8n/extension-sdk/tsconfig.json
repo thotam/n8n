@@ -8,9 +8,6 @@
 		},
 		{
 			"path": "./tsconfig.frontend.json"
-		},
-		{
-			"path": "./tsconfig.scripts.json"
 		}
 	]
 }

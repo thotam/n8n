@@ -1,4 +1,4 @@
-import type { IExecuteFunctions, ITaskMetadata } from '.';
+import type { ITaskMetadata } from '.';
 import { hasKey } from './utils';
 
 function responseHasSubworkflowData(
@@ -21,20 +21,6 @@ function parseErrorResponseWorkflowMetadata(response: unknown): ISubWorkflowMeta
 		},
 		subExecutionsCount: 1,
 	};
-}
-
-export function accumulateTokenUsage(
-	context: IExecuteFunctions,
-	inputTokens: number,
-	outputTokens: number,
-): void {
-	const prev = context.getExecuteData()?.metadata?.tokenUsage;
-	context.setMetadata({
-		tokenUsage: {
-			inputTokens: (prev?.inputTokens ?? 0) + inputTokens,
-			outputTokens: (prev?.outputTokens ?? 0) + outputTokens,
-		},
-	});
 }
 
 export function parseErrorMetadata(error: unknown): ISubWorkflowMetadata | undefined {

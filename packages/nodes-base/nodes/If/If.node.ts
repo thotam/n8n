@@ -9,7 +9,7 @@ export class If extends VersionedNodeType {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'If',
 			name: 'if',
-			icon: 'node:if',
+			icon: 'fa:map-signs',
 			iconColor: 'green',
 			group: ['transform'],
 			description: 'Route items to different branches (true/false)',

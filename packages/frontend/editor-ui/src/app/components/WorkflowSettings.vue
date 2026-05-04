@@ -6,6 +6,7 @@ import { usePostHog } from '@/app/stores/posthog.store';
 import type { ITimeoutHMS, IWorkflowSettings, IWorkflowShortResponse } from '@/Interface';
 import type { WorkflowDataUpdate } from '@n8n/rest-api-client/api/workflows';
 import Modal from '@/app/components/Modal.vue';
+import { useEnvFeatureFlag } from '@/features/shared/envFeatureFlag/useEnvFeatureFlag';
 import {
 	EnterpriseEditionFeature,
 	WORKFLOW_SETTINGS_MODAL_KEY,
@@ -15,7 +16,6 @@ import {
 
 import { EXECUTION_LOGIC_V2_EXPERIMENT } from '@/app/constants/experiments';
 import {
-	N8nBadge,
 	N8nButton,
 	N8nIcon,
 	N8nInput,
@@ -24,7 +24,6 @@ import {
 	N8nIconButton,
 	N8nOption,
 	N8nSelect,
-	N8nText,
 	N8nTooltip,
 } from '@n8n/design-system';
 import type { WorkflowSettings, WorkflowSettingsBinaryMode } from 'n8n-workflow';
@@ -49,7 +48,6 @@ import {
 } from '@/app/stores/workflowDocument.store';
 import { useMcp } from '@/features/ai/mcpAccess/composables/useMcp';
 import { useGlobalLinkActions } from '@/app/composables/useGlobalLinkActions';
-import { usePageRedirectionHelper } from '@/app/composables/usePageRedirectionHelper';
 import { useNodeCreatorStore } from '@/features/shared/nodeCreator/nodeCreator.store';
 import { useCredentialResolvers } from '@/features/resolvers/composables/useCredentialResolvers';
 import { useDynamicCredentials } from '@/features/resolvers/composables/useDynamicCredentials';
@@ -63,9 +61,8 @@ const externalHooks = useExternalHooks();
 const toast = useToast();
 const modalBus = createEventBus();
 const telemetry = useTelemetry();
-const { trackMcpAccessEnabledForWorkflow } = useMcp();
+const { isEligibleForMcpAccess, trackMcpAccessEnabledForWorkflow, mcpTriggerMap } = useMcp();
 const { registerCustomAction, unregisterCustomAction } = useGlobalLinkActions();
-const pageRedirectionHelper = usePageRedirectionHelper();
 const { isEnabled: isCredentialResolverEnabled } = useDynamicCredentials();
 const canListCredentialResolvers = hasPermission(['rbac'], {
 	rbac: { scope: 'credentialResolver:list' },
@@ -91,16 +88,22 @@ const workflowDocumentStore = computed(() => {
 const workflowsEEStore = useWorkflowsEEStore();
 const nodeCreatorStore = useNodeCreatorStore();
 const posthogStore = usePostHog();
+const { check } = useEnvFeatureFlag();
+
 const isLoading = ref(true);
 const workflowCallerPolicyOptions = ref<Array<{ key: string; value: string }>>([]);
-const redactionToggleOptions = ref<Array<{ key: string; value: string }>>([
+const redactionPolicyOptions = ref<Array<{ key: string; value: string }>>([
 	{
-		key: 'default',
-		value: i18n.baseText('workflowSettings.redactionOptions.default'),
+		key: 'none',
+		value: i18n.baseText('workflowSettings.redactionPolicy.options.none'),
 	},
 	{
-		key: 'redact',
-		value: i18n.baseText('workflowSettings.redactionOptions.redact'),
+		key: 'all',
+		value: i18n.baseText('workflowSettings.redactionPolicy.options.all'),
+	},
+	{
+		key: 'non-manual',
+		value: i18n.baseText('workflowSettings.redactionPolicy.options.nonManual'),
 	},
 ]);
 const saveDataErrorExecutionOptions = ref<Array<{ key: string; value: string }>>([]);
@@ -165,8 +168,7 @@ const helpTexts = computed(() => ({
 	executionTimeout: i18n.baseText('workflowSettings.helpTexts.executionTimeout'),
 	workflowCallerPolicy: i18n.baseText('workflowSettings.helpTexts.workflowCallerPolicy'),
 	workflowCallerIds: i18n.baseText('workflowSettings.helpTexts.workflowCallerIds'),
-	redactProductionData: i18n.baseText('workflowSettings.helpTexts.redactProductionData'),
-	redactManualData: i18n.baseText('workflowSettings.helpTexts.redactManualData'),
+	redactionPolicy: i18n.baseText('workflowSettings.helpTexts.redactionPolicy'),
 }));
 
 const defaultValues = ref({
@@ -192,7 +194,7 @@ const isMCPEnabled = computed(
 const readOnlyEnv = computed(
 	() => sourceControlStore.preferences.branchReadOnly || collaborationStore.shouldBeReadOnly,
 );
-const workflowName = computed(() => workflowDocumentStore.value?.name ?? '');
+const workflowName = computed(() => workflowsStore.workflowName);
 const workflowId = computed(() => workflowsStore.workflowId);
 const workflow = computed(() => workflowsListStore.getWorkflowById(workflowId.value));
 const isSharingEnabled = computed(
@@ -205,72 +207,29 @@ const workflowOwnerName = computed(() => {
 });
 const workflowPermissions = computed(() => getResourcePermissions(workflow.value?.scopes).workflow);
 
-const isDataRedactionLicensed = computed(
-	() => settingsStore.isEnterpriseFeatureEnabled[EnterpriseEditionFeature.DataRedaction],
-);
-
 const isRedactionSettingVisible = computed(
 	() =>
 		settingsStore.isModuleActive('redaction') &&
-		(isDataRedactionLicensed.value ? workflowPermissions.value.updateRedactionSetting : true),
+		check.value('EXECUTION_REDACTION') &&
+		workflowPermissions.value.updateRedactionSetting,
 );
-
-function goToDataRedactionUpgrade() {
-	void pageRedirectionHelper.goToUpgrade('workflow-settings', 'upgrade-data-redaction');
-}
-
-const workflowHasDynamicCredentials = computed(
-	() => isCredentialResolverEnabled.value && !!workflowSettings.value.credentialResolverId,
-);
-
-/**
- * Maps the two independent redaction toggles to/from the single `redactionPolicy` field.
- *
- * | Production | Manual | → redactionPolicy |
- * |-----------|--------|-------------------|
- * | default   | default| none              |
- * | redact    | redact | all               |
- * | redact    | default| non-manual        |
- * | default   | redact | manual-only       |
- */
-const redactProductionData = computed({
-	get(): string {
-		if (workflowHasDynamicCredentials.value) return 'redact';
-		const policy = workflowSettings.value.redactionPolicy;
-		return policy === 'all' || policy === 'non-manual' ? 'redact' : 'default';
-	},
-	set(val: string) {
-		const manualRedacted = redactManualData.value === 'redact';
-		if (val === 'redact') {
-			workflowSettings.value.redactionPolicy = manualRedacted ? 'all' : 'non-manual';
-		} else {
-			workflowSettings.value.redactionPolicy = manualRedacted ? 'manual-only' : 'none';
-		}
-	},
-});
-
-const redactManualData = computed({
-	get(): string {
-		const policy = workflowSettings.value.redactionPolicy;
-		return policy === 'all' || policy === 'manual-only' ? 'redact' : 'default';
-	},
-	set(val: string) {
-		const productionRedacted = redactProductionData.value === 'redact';
-		if (val === 'redact') {
-			workflowSettings.value.redactionPolicy = productionRedacted ? 'all' : 'manual-only';
-		} else {
-			workflowSettings.value.redactionPolicy = productionRedacted ? 'non-manual' : 'none';
-		}
-	},
-});
 
 const mcpToggleDisabled = computed(() => {
-	return readOnlyEnv.value || !workflowPermissions.value.update;
+	return readOnlyEnv.value || !workflowPermissions.value.update || !isEligibleForMcp.value;
 });
 
 const mcpToggleTooltip = computed(() => {
+	if (!isEligibleForMcp.value) {
+		return i18n.baseText('mcp.workflowNotEligable.description', {
+			interpolate: {
+				triggers: Object.values(mcpTriggerMap).join(', '),
+			},
+		});
+	}
 	return i18n.baseText('workflowSettings.availableInMCP.tooltip');
 });
+
+const isEligibleForMcp = computed(() => isEligibleForMcpAccess(workflow.value));
 
 const savedTimeNodes = computed(() => {
 	if (!workflow?.value?.nodes) return [];
@@ -525,9 +484,7 @@ const handleEditResolver = async () => {
 	if (!workflowSettings.value.credentialResolverId) return;
 
 	openEditModal(workflowSettings.value.credentialResolverId, {
-		onSave: async () => {
-			await loadCredentialResolvers();
-		},
+		onSave: loadCredentialResolvers,
 		onDelete: async (deletedResolverId: string) => {
 			await loadCredentialResolvers();
 			if (workflowSettings.value.credentialResolverId === deletedResolverId) {
@@ -566,7 +523,7 @@ const saveSettings = async () => {
 		toast.showError(
 			new Error(i18n.baseText('workflowSettings.showError.saveSettings1.errorMessage')),
 			i18n.baseText('workflowSettings.showError.saveSettings1.title'),
-			{ message: i18n.baseText('workflowSettings.showError.saveSettings1.message') + ':' },
+			i18n.baseText('workflowSettings.showError.saveSettings1.message') + ':',
 		);
 		return;
 	}
@@ -587,18 +544,18 @@ const saveSettings = async () => {
 				}),
 			),
 			i18n.baseText('workflowSettings.showError.saveSettings2.title'),
-			{ message: i18n.baseText('workflowSettings.showError.saveSettings2.message') + ':' },
+			i18n.baseText('workflowSettings.showError.saveSettings2.message') + ':',
 		);
 		return;
 	}
 	delete data.settings.maxExecutionTimeout;
 
 	isLoading.value = true;
-	data.versionId = workflowDocumentStore?.value?.versionId ?? '';
+	data.versionId = workflowsStore.workflowVersionId;
 	data.expectedChecksum = workflowDocumentStore?.value?.checksum;
 
 	try {
-		await workflowsStore.updateWorkflow(String(route.params.workflowId), data);
+		await workflowsStore.updateWorkflow(String(route.params.name), data);
 	} catch (error) {
 		toast.showError(error, i18n.baseText('workflowSettings.showError.saveSettings3.title'));
 		isLoading.value = false;
@@ -710,9 +667,8 @@ onMounted(async () => {
 
 	isLoading.value = true;
 
-	let resolversLoaded = false;
 	try {
-		const promises: Array<Promise<unknown>> = [
+		const promises = [
 			workflowsListStore.fetchWorkflow(workflowId.value),
 			loadWorkflows(),
 			loadSaveDataErrorExecutionOptions(),
@@ -724,19 +680,16 @@ onMounted(async () => {
 		];
 
 		if (isCredentialResolverEnabled.value && canListCredentialResolvers) {
-			promises.push(
-				loadCredentialResolvers().then((success) => {
-					resolversLoaded = success;
-				}),
-				loadCredentialResolverTypes(),
-			);
+			promises.push(loadCredentialResolvers(), loadCredentialResolverTypes());
 		}
 
 		await Promise.all(promises);
 	} catch (error) {
-		toast.showError(error, 'Problem loading settings', {
-			message: 'The following error occurred loading the data:',
-		});
+		toast.showError(
+			error,
+			'Problem loading settings',
+			'The following error occurred loading the data:',
+		);
 	}
 
 	const workflowSettingsData = (workflowDocumentStore?.value?.getSettingsSnapshot() ??
@@ -785,18 +738,6 @@ onMounted(async () => {
 
 	originalBinaryMode.value = workflowSettingsData.binaryMode;
 	workflowSettings.value = workflowSettingsData;
-
-	// Clear stale credential resolver references (resolver was deleted externally)
-	// Only clear if resolvers loaded successfully — on API failure the list is empty
-	// and we must not falsely treat a valid ID as stale.
-	if (
-		resolversLoaded &&
-		workflowSettingsData.credentialResolverId &&
-		!credentialResolvers.value.some((r) => r.id === workflowSettingsData.credentialResolverId)
-	) {
-		workflowSettings.value.credentialResolverId = undefined;
-	}
-
 	timeoutHMS.value = convertToHMS(workflowSettingsData.executionTimeout);
 	isLoading.value = false;
 
@@ -1173,100 +1114,28 @@ onBeforeUnmount(() => {
 						</N8nSelect>
 					</ElCol>
 				</ElRow>
-				<template v-if="isRedactionSettingVisible">
-					<ElRow data-test-id="workflow-settings-redaction-policy">
-						<ElCol
-							:span="10"
-							:class="[
-								$style['setting-name'],
-								{ [$style['setting-name--disabled']]: !isDataRedactionLicensed },
-							]"
-						>
-							{{ i18n.baseText('workflowSettings.redactProductionData') }}
-							<N8nBadge
-								v-if="!isDataRedactionLicensed"
-								:class="[$style['upgrade-badge'], 'ml-4xs']"
-								@click="goToDataRedactionUpgrade"
-							>
-								{{ i18n.baseText('generic.upgrade') }}
-							</N8nBadge>
-							<N8nTooltip placement="top">
-								<template #content>
-									<div v-text="helpTexts.redactProductionData"></div>
-								</template>
-								<N8nIcon icon="circle-help" />
-							</N8nTooltip>
-						</ElCol>
-						<ElCol :span="14" class="ignore-key-press-canvas">
-							<N8nSelect
-								v-model="redactProductionData"
-								:disabled="
-									!isDataRedactionLicensed ||
-									readOnlyEnv ||
-									!workflowPermissions.updateRedactionSetting ||
-									workflowHasDynamicCredentials
-								"
-								:placeholder="i18n.baseText('workflowSettings.selectOption')"
-								filterable
-								:limit-popper-width="true"
-								data-test-id="workflow-settings-redact-production-select"
-							>
-								<N8nOption
-									v-for="option of redactionToggleOptions"
-									:key="option.key"
-									:label="option.value"
-									:value="option.key"
-								>
-								</N8nOption>
-							</N8nSelect>
-						</ElCol>
-					</ElRow>
-					<ElRow v-if="workflowHasDynamicCredentials" :class="$style['dynamic-credentials-hint']">
-						<ElCol :span="10" />
-						<ElCol :span="14">
-							<N8nText size="small" color="text-light" :class="$style.dataRedactionHint">
-								{{ i18n.baseText('workflowSettings.redactProductionData.dynamicCredentialsHint') }}
-							</N8nText>
-						</ElCol>
-					</ElRow>
+				<div v-if="isRedactionSettingVisible" data-test-id="workflow-settings-redaction-policy">
 					<ElRow>
-						<ElCol
-							:span="10"
-							:class="[
-								$style['setting-name'],
-								{ [$style['setting-name--disabled']]: !isDataRedactionLicensed },
-							]"
-						>
-							{{ i18n.baseText('workflowSettings.redactManualData') }}
-							<N8nBadge
-								v-if="!isDataRedactionLicensed"
-								:class="[$style['upgrade-badge'], 'ml-4xs']"
-								@click="goToDataRedactionUpgrade"
-							>
-								{{ i18n.baseText('generic.upgrade') }}
-							</N8nBadge>
+						<ElCol :span="10" :class="$style['setting-name']">
+							{{ i18n.baseText('workflowSettings.redactionPolicy') }}
 							<N8nTooltip placement="top">
 								<template #content>
-									<div v-text="helpTexts.redactManualData"></div>
+									<div v-text="helpTexts.redactionPolicy"></div>
 								</template>
 								<N8nIcon icon="circle-help" />
 							</N8nTooltip>
 						</ElCol>
 						<ElCol :span="14" class="ignore-key-press-canvas">
 							<N8nSelect
-								v-model="redactManualData"
-								:disabled="
-									!isDataRedactionLicensed ||
-									readOnlyEnv ||
-									!workflowPermissions.updateRedactionSetting
-								"
+								v-model="workflowSettings.redactionPolicy"
+								:disabled="readOnlyEnv || !workflowPermissions.updateRedactionSetting"
 								:placeholder="i18n.baseText('workflowSettings.selectOption')"
 								filterable
 								:limit-popper-width="true"
-								data-test-id="workflow-settings-redact-manual-select"
+								data-test-id="workflow-settings-redaction-policy-select"
 							>
 								<N8nOption
-									v-for="option of redactionToggleOptions"
+									v-for="option of redactionPolicyOptions"
 									:key="option.key"
 									:label="option.value"
 									:value="option.key"
@@ -1275,7 +1144,7 @@ onBeforeUnmount(() => {
 							</N8nSelect>
 						</ElCol>
 					</ElRow>
-				</template>
+				</div>
 				<ElRow>
 					<ElCol :span="10" :class="$style['setting-name']">
 						{{ i18n.baseText('workflowSettings.timeoutWorkflow') }}
@@ -1419,7 +1288,6 @@ onBeforeUnmount(() => {
 								:disabled="readOnlyEnv || !workflowPermissions.update"
 								data-test-id="workflow-settings-time-saved-per-execution"
 								:min="0"
-								:precision="0"
 								@update:model-value="updateTimeSavedPerExecution"
 							/>
 							<span>{{ i18n.baseText('workflowSettings.timeSavedPerExecution.hint') }}</span>
@@ -1523,11 +1391,6 @@ onBeforeUnmount(() => {
 	}
 }
 
-.dataRedactionHint {
-	display: block;
-	padding: var(--spacing--5xs) 0 var(--spacing--2xs) var(--spacing--5xs);
-}
-
 .setting-name {
 	&,
 	& label {
@@ -1547,14 +1410,6 @@ onBeforeUnmount(() => {
 			opacity: 1;
 		}
 	}
-}
-
-.setting-name--disabled {
-	opacity: 0.5;
-}
-
-.upgrade-badge {
-	cursor: pointer;
 }
 
 .timeout-input {

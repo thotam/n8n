@@ -16,17 +16,10 @@
 
 import child_process from 'child_process';
 import { promisify } from 'util';
-import { writeGithubOutput } from './github-helpers.mjs';
 
 const exec = promisify(child_process.exec);
 
-const packages = JSON.parse(
-	(
-		await exec(
-			`pnpm ls -r --only-projects --json | jq -r '[.[] | { name:.name, private: .private}]'`,
-		)
-	).stdout,
-);
+const packages = JSON.parse((await exec('pnpm ls -r --only-projects --json')).stdout);
 
 const newPackages = [];
 
@@ -38,7 +31,6 @@ for (const { name, private: isPrivate } of packages) {
 	const url = `https://registry.npmjs.org/${encodedName}`;
 
 	try {
-		console.log(`Checking if ${name} exists...`);
 		const response = await fetch(url, { method: 'HEAD' });
 		if (response.status === 404) {
 			newPackages.push(name);
@@ -71,6 +63,7 @@ OIDC Trusted Publishing until they have been published at least once manually:
 `);
 
 for (const pkg of newPackages) {
+	console.log(`  - ${pkg}`);
 	console.log(
 		`::error::Package "${pkg}" has never been published to npm. A manual first-publish with an NPM token is required before it can use OIDC Trusted Publishing.`,
 	);
@@ -95,10 +88,4 @@ Steps to unblock the release, for each new package listed above:
   3. Re-run the Release: Publish workflow.
 
 `);
-
-const output = {
-	packages: newPackages.join(','),
-};
-console.log(` -- Writing to github output: ${JSON.stringify(output)}`);
-writeGithubOutput(output);
 process.exit(1);

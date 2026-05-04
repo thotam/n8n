@@ -138,7 +138,6 @@ export class AwsDynamoDB implements INodeType {
 						const dataToSend = this.getNodeParameter('dataToSend', 0) as
 							| 'defineBelow'
 							| 'autoMapInputData';
-						const autoParseNumbers = this.getNodeParameter('autoParseNumbers', i, true) as boolean;
 						const item: { [key: string]: string } = {};
 
 						if (dataToSend === 'autoMapInputData') {
@@ -151,11 +150,11 @@ export class AwsDynamoDB implements INodeType {
 								item[key] = items[i].json[key] as string;
 							}
 
-							body.Item = adjustPutItem(item as PutItemUi, autoParseNumbers);
+							body.Item = adjustPutItem(item as PutItemUi);
 						} else {
 							const fields = this.getNodeParameter('fieldsUi.fieldValues', i, []) as FieldsUiValues;
 							fields.forEach(({ fieldId, fieldValue }) => (item[fieldId] = fieldValue));
-							body.Item = adjustPutItem(item as PutItemUi, autoParseNumbers);
+							body.Item = adjustPutItem(item as PutItemUi);
 						}
 
 						const headers = {

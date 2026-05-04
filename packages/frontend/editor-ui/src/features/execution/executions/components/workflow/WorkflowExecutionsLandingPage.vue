@@ -21,13 +21,13 @@ const executionCount = computed(() => workflowsStore.currentWorkflowExecutions.l
 const containsTrigger = computed(() => workflowsStore.workflowTriggerNodes.length > 0);
 
 function onSetupFirstStep(): void {
-	const resolvedWorkflowId = workflowId.value || route.params.workflowId;
+	const resolvedWorkflowId = workflowId.value || route.params.name;
 
 	uiStore.addFirstStepOnLoad = true;
 
 	void router.push({
 		name: VIEWS.WORKFLOW,
-		params: { workflowId: resolvedWorkflowId },
+		params: { name: resolvedWorkflowId },
 		query: { ...route.query },
 	});
 }

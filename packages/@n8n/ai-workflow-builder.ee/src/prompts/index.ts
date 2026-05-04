@@ -22,6 +22,11 @@ export {
 
 // Agent prompts
 export {
+	buildBuilderPrompt,
+	INSTANCE_URL_PROMPT,
+	buildRecoveryModeContext,
+} from './agents/builder.prompt';
+export {
 	buildDiscoveryPrompt,
 	exampleCategorizations,
 	formatTechniqueList,

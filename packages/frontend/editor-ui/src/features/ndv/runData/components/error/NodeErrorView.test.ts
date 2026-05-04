@@ -248,7 +248,7 @@ describe('NodeErrorView.vue', () => {
 			expect(mockRouterResolve).toHaveBeenCalledWith({
 				name: 'ExecutionPreview',
 				params: {
-					workflowId: 'different-workflow-id',
+					name: 'different-workflow-id',
 					executionId: 'different-execution-id',
 					nodeId: 'd1ce5dc9-f9ae-4ac6-84e5-0696ba175dd9',
 				},

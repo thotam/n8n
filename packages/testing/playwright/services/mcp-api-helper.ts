@@ -2,14 +2,11 @@ import type { APIResponse } from '@playwright/test';
 import * as http from 'http';
 import * as https from 'https';
 import { nanoid } from 'nanoid';
-import { setTimeout as wait } from 'node:timers/promises';
 
 import type { ApiHelpers } from './api-helper';
 import { N8N_AUTH_COOKIE } from '../config/constants';
 
 type HttpMethod = 'GET' | 'POST' | 'DELETE';
-
-class SseNotFoundError extends Error {}
 
 interface SseConnection {
 	sessionId: string;
@@ -122,7 +119,7 @@ export interface WorkflowDetailsResult {
 /** Response from execute_workflow tool */
 export interface ExecuteWorkflowResult {
 	executionId: string | null;
-	status: 'started' | 'error';
+	status: 'success' | 'error' | 'running' | 'waiting' | 'canceled' | 'crashed' | 'new' | 'unknown';
 	error?: string;
 }
 
@@ -180,29 +177,6 @@ export class McpApiHelper {
 	 */
 	async sseSetup(
 		path: string,
-		options?: {
-			headers?: Record<string, string>;
-			maxNotFoundRetries?: number;
-			notFoundRetryDelayMs?: number;
-		},
-	): Promise<McpSession> {
-		const maxNotFoundRetries = options?.maxNotFoundRetries ?? 5;
-		const notFoundRetryDelayMs = options?.notFoundRetryDelayMs ?? 500;
-
-		for (let attempt = 0; attempt <= maxNotFoundRetries; attempt++) {
-			try {
-				return await this.attemptSseSetup(path, options);
-			} catch (error) {
-				if (!(error instanceof SseNotFoundError) || attempt === maxNotFoundRetries) throw error;
-				await wait(notFoundRetryDelayMs);
-			}
-		}
-		// unreachable: the catch above rethrows on the final attempt. Here to satisfy TS.
-		throw new Error('SSE setup: retry loop exhausted');
-	}
-
-	private async attemptSseSetup(
-		path: string,
 		options?: { headers?: Record<string, string> },
 	): Promise<McpSession> {
 		// Get base URL and auth cookie from Playwright context
@@ -242,14 +216,6 @@ export class McpApiHelper {
 					headers,
 				},
 				(res) => {
-					if (res.statusCode === 404) {
-						// Drain the response so the socket is released back to the pool across retries.
-						res.resume();
-						clearTimeout(timeout);
-						reject(new SseNotFoundError(`SSE setup got 404 for ${path}`));
-						return;
-					}
-
 					let buffer = '';
 					let resolved = false;
 

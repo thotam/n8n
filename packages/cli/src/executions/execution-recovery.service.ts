@@ -23,7 +23,7 @@ import { Push } from '@/push';
 import { OwnershipService } from '@/services/ownership.service';
 import { UserManagementMailer } from '@/user-management/email/user-management-mailer';
 
-import { isNodeEventMessage, type EventMessageTypes } from '../eventbus/event-message-classes';
+import type { EventMessageTypes } from '../eventbus/event-message-classes';
 
 /**
  * Service for recovering key properties in executions.
@@ -128,9 +128,9 @@ export class ExecutionRecoveryService {
 	private async amend(executionId: string, messages: EventMessageTypes[]) {
 		if (messages.length === 0) return await this.amendWithoutLogs(executionId);
 
-		const { nodeMessagesByName, workflowMessages } = this.toRelevantMessages(messages);
+		const { nodeMessages, workflowMessages } = this.toRelevantMessages(messages);
 
-		if (Object.keys(nodeMessagesByName).length === 0) return null;
+		if (nodeMessages.length === 0) return null;
 
 		const execution = await this.executionRepository.findSingleExecution(executionId, {
 			includeData: true,
@@ -149,16 +149,11 @@ export class ExecutionRecoveryService {
 			return null;
 		}
 
-		const runExecutionData = execution.data ?? createEmptyRunExecutionData();
-
-		// CAT-752: runData can be missing even tho according to the type it shouldn't be.
-		// We initialize it to avoid referencing a property of undefined later on.
-		runExecutionData.resultData.runData ??= {};
+		const runExecutionData = execution.data ?? { resultData: { runData: {} } };
 
 		let lastNodeRunTimestamp: DateTime | undefined;
 
 		for (const node of execution.workflowData.nodes) {
-			const nodeMessages = nodeMessagesByName[node.name] ?? [];
 			const nodeStartedMessage = nodeMessages.find(
 				(m) => m.payload.nodeName === node.name && m.eventName === 'n8n.node.started',
 			);
@@ -222,21 +217,19 @@ export class ExecutionRecoveryService {
 
 	private toRelevantMessages(messages: EventMessageTypes[]) {
 		return messages.reduce<{
-			nodeMessagesByName: Record<string, EventMessageTypes[]>;
+			nodeMessages: EventMessageTypes[];
 			workflowMessages: EventMessageTypes[];
 		}>(
 			(acc, cur) => {
-				if (isNodeEventMessage(cur)) {
-					const nodeName = cur.payload.nodeName;
-					acc.nodeMessagesByName[nodeName] ??= [];
-					acc.nodeMessagesByName[nodeName].push(cur);
+				if (cur.eventName.startsWith('n8n.node.')) {
+					acc.nodeMessages.push(cur);
 				} else if (cur.eventName.startsWith('n8n.workflow.')) {
 					acc.workflowMessages.push(cur);
 				}
 
 				return acc;
 			},
-			{ nodeMessagesByName: {}, workflowMessages: [] },
+			{ nodeMessages: [], workflowMessages: [] },
 		);
 	}
 

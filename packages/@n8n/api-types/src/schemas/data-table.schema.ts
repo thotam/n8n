@@ -45,11 +45,11 @@ export type DataTableColumn = z.infer<typeof dataTableColumnSchema>;
 export type DataTableListFilter = {
 	id?: string | string[];
 	projectId?: string | string[];
-	name?: string | string[];
+	name?: string;
 };
 
 export type DataTableListOptions = Partial<ListDataTableQueryDto> & {
-	filter: DataTableListFilter;
+	filter: { projectId: string };
 };
 
 export type DataTableListSortBy = ListDataTableQueryDto['sortBy'];

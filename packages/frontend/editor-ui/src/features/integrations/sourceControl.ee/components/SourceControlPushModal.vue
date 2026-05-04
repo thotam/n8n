@@ -269,8 +269,7 @@ const hasModifiedCredentialsSelected = computed(() => {
 
 const workflowId = computed(
 	() =>
-		([VIEWS.WORKFLOW].includes(route.name as VIEWS) && route.params.workflowId?.toString()) ||
-		undefined,
+		([VIEWS.WORKFLOW].includes(route.name as VIEWS) && route.params.name?.toString()) || undefined,
 );
 
 const changes = computed(() => classifyFilesByType(status.value, workflowId.value));

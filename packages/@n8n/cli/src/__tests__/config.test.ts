@@ -21,7 +21,6 @@ describe('resolveConnection', () => {
 	}
 
 	beforeEach(() => {
-		vi.clearAllMocks();
 		delete process.env.N8N_URL;
 		delete process.env.N8N_API_KEY;
 		setNoConfigFile();

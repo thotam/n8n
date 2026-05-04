@@ -1,12 +1,11 @@
 <script lang="ts" setup>
 import { computed, useCssModule } from 'vue';
 
-import type { TextAlign, TextColor, TextSize, TextStep } from '../../types/text';
+import type { TextAlign, TextColor, TextSize } from '../../types/text';
 
 interface TextProps {
 	bold?: boolean;
 	size?: TextSize;
-	step?: TextStep;
 	// @TODO Tech debt - property value should be updated to match token names (text-shade-2 instead of text-dark for example)
 	color?: TextColor;
 	align?: TextAlign;
@@ -36,11 +35,7 @@ const classes = computed(() => {
 		applied.push('compact');
 	}
 
-	if (props.step) {
-		applied.push(`step-${props.step}`);
-	} else {
-		applied.push(`size-${props.size}`);
-	}
+	applied.push(`size-${props.size}`);
 	applied.push(props.bold ? 'bold' : 'regular');
 
 	return applied.map((c) => $style[c]);
@@ -87,60 +82,6 @@ const classes = computed(() => {
 	line-height: var(--line-height--sm);
 }
 
-.step-4xs {
-	font-size: var(--font-size--4xs);
-	line-height: var(--line-height--xs);
-	letter-spacing: var(--letter-spacing--wider);
-}
-
-.step-3xs {
-	font-size: var(--font-size--3xs);
-	line-height: var(--line-height--sm);
-	letter-spacing: var(--letter-spacing--wider);
-}
-
-.step-2xs {
-	font-size: var(--font-size--2xs);
-	line-height: var(--line-height--md);
-	letter-spacing: var(--letter-spacing--normal);
-}
-
-.step-xs {
-	font-size: var(--font-size--xs);
-	line-height: var(--line-height--md);
-	letter-spacing: var(--letter-spacing--normal);
-}
-
-.step-sm {
-	font-size: var(--font-size--sm);
-	line-height: var(--line-height--lg);
-	letter-spacing: var(--letter-spacing--normal);
-}
-
-.step-md {
-	font-size: var(--font-size--md);
-	line-height: var(--line-height--lg);
-	letter-spacing: var(--letter-spacing--normal);
-}
-
-.step-lg {
-	font-size: var(--font-size--lg);
-	line-height: var(--line-height--xl);
-	letter-spacing: var(--letter-spacing--tight);
-}
-
-.step-xl {
-	font-size: var(--font-size--xl);
-	line-height: var(--line-height--xl);
-	letter-spacing: var(--letter-spacing--tight);
-}
-
-.step-2xl {
-	font-size: var(--font-size--2xl);
-	line-height: var(--line-height--xl);
-	letter-spacing: var(--letter-spacing--tighter);
-}
-
 .compact {
 	line-height: 1;
 }
@@ -154,15 +95,15 @@ const classes = computed(() => {
 }
 
 .text-dark {
-	color: var(--text-color);
+	color: var(--color--text--shade-1);
 }
 
 .text-base {
-	color: var(--text-color--subtle);
+	color: var(--color--text);
 }
 
 .text-light {
-	color: var(--text-color--subtler);
+	color: var(--color--text--tint-1);
 }
 
 .text-xlight {

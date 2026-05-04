@@ -20,7 +20,6 @@ describe('Default Plugins', () => {
 		expect(validatorIds).toContain('core:disconnected-node');
 		expect(validatorIds).toContain('core:agent');
 		expect(validatorIds).toContain('core:http-request');
-		expect(validatorIds).toContain('core:memory-session-key');
 	});
 
 	it('registerDefaultPlugins registers core composite handlers', () => {

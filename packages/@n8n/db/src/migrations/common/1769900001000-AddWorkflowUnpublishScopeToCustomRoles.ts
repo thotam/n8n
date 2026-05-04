@@ -2,6 +2,10 @@ import type { MigrationContext, ReversibleMigration } from '../migration-types';
 
 const PERSONAL_OWNER_ROLE_SLUG = 'project:personalOwner';
 
+function isMySQLOrMariaDB(dbType: string): boolean {
+	return dbType === 'mysqldb' || dbType === 'mariadb';
+}
+
 /**
  * Adds workflow:unpublish scope to all custom (non-personal-owner) roles that have workflow:publish.
  *
@@ -16,7 +20,7 @@ const PERSONAL_OWNER_ROLE_SLUG = 'project:personalOwner';
  * Compatible with SQLite, PostgreSQL, MySQL, and MariaDB.
  */
 export class AddWorkflowUnpublishScopeToCustomRoles1769900001000 implements ReversibleMigration {
-	async up({ escape, runQuery }: MigrationContext) {
+	async up({ escape, runQuery, dbType }: MigrationContext) {
 		const scopeTableName = escape.tableName('scope');
 		const scopeSlugColumn = escape.columnName('slug');
 		const displayNameColumn = escape.columnName('displayName');
@@ -28,8 +32,14 @@ export class AddWorkflowUnpublishScopeToCustomRoles1769900001000 implements Reve
 		const roleScopeRoleSlugColumn = escape.columnName('roleSlug');
 		const roleScopeScopeSlugColumn = escape.columnName('scopeSlug');
 
+		const dbTypeStr = dbType as string;
+		const useInsertIgnore = isMySQLOrMariaDB(dbTypeStr);
+
 		// Step 1: Ensure workflow:unpublish scope exists
-		const insertScopeQuery = `INSERT INTO ${scopeTableName} (${scopeSlugColumn}, ${displayNameColumn}, ${descriptionColumn})
+		const insertScopeQuery = useInsertIgnore
+			? `INSERT IGNORE INTO ${scopeTableName} (${scopeSlugColumn}, ${displayNameColumn}, ${descriptionColumn})
+         VALUES (:slug, :displayName, :description)`
+			: `INSERT INTO ${scopeTableName} (${scopeSlugColumn}, ${displayNameColumn}, ${descriptionColumn})
          VALUES (:slug, :displayName, :description)
          ON CONFLICT (${scopeSlugColumn}) DO NOTHING`;
 
@@ -41,7 +51,7 @@ export class AddWorkflowUnpublishScopeToCustomRoles1769900001000 implements Reve
 
 		// Step 2: Add workflow:unpublish to roles that have workflow:publish, excluding project:personalOwner
 		const batchInsertBase = `
-		INSERT INTO ${roleScopeTableName} (${roleScopeRoleSlugColumn}, ${roleScopeScopeSlugColumn})
+		INSERT ${useInsertIgnore ? 'IGNORE ' : ''}INTO ${roleScopeTableName} (${roleScopeRoleSlugColumn}, ${roleScopeScopeSlugColumn})
 		SELECT DISTINCT role.${roleSlugColumn}, :unpublishScope
 		FROM ${roleTableName} role
 		INNER JOIN ${roleScopeTableName} role_scope
@@ -49,7 +59,9 @@ export class AddWorkflowUnpublishScopeToCustomRoles1769900001000 implements Reve
 		WHERE role.${roleSlugColumn} != :personalOwnerSlug
 			AND role_scope.${roleScopeScopeSlugColumn} = :publishScope
 		`;
-		const batchInsertQuery = `${batchInsertBase}
+		const batchInsertQuery = useInsertIgnore
+			? batchInsertBase
+			: `${batchInsertBase}
 		ON CONFLICT (${roleScopeRoleSlugColumn}, ${roleScopeScopeSlugColumn}) DO NOTHING
 		`;
 

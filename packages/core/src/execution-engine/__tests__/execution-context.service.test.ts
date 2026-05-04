@@ -47,8 +47,8 @@ describe('ExecutionContextService', () => {
 		} as unknown as jest.Mocked<ExecutionContextHookRegistry>;
 
 		mockCipher = {
-			decryptV2: jest.fn(),
-			encryptV2: jest.fn(),
+			decrypt: jest.fn(),
+			encrypt: jest.fn(),
 		} as unknown as jest.Mocked<Cipher>;
 
 		mockWorkflow = mock<Workflow>();
@@ -57,23 +57,23 @@ describe('ExecutionContextService', () => {
 	});
 
 	describe('decryptExecutionContext()', () => {
-		it('should return context as-is when no credentials present', async () => {
+		it('should return context as-is when no credentials present', () => {
 			const context: IExecutionContext = {
 				version: 1,
 				establishedAt: Date.now(),
 				source: 'manual',
 			};
 
-			const result = await service.decryptExecutionContext(context);
+			const result = service.decryptExecutionContext(context);
 
 			expect(result).toEqual({
 				...context,
 				credentials: undefined,
 			});
-			expect(mockCipher.decryptV2).not.toHaveBeenCalled();
+			expect(mockCipher.decrypt).not.toHaveBeenCalled();
 		});
 
-		it('should decrypt credentials when present', async () => {
+		it('should decrypt credentials when present', () => {
 			const encryptedCreds = 'encrypted_data';
 			const decryptedCreds = '{"version":1,"identity":"token123"}';
 			const parsedCreds = { version: 1, identity: 'token123' };
@@ -85,12 +85,12 @@ describe('ExecutionContextService', () => {
 				credentials: encryptedCreds,
 			};
 
-			mockCipher.decryptV2.mockResolvedValue(decryptedCreds);
+			mockCipher.decrypt.mockReturnValue(decryptedCreds);
 			toCredentialContext.mockReturnValue(parsedCreds);
 
-			const result = await service.decryptExecutionContext(context);
+			const result = service.decryptExecutionContext(context);
 
-			expect(mockCipher.decryptV2).toHaveBeenCalledWith(encryptedCreds);
+			expect(mockCipher.decrypt).toHaveBeenCalledWith(encryptedCreds);
 			expect(toCredentialContext).toHaveBeenCalledWith(decryptedCreds);
 			expect(result).toEqual({
 				...context,
@@ -100,23 +100,23 @@ describe('ExecutionContextService', () => {
 	});
 
 	describe('encryptExecutionContext()', () => {
-		it('should return context as-is when no credentials present', async () => {
+		it('should return context as-is when no credentials present', () => {
 			const context: PlaintextExecutionContext = {
 				version: 1,
 				establishedAt: Date.now(),
 				source: 'manual',
 			};
 
-			const result = await service.encryptExecutionContext(context);
+			const result = service.encryptExecutionContext(context);
 
 			expect(result).toEqual({
 				...context,
 				credentials: undefined,
 			});
-			expect(mockCipher.encryptV2).not.toHaveBeenCalled();
+			expect(mockCipher.encrypt).not.toHaveBeenCalled();
 		});
 
-		it('should encrypt credentials when present', async () => {
+		it('should encrypt credentials when present', () => {
 			const plaintextCreds = { version: 1 as const, identity: 'token123' };
 			const encryptedCreds = 'encrypted_data';
 
@@ -127,11 +127,11 @@ describe('ExecutionContextService', () => {
 				credentials: plaintextCreds,
 			};
 
-			mockCipher.encryptV2.mockResolvedValue(encryptedCreds);
+			mockCipher.encrypt.mockReturnValue(encryptedCreds);
 
-			const result = await service.encryptExecutionContext(context);
+			const result = service.encryptExecutionContext(context);
 
-			expect(mockCipher.encryptV2).toHaveBeenCalledWith(plaintextCreds);
+			expect(mockCipher.encrypt).toHaveBeenCalledWith(plaintextCreds);
 			expect(result).toEqual({
 				...context,
 				credentials: encryptedCreds,
@@ -356,9 +356,9 @@ describe('ExecutionContextService', () => {
 				return undefined;
 			});
 
-			mockCipher.decryptV2.mockResolvedValue('{}');
+			mockCipher.decrypt.mockReturnValue('{}');
 			toCredentialContext.mockImplementation((data: string) => JSON.parse(data));
-			mockCipher.encryptV2.mockImplementation(async (data: unknown) => JSON.stringify(data));
+			mockCipher.encrypt.mockImplementation((data: unknown) => JSON.stringify(data));
 
 			const result = await service.augmentExecutionContextWithHooks(
 				mockWorkflow,
@@ -414,9 +414,9 @@ describe('ExecutionContextService', () => {
 				data: { contextEstablishmentHooks: hookConfig },
 			});
 			mockRegistry.getHookByName.mockReturnValue(mockHook);
-			mockCipher.decryptV2.mockResolvedValue('{}');
+			mockCipher.decrypt.mockReturnValue('{}');
 			toCredentialContext.mockReturnValue({});
-			mockCipher.encryptV2.mockImplementation(async (data: unknown) => JSON.stringify(data));
+			mockCipher.encrypt.mockImplementation((data: unknown) => JSON.stringify(data));
 
 			const result = await service.augmentExecutionContextWithHooks(mockWorkflow, startItem, {
 				version: 1,
@@ -455,9 +455,9 @@ describe('ExecutionContextService', () => {
 				return undefined;
 			});
 
-			mockCipher.decryptV2.mockResolvedValue('{}');
+			mockCipher.decrypt.mockReturnValue('{}');
 			toCredentialContext.mockReturnValue({});
-			mockCipher.encryptV2.mockResolvedValue('encrypted');
+			mockCipher.encrypt.mockReturnValue('encrypted');
 
 			await service.augmentExecutionContextWithHooks(mockWorkflow, startItem, {
 				version: 1,
@@ -483,9 +483,9 @@ describe('ExecutionContextService', () => {
 				data: { contextEstablishmentHooks: hookConfig },
 			});
 			mockRegistry.getHookByName.mockReturnValue(undefined);
-			mockCipher.decryptV2.mockResolvedValue('{}');
+			mockCipher.decrypt.mockReturnValue('{}');
 			toCredentialContext.mockReturnValue({});
-			mockCipher.encryptV2.mockResolvedValue('encrypted');
+			mockCipher.encrypt.mockReturnValue('encrypted');
 
 			const result = await service.augmentExecutionContextWithHooks(mockWorkflow, startItem, {
 				version: 1,
@@ -527,9 +527,9 @@ describe('ExecutionContextService', () => {
 				return undefined;
 			});
 
-			mockCipher.decryptV2.mockResolvedValue('{}');
+			mockCipher.decrypt.mockReturnValue('{}');
 			toCredentialContext.mockReturnValue({});
-			mockCipher.encryptV2.mockImplementation(async (data: unknown) => JSON.stringify(data));
+			mockCipher.encrypt.mockImplementation((data: unknown) => JSON.stringify(data));
 
 			const result = await service.augmentExecutionContextWithHooks(mockWorkflow, startItem, {
 				version: 1,
@@ -562,7 +562,7 @@ describe('ExecutionContextService', () => {
 				data: { contextEstablishmentHooks: hookConfig },
 			});
 			mockRegistry.getHookByName.mockReturnValue(mockHook);
-			mockCipher.decryptV2.mockResolvedValue('{}');
+			mockCipher.decrypt.mockReturnValue('{}');
 			toCredentialContext.mockReturnValue({});
 
 			await expect(
@@ -598,14 +598,14 @@ describe('ExecutionContextService', () => {
 				data: { contextEstablishmentHooks: hookConfig },
 			});
 			mockRegistry.getHookByName.mockReturnValue(mockHook);
-			mockCipher.decryptV2.mockResolvedValue('{"version":1,"identity":"decrypted"}');
+			mockCipher.decrypt.mockReturnValue('{"version":1,"identity":"decrypted"}');
 			toCredentialContext.mockReturnValue({ version: 1, identity: 'decrypted' });
-			mockCipher.encryptV2.mockResolvedValue('re_encrypted_data');
+			mockCipher.encrypt.mockReturnValue('re_encrypted_data');
 
 			await service.augmentExecutionContextWithHooks(mockWorkflow, startItem, encryptedContext);
 
-			// Verify decryptV2 was called
-			expect(mockCipher.decryptV2).toHaveBeenCalledWith('encrypted_data');
+			// Verify decrypt was called
+			expect(mockCipher.decrypt).toHaveBeenCalledWith('encrypted_data');
 
 			// Verify hook received plaintext credentials
 			expect(mockHook.execute).toHaveBeenCalledWith(
@@ -616,8 +616,8 @@ describe('ExecutionContextService', () => {
 				}),
 			);
 
-			// Verify encryptV2 was called for return
-			expect(mockCipher.encryptV2).toHaveBeenCalled();
+			// Verify encrypt was called for return
+			expect(mockCipher.encrypt).toHaveBeenCalled();
 		});
 	});
 });

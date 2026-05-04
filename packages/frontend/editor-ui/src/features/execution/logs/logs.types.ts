@@ -1,10 +1,9 @@
-import type { WorkflowObjectAccessors } from '@/app/types';
 import type {
 	LOG_DETAILS_PANEL_STATE,
 	LOGS_PANEL_STATE,
 } from '@/features/execution/logs/logs.constants';
 import type { INodeUi, LlmTokenUsageData } from '@/Interface';
-import type { IRunExecutionData, ITaskData } from 'n8n-workflow';
+import type { IRunExecutionData, ITaskData, Workflow } from 'n8n-workflow';
 
 export type LogEntry = {
 	parent?: LogEntry;
@@ -14,7 +13,7 @@ export type LogEntry = {
 	runIndex: number;
 	runData: ITaskData | undefined;
 	consumedTokens: LlmTokenUsageData;
-	workflow: WorkflowObjectAccessors;
+	workflow: Workflow;
 	executionId: string;
 	execution: IRunExecutionData;
 	isSubExecution: boolean;
@@ -23,10 +22,10 @@ export type LogEntry = {
 export interface LogTreeCreationContext {
 	parent: LogEntry | undefined;
 	ancestorRunIndexes: number[];
-	workflow: WorkflowObjectAccessors;
+	workflow: Workflow;
 	executionId: string;
 	data: IRunExecutionData;
-	workflows: Record<string, WorkflowObjectAccessors>;
+	workflows: Record<string, Workflow>;
 	subWorkflowData: Record<string, IRunExecutionData>;
 	isSubExecution: boolean;
 }

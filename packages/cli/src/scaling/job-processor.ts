@@ -12,7 +12,6 @@ import {
 import type { Tool } from '@langchain/core/tools';
 import type {
 	ExecutionStatus,
-	IDataObject,
 	IExecuteData,
 	IExecuteFunctions,
 	IExecuteResponsePromiseData,
@@ -21,11 +20,9 @@ import type {
 	IWorkflowExecutionDataProcess,
 	StructuredChunk,
 	CloseFunction,
-	GenericValue,
 } from 'n8n-workflow';
 import {
 	BINARY_ENCODING,
-	ManualExecutionCancelledError,
 	NodeConnectionTypes,
 	Workflow,
 	UnexpectedError,
@@ -169,9 +166,7 @@ export class JobProcessor {
 
 		if (pushRef) {
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-			additionalData.sendDataToUI = WorkflowExecuteAdditionalData.sendDataToUI.bind({
-				pushRef,
-			}) as (type: string, data: IDataObject | IDataObject[]) => void;
+			additionalData.sendDataToUI = WorkflowExecuteAdditionalData.sendDataToUI.bind({ pushRef });
 		}
 
 		lifecycleHooks.addHandler('sendResponse', async (response): Promise<void> => {
@@ -297,10 +292,6 @@ export class JobProcessor {
 		const run = await workflowRun;
 
 		delete this.runningJobs[job.id];
-
-		if (run?.status === 'canceled') {
-			throw new ManualExecutionCancelledError(executionId);
-		}
 
 		const props = process.env.N8N_MINIMIZE_EXECUTION_DATA_FETCHING
 			? this.deriveJobFinishedProps(run, startedAt)
@@ -546,10 +537,7 @@ export class JobProcessor {
 
 				const result = await nodeType.execute.call(context as unknown as IExecuteFunctions);
 
-				let response: IDataObject | IDataObject[] | GenericValue | GenericValue[] = [];
-				if (Array.isArray(result)) {
-					response = result?.[0]?.flatMap((item: INodeExecutionData) => item.json);
-				}
+				const response = result?.[0]?.flatMap((item: INodeExecutionData) => item.json);
 
 				context.addOutputData(NodeConnectionTypes.AiTool, 0, [
 					[{ json: { response } as INodeExecutionData['json'] }],

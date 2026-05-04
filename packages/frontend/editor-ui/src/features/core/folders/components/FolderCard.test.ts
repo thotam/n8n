@@ -96,13 +96,13 @@ describe('FolderCard', () => {
 		expect(queryByTestId('folder-card-folder-count')).not.toBeInTheDocument();
 	});
 
-	it('should still render action dropdown with favorites toggle when no extra actions are provided', () => {
-		const { getByTestId } = renderComponent({
+	it('should not render action dropdown if no actions are provided', () => {
+		const { queryByTestId } = renderComponent({
 			props: {
 				actions: [],
 			},
 		});
-		expect(getByTestId('folder-card-actions')).toBeInTheDocument();
+		expect(queryByTestId('folder-card-actions')).not.toBeInTheDocument();
 	});
 
 	it('should render action dropdown if actions are provided', () => {

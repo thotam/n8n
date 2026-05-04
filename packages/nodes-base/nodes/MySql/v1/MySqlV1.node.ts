@@ -16,7 +16,6 @@ import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import { oldVersionNotice } from '@utils/descriptions';
 import { getResolvables } from '@utils/utilities';
 
-import { escapeSqlIdentifier } from '../v2/helpers/utils';
 import { createConnection, searchTables } from './GenericFunctions';
 
 const versionDescription: INodeTypeDescription = {
@@ -358,7 +357,7 @@ export class MySqlV1 implements INodeType {
 
 				const insertSQL = `INSERT ${insertPriority || ''} ${
 					insertIgnore ? 'IGNORE' : ''
-				} INTO ${escapeSqlIdentifier(table)}(${columns.map(escapeSqlIdentifier).join(',')}) VALUES ${items
+				} INTO ${table}(${columnString}) VALUES ${items
 					.map((_item) => insertPlaceholder)
 					.join(',')};`;
 				const queryItems = insertItems.reduce(
@@ -394,9 +393,9 @@ export class MySqlV1 implements INodeType {
 				}
 
 				const updateItems = this.helpers.copyInputItems(items, columns);
-				const updateSQL = `UPDATE ${escapeSqlIdentifier(table)} SET ${columns
-					.map((column) => `${escapeSqlIdentifier(column)} = ?`)
-					.join(',')} WHERE ${escapeSqlIdentifier(updateKey)} = ?;`;
+				const updateSQL = `UPDATE ${table} SET ${columns
+					.map((column) => `${column} = ?`)
+					.join(',')} WHERE ${updateKey} = ?;`;
 				const queryQueue = updateItems.map(
 					async (item) =>
 						await connection.query(updateSQL, Object.values(item).concat(item[updateKey])),

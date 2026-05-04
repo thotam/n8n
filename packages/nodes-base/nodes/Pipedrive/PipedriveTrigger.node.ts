@@ -11,7 +11,7 @@ import {
 	NodeConnectionTypes,
 } from 'n8n-workflow';
 
-import { pipedriveApiRequest } from './v1/GenericFunctions';
+import { pipedriveApiRequest } from './GenericFunctions';
 
 function authorizationError(resp: Response, realm: string, responseCode: number, message?: string) {
 	if (message === undefined) {

@@ -90,7 +90,9 @@ const logStreamingStore = useLogStreamingStore();
 const ndvStore = useNDVStore();
 const workflowsStore = useWorkflowsStore();
 const workflowDocumentStore = computed(() =>
-	useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
+	workflowsStore.workflowId
+		? useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId))
+		: undefined,
 );
 const uiStore = useUIStore();
 
@@ -189,15 +191,12 @@ const isFormValid = computed(() => {
 	return issues === null;
 });
 
-const destinationNode = computed(() =>
-	workflowDocumentStore.value.getNodeByName(destination.id ?? ''),
+const destinationNode = computed(
+	() => workflowDocumentStore?.value?.getNodeByName(destination.id ?? '') ?? null,
 );
 
 watch(
-	() =>
-		Object.keys(destinationNode.value?.credentials ?? {}).length === 0
-			? null
-			: destinationNode.value?.credentials,
+	() => destinationNode.value?.credentials,
 	(newCredentials) => {
 		unchanged.value = false;
 		if (newCredentials) {
@@ -228,9 +227,9 @@ function onLabelChange(value: string) {
 }
 
 function setupNode(options: MessageEventBusDestinationOptions) {
-	workflowDocumentStore.value.removeNode(node.value);
+	workflowDocumentStore?.value?.removeNode(node.value);
 	ndvStore.setActiveNodeName(options.id ?? 'thisshouldnothappen', 'other');
-	workflowDocumentStore.value.addNode(destinationToFakeINodeUi(options));
+	workflowDocumentStore?.value?.addNode(destinationToFakeINodeUi(options));
 	nodeParameters.value = options as INodeParameters;
 	logStreamingStore.items[destination.id!].destination = options;
 }
@@ -295,7 +294,7 @@ function valueChanged(parameterData: IUpdateInformation) {
 	}
 
 	nodeParameters.value = deepCopy(nodeParametersCopy);
-	workflowDocumentStore.value.updateNodeProperties({
+	workflowDocumentStore?.value?.updateNodeProperties({
 		name: node.value.name,
 		properties: { parameters: nodeParameters.value, position: [0, 0] },
 	});
@@ -335,7 +334,7 @@ async function removeThis() {
 
 function onModalClose() {
 	if (!hasOnceBeenSaved.value) {
-		workflowDocumentStore.value.removeNode(node.value);
+		workflowDocumentStore?.value?.removeNode(node.value);
 		if (nodeParameters.value.id && typeof nodeParameters.value.id !== 'object') {
 			logStreamingStore.removeDestination(nodeParameters.value.id.toString());
 		}

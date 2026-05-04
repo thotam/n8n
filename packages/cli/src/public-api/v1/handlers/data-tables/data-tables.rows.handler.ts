@@ -5,20 +5,20 @@ import {
 	UpsertDataTableRowDto,
 	DeleteDataTableRowsDto,
 } from '@n8n/api-types';
+import { DataTableRepository } from '@/modules/data-table/data-table.repository';
 import { Container } from '@n8n/di';
 import type express from 'express';
 
-import { DataTableService } from '@/modules/data-table/data-table.service';
-import { DataTableNotFoundError } from '@/modules/data-table/errors/data-table-not-found.error';
-import { DataTableValidationError } from '@/modules/data-table/errors/data-table-validation.error';
-
 import type { DataTableRequest } from '../../../types';
 import {
-	publicApiScope,
+	apiKeyHasScope,
 	projectScope,
 	validCursor,
 } from '../../shared/middlewares/global.middleware';
 import { encodeNextCursor } from '../../shared/services/pagination.service';
+import { DataTableService } from '@/modules/data-table/data-table.service';
+import { DataTableNotFoundError } from '@/modules/data-table/errors/data-table-not-found.error';
+import { DataTableValidationError } from '@/modules/data-table/errors/data-table-validation.error';
 
 const handleError = (error: unknown, res: express.Response): express.Response => {
 	if (error instanceof DataTableNotFoundError) {
@@ -47,9 +47,26 @@ const stringifyQuery = (query: Record<string, unknown>): Record<string, string |
 	return result;
 };
 
+/**
+ * Gets the project ID for a data table.
+ * Called AFTER projectScope middleware has validated access.
+ */
+const getProjectIdForDataTable = async (dataTableId: string): Promise<string> => {
+	const dataTable = await Container.get(DataTableRepository).findOne({
+		where: { id: dataTableId },
+		relations: ['project'],
+	});
+
+	if (!dataTable) {
+		throw new DataTableNotFoundError(dataTableId);
+	}
+
+	return dataTable.project.id;
+};
+
 export = {
 	getDataTableRows: [
-		publicApiScope('dataTableRow:read'),
+		apiKeyHasScope('dataTableRow:read'),
 		projectScope('dataTable:readRow', 'dataTable'),
 		validCursor,
 		async (req: DataTableRequest.GetRows, res: express.Response): Promise<express.Response> => {
@@ -65,8 +82,7 @@ export = {
 
 				const { offset, limit, filter, sortBy, search } = payload.data;
 
-				const projectId =
-					await Container.get(DataTableService).getProjectIdForDataTable(dataTableId);
+				const projectId = await getProjectIdForDataTable(dataTableId);
 
 				const result = await Container.get(DataTableService).getManyRowsAndCount(
 					dataTableId,
@@ -95,7 +111,7 @@ export = {
 	],
 
 	insertDataTableRows: [
-		publicApiScope('dataTableRow:create'),
+		apiKeyHasScope('dataTableRow:create'),
 		projectScope('dataTable:writeRow', 'dataTable'),
 		async (req: DataTableRequest.InsertRows, res: express.Response): Promise<express.Response> => {
 			try {
@@ -108,8 +124,7 @@ export = {
 					});
 				}
 
-				const projectId =
-					await Container.get(DataTableService).getProjectIdForDataTable(dataTableId);
+				const projectId = await getProjectIdForDataTable(dataTableId);
 
 				const result = await Container.get(DataTableService).insertRows(
 					dataTableId,
@@ -126,7 +141,7 @@ export = {
 	],
 
 	updateDataTableRows: [
-		publicApiScope('dataTableRow:update'),
+		apiKeyHasScope('dataTableRow:update'),
 		projectScope('dataTable:writeRow', 'dataTable'),
 		async (req: DataTableRequest.UpdateRows, res: express.Response): Promise<express.Response> => {
 			try {
@@ -139,8 +154,7 @@ export = {
 					});
 				}
 
-				const projectId =
-					await Container.get(DataTableService).getProjectIdForDataTable(dataTableId);
+				const projectId = await getProjectIdForDataTable(dataTableId);
 				const service = Container.get(DataTableService);
 				const { filter, data, returnData = false, dryRun = false } = payload.data;
 				const params = { filter, data };
@@ -159,7 +173,7 @@ export = {
 	],
 
 	upsertDataTableRow: [
-		publicApiScope('dataTableRow:upsert'),
+		apiKeyHasScope('dataTableRow:upsert'),
 		projectScope('dataTable:writeRow', 'dataTable'),
 		async (req: DataTableRequest.UpsertRow, res: express.Response): Promise<express.Response> => {
 			try {
@@ -172,8 +186,7 @@ export = {
 					});
 				}
 
-				const projectId =
-					await Container.get(DataTableService).getProjectIdForDataTable(dataTableId);
+				const projectId = await getProjectIdForDataTable(dataTableId);
 				const service = Container.get(DataTableService);
 				const { filter, data, returnData = false, dryRun = false } = payload.data;
 				const params = { filter, data };
@@ -192,7 +205,7 @@ export = {
 	],
 
 	deleteDataTableRows: [
-		publicApiScope('dataTableRow:delete'),
+		apiKeyHasScope('dataTableRow:delete'),
 		projectScope('dataTable:writeRow', 'dataTable'),
 		async (req: DataTableRequest.DeleteRows, res: express.Response): Promise<express.Response> => {
 			try {
@@ -205,8 +218,7 @@ export = {
 					});
 				}
 
-				const projectId =
-					await Container.get(DataTableService).getProjectIdForDataTable(dataTableId);
+				const projectId = await getProjectIdForDataTable(dataTableId);
 				const service = Container.get(DataTableService);
 				const { filter, returnData = false, dryRun = false } = payload.data;
 				const params = { filter };

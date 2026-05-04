@@ -14,8 +14,7 @@ import { removeDuplicateInputItems } from '../utils';
 const versionDescription: INodeTypeDescription = {
 	displayName: 'Remove Duplicates',
 	name: 'removeDuplicates',
-	icon: 'node:remove-duplicates',
-	iconColor: 'azure',
+	icon: 'file:removeDuplicates.svg',
 	group: ['transform'],
 	subtitle: '',
 	version: [2],

@@ -35,7 +35,11 @@ vi.mock('@/features/settings/users/users.store', () => ({
 }));
 
 vi.mock('@/app/stores/workflows.store', () => ({
-	useWorkflowsStore: () => ({}),
+	useWorkflowsStore: () => ({
+		workflowObject: {
+			id: '1',
+		},
+	}),
 }));
 
 vi.mock('@/app/stores/workflowsList.store', () => ({

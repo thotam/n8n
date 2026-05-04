@@ -3,6 +3,7 @@ import { defineComponent, h, ref, computed } from 'vue';
 import { createTestingPinia } from '@pinia/testing';
 import { render, waitFor } from '@testing-library/vue';
 import userEvent from '@testing-library/user-event';
+import type * as I18nModule from '@n8n/i18n';
 import { NodeDiffStatus } from 'n8n-workflow';
 import type { INodeUi } from '@/Interface';
 import { createComponentRenderer } from '@/__tests__/render';
@@ -102,7 +103,7 @@ vi.mock('@/app/stores/nodeTypes.store', () => ({
 }));
 
 vi.mock('@n8n/i18n', async (importOriginal) => {
-	const actual = (await importOriginal()) as object;
+	const actual = (await importOriginal()) as typeof I18nModule;
 	return {
 		...actual,
 		useI18n: () => ({

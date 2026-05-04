@@ -14,8 +14,7 @@ interface TmpDirFixture {
 }
 
 export const tmpdirTest = test.extend<TmpDirFixture>({
-	// eslint-disable-next-line no-empty-pattern
-	tmpdir: async ({}, use) => {
+	tmpdir: async ({ expect: _expect }, use) => {
 		const directory = await createTempDir();
 		const originalCwd = process.cwd();
 

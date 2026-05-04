@@ -1,5 +1,5 @@
 import { camelCase, capitalCase } from 'change-case';
-import { ts, SyntaxKind, printNode, type Project } from 'ts-morph';
+import { ts, SyntaxKind, printNode } from 'ts-morph';
 
 import {
 	getChildObjectLiteral,
@@ -11,9 +11,8 @@ export function updateNodeAst({
 	nodePath,
 	className,
 	baseUrl,
-	project,
-}: { nodePath: string; className: string; baseUrl: string; project?: Project }) {
-	const sourceFile = loadSingleSourceFile(nodePath, project);
+}: { nodePath: string; className: string; baseUrl: string }) {
+	const sourceFile = loadSingleSourceFile(nodePath);
 	const classDecl = sourceFile.getClasses()[0];
 
 	classDecl.rename(className);
@@ -77,7 +76,6 @@ export function updateCredentialAst({
 	credentialName,
 	credentialDisplayName,
 	credentialClassName,
-	project,
 }: {
 	repoName: string;
 	credentialPath: string;
@@ -85,9 +83,8 @@ export function updateCredentialAst({
 	credentialDisplayName: string;
 	credentialClassName: string;
 	baseUrl: string;
-	project?: Project;
 }) {
-	const sourceFile = loadSingleSourceFile(credentialPath, project);
+	const sourceFile = loadSingleSourceFile(credentialPath);
 	const classDecl = sourceFile.getClasses()[0];
 
 	classDecl.rename(credentialClassName);
@@ -133,9 +130,8 @@ export function updateCredentialAst({
 export function addCredentialToNode({
 	nodePath,
 	credentialName,
-	project,
-}: { nodePath: string; credentialName: string; project?: Project }) {
-	const sourceFile = loadSingleSourceFile(nodePath, project);
+}: { nodePath: string; credentialName: string }) {
+	const sourceFile = loadSingleSourceFile(nodePath);
 	const classDecl = sourceFile.getClasses()[0];
 
 	const descriptionProp = classDecl

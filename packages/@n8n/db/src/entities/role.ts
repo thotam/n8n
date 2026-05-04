@@ -2,7 +2,6 @@ import { Column, Entity, JoinTable, ManyToMany, OneToMany, PrimaryColumn } from 
 
 import { WithTimestamps } from './abstract-entity';
 import type { ProjectRelation } from './project-relation';
-import type { RoleMappingRule } from './role-mapping-rule';
 import { Scope } from './scope';
 
 @Entity({
@@ -50,9 +49,6 @@ export class Role extends WithTimestamps {
 
 	@OneToMany('ProjectRelation', 'role')
 	projectRelations: ProjectRelation[];
-
-	@OneToMany('RoleMappingRule', 'role')
-	roleMappingRules: RoleMappingRule[];
 
 	@ManyToMany(() => Scope, {
 		eager: true,

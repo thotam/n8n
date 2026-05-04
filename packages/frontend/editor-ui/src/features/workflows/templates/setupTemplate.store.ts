@@ -222,7 +222,7 @@ export const useSetupTemplateStore = defineStore('setupTemplate', () => {
 			// Replace the URL so back button doesn't come back to this setup view
 			await router.replace({
 				name: VIEWS.WORKFLOW,
-				params: { workflowId: createdWorkflow.id },
+				params: { name: createdWorkflow.id },
 			});
 		} finally {
 			isSaving.value = false;

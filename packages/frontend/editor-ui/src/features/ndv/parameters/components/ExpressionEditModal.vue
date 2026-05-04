@@ -33,10 +33,6 @@ import {
 	N8nText,
 	type ResizeData,
 } from '@n8n/design-system';
-import {
-	createWorkflowDocumentId,
-	useWorkflowDocumentStore,
-} from '@/app/stores/workflowDocument.store';
 const DEFAULT_LEFT_SIDEBAR_WIDTH = 360;
 
 type Props = {
@@ -62,9 +58,6 @@ const emit = defineEmits<{
 
 const ndvStore = useNDVStore();
 const workflowsStore = useWorkflowsStore();
-const workflowDocumentStore = computed(() =>
-	useWorkflowDocumentStore(createWorkflowDocumentId(workflowsStore.workflowId)),
-);
 
 const telemetry = useTelemetry();
 const i18n = useI18n();
@@ -85,7 +78,7 @@ const inputEditor = computed(() => expressionInputRef.value?.editor);
 const parentNodes = computed(() => {
 	const node = activeNode.value;
 	if (!node) return [];
-	const nodes = workflowDocumentStore?.value?.getParentNodesByDepth(node.name) ?? [];
+	const nodes = workflowsStore.workflowObject.getParentNodesByDepth(node.name);
 
 	return nodes.filter(({ name }) => name !== node.name);
 });
@@ -93,12 +86,12 @@ const parentNodes = computed(() => {
 const rootNode = computed(() => {
 	if (!activeNode.value) return null;
 
-	return workflowDocumentStore?.value?.findRootWithMainConnection(activeNode.value.name) ?? null;
+	return workflowsStore.findRootWithMainConnection(activeNode.value.name);
 });
 
 const rootNodesParents = computed(() => {
 	if (!rootNode.value) return [];
-	return workflowDocumentStore?.value?.getParentNodesByDepth(rootNode.value) ?? [];
+	return workflowsStore.workflowObject.getParentNodesByDepth(rootNode.value);
 });
 
 watch(

@@ -1,7 +1,28 @@
 # Docker Compose cho n8n — Queue Mode
-# Bao gồm: PostgreSQL, Redis, n8n main, n8n worker (multi-replica), patch license
+# Bao gồm: PostgreSQL, Redis, n8n main, n8n worker (multi-replica), patch license, AI assistant proxy
 
 services:
+
+  # ─── AI Assistant Proxy ──────────────────────────────────────────────────────
+  # Mock server tương thích n8n SDK, proxy request tới OpenRouter
+  ai_assistant:
+    build:
+      context: ./ai-assistant
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      PORT: 3456
+      OPENROUTER_URL: ${OPENROUTER_URL:-https://open.thanhtam.top}
+      OPENROUTER_KEY: ${OPENROUTER_KEY}
+      AI_MODEL: ${AI_MODEL:-openai/gpt-4o-mini}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3456/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - baota_net
 
   # ─── PostgreSQL ─────────────────────────────────────────────────────────────
   postgres:
@@ -51,6 +72,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ai_assistant:
+        condition: service_healthy
     ports:
       - ${HOST_IP}:${WEB_HTTP_PORT}:5678
     volumes:
@@ -92,6 +115,8 @@ services:
       N8N_SMTP_PASS: ${N8N_SMTP_PASS}
       N8N_SMTP_SENDER: ${N8N_SMTP_SENDER}
       CREDENTIALS_OVERWRITE_DATA: ${CREDENTIALS_OVERWRITE_DATA}
+      # AI Assistant — trỏ vào service nội bộ
+      N8N_AI_ASSISTANT_BASE_URL: http://ai_assistant:3456
     deploy:
       resources:
         limits:
@@ -121,6 +146,8 @@ services:
       n8n_dtp:
         condition: service_started
     # Không có ports — worker không cần expose ra ngoài
+    volumes:
+      - n8n_data:/home/node/.n8n              # chia sẻ community nodes & settings với main
     environment:
       # Database
       DB_TYPE: postgresdb
@@ -145,6 +172,8 @@ services:
       N8N_METRICS: ${N8N_METRICS}
       N8N_USER_FOLDER: ${N8N_USER_FOLDER}
       CREDENTIALS_OVERWRITE_DATA: ${CREDENTIALS_OVERWRITE_DATA}
+      # AI Assistant — trỏ vào service nội bộ
+      N8N_AI_ASSISTANT_BASE_URL: http://ai_assistant:3456
     deploy:
       replicas: ${WORKER_COUNT:-2}
       resources:

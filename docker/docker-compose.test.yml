@@ -64,6 +64,11 @@ services:
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_SECURE_COOKIE: "false"
+      # CPC1 Hà Nội Member Node — URL test local
+      CPC1HN_AUTH_URL: https://member.next.test/oauth/authorize
+      CPC1HN_TOKEN_URL: https://dev.thanhtam.top/oauth/token
+      CPC1HN_DOCS_URL: https://member.next.test
+      CPC1HN_API_BASE_URL: https://dev.thanhtam.top
 
   # ─── n8n Worker: test queue mode ─────────────────────────────────────────────
   n8n_worker_test:
@@ -109,3 +114,8 @@ services:
       NODEJS_PREFER_IPV4: "true"
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
       N8N_DIAGNOSTICS_ENABLED: "false"
+      # CPC1 Hà Nội Member Node — URL test local
+      CPC1HN_AUTH_URL: https://member.next.test/oauth/authorize
+      CPC1HN_TOKEN_URL: https://dev.thanhtam.top/oauth/token
+      CPC1HN_DOCS_URL: https://member.next.test
+      CPC1HN_API_BASE_URL: https://dev.thanhtam.top

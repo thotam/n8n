@@ -73,5 +73,3 @@ lefthook-local.yml
 /docker/test-pg-data
 /docker/test-data
 /docker/test-redis-data
-/docker/test-data
-/docker/test-pg-data

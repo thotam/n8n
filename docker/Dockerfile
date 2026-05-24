@@ -10,5 +10,12 @@ RUN sh /tmp/patch-license.sh --skip-exec && rm /tmp/patch-license.sh \
 	&& mkdir -p /home/node/.n8n \
 	&& chown -R node:node /home/node
 
+# Cài sharp — thư viện xử lý ảnh cho Code node
+# Dùng thư mục riêng + NODE_PATH để Node.js tìm được module
+RUN mkdir -p /opt/custom-nodes && cd /opt/custom-nodes && \
+    npm init -y && npm install sharp && \
+    rm -f package.json package-lock.json
+ENV NODE_PATH=/opt/custom-nodes/node_modules
+
 # Trở về user mặc định của n8n image
 USER node

@@ -64,6 +64,9 @@ services:
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
       N8N_DIAGNOSTICS_ENABLED: "false"
       N8N_SECURE_COOKIE: "false"
+      # MCP Server
+      N8N_MCP_MANAGED_BY_ENV: "false"
+      N8N_MCP_ACCESS_ENABLED: "false"
       # CPC1 Hà Nội Member Node — URL test local
       CPC1HN_AUTH_URL: https://member.next.test/oauth/authorize
       CPC1HN_TOKEN_URL: https://dev.thanhtam.top/oauth/token
@@ -114,6 +117,9 @@ services:
       NODEJS_PREFER_IPV4: "true"
       N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
       N8N_DIAGNOSTICS_ENABLED: "false"
+      # MCP Server
+      N8N_MCP_MANAGED_BY_ENV: "false"
+      N8N_MCP_ACCESS_ENABLED: "false"
       # CPC1 Hà Nội Member Node — URL test local
       CPC1HN_AUTH_URL: https://member.next.test/oauth/authorize
       CPC1HN_TOKEN_URL: https://dev.thanhtam.top/oauth/token

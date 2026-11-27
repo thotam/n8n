@@ -1,9 +1,13 @@
 import type { Meta, StoryObj } from '@storybook/vue3-vite';
+import { ref, useId } from 'vue';
 
 import N8nButton from './Button.vue';
 import IconTextButton from '../IconTextButton/IconTextButton.vue';
+import type { DropdownMenuItemProps } from '../N8nDropdownMenu/DropdownMenu.types';
+import DropdownMenu from '../N8nDropdownMenu/DropdownMenu.vue';
 import N8nIcon from '../N8nIcon/Icon.vue';
 import N8nIconButton from '../N8nIconButton/IconButton.vue';
+import N8nTooltip from '../N8nTooltip/Tooltip.vue';
 
 const meta = {
 	title: 'Core/Button',
@@ -11,7 +15,7 @@ const meta = {
 	argTypes: {
 		variant: {
 			control: 'select',
-			options: ['solid', 'subtle', 'ghost', 'outline', 'destructive', 'success'],
+			options: ['solid', 'brand', 'ghost', 'outline', 'destructive', 'success'],
 		},
 		size: {
 			control: 'select',
@@ -22,6 +26,11 @@ const meta = {
 		},
 		disabled: {
 			control: 'boolean',
+		},
+		focusableWhenDisabled: {
+			control: 'boolean',
+			description:
+				'Keeps disabled buttons focusable for an explanation. Loading buttons and links keep their default behavior.',
 		},
 		iconOnly: {
 			control: 'boolean',
@@ -56,9 +65,7 @@ export const Default: Story = {
 			return { args };
 		},
 		template: `
-		<div style="display: grid; place-items: center;">
 			<N8nButton v-bind="args">{{ args.default || 'Button' }}</N8nButton>
-		</div>
 		`,
 	}),
 	args: {
@@ -69,30 +76,27 @@ export const Default: Story = {
 	},
 };
 
-export const Variant: Story = {
+export const Variants: Story = {
 	render: () => ({
 		components: { N8nButton },
 		template: `
-		<div style="display: grid; place-items: center;">
 			<div style="display: flex; gap: 12px; align-items: center;">
 				<N8nButton variant="solid" size="medium">Solid</N8nButton>
-				<N8nButton variant="subtle" size="medium">Subtle</N8nButton>
+				<N8nButton variant="brand" size="medium">Brand</N8nButton>
 				<N8nButton variant="outline" size="medium">Outline</N8nButton>
 				<N8nButton variant="ghost" size="medium">Ghost</N8nButton>
 				<N8nButton variant="destructive" size="medium">Destructive</N8nButton>
 				<N8nButton variant="success" size="medium">Success</N8nButton>
 			</div>
-		</div>
 		`,
 	}),
 	args: {},
 };
 
-export const Size: Story = {
+export const Sizes: Story = {
 	render: () => ({
 		components: { N8nButton },
 		template: `
-		<div style="display: grid; place-items: center;">
 			<div style="display: flex; gap: 12px; align-items: center;">
 				<N8nButton variant="solid" size="xsmall">XSmall</N8nButton>
 				<N8nButton variant="solid" size="small">Small</N8nButton>
@@ -100,7 +104,6 @@ export const Size: Story = {
 				<N8nButton variant="solid" size="large">Large</N8nButton>
 				<N8nButton variant="solid" size="xlarge">XLarge</N8nButton>
 			</div>
-		</div>
 		`,
 	}),
 	args: {},
@@ -110,7 +113,6 @@ export const WithIcons: Story = {
 	render: () => ({
 		components: { N8nButton, N8nIcon },
 		template: `
-		<div style="display: grid; place-items: center;">
 			<div style="display: flex; gap: 12px; align-items: center;">
 				<N8nButton variant="solid" size="medium">
 					<N8nIcon icon="plus" size="medium" />
@@ -126,26 +128,66 @@ export const WithIcons: Story = {
 					<N8nIcon icon="chevron-down" size="medium" />
 				</N8nButton>
 			</div>
-		</div>
 		`,
 	}),
 	args: {},
 };
 
+// Each shape is shown idle and in the toggled state, in one column, so a width change is visible.
 export const Loading: Story = {
 	render: () => ({
-		components: { N8nButton },
+		components: { N8nButton, N8nIcon, DropdownMenu },
+		setup() {
+			const loading = ref(true);
+			const menuItems: Array<DropdownMenuItemProps<string>> = [{ id: 'clone', label: 'Clone' }];
+			return { loading, menuItems, sizes: ['small', 'large'] };
+		},
 		template: `
-		<div style="display: grid; place-items: center;">
-			<div style="display: flex; gap: 12px; align-items: center;">
-				<N8nButton variant="solid" size="medium" loading>Solid</N8nButton>
-				<N8nButton variant="subtle" size="medium" loading>Subtle</N8nButton>
-				<N8nButton variant="outline" size="medium" loading>Outline</N8nButton>
-				<N8nButton variant="ghost" size="medium" loading>Ghost</N8nButton>
-				<N8nButton variant="destructive" size="medium" loading>Destructive</N8nButton>
-				<N8nButton variant="success" size="medium" loading>Success</N8nButton>
+			<div style="display: flex; flex-direction: column; gap: 24px; align-items: flex-start;">
+				<N8nButton variant="outline" size="small" @click="loading = !loading">
+					Toggle loading
+				</N8nButton>
+				<div style="display: flex; gap: 12px; align-items: center;">
+					<N8nButton variant="solid" size="medium" :loading="loading">Solid</N8nButton>
+					<N8nButton variant="brand" size="medium" :loading="loading">Brand</N8nButton>
+					<N8nButton variant="outline" size="medium" :loading="loading">Outline</N8nButton>
+					<N8nButton variant="ghost" size="medium" :loading="loading">Ghost</N8nButton>
+					<N8nButton variant="destructive" size="medium" :loading="loading">Destructive</N8nButton>
+					<N8nButton variant="success" size="medium" :loading="loading">Success</N8nButton>
+				</div>
+				<div
+					v-for="size in sizes"
+					:key="size"
+					style="display: grid; grid-template-columns: repeat(7, max-content); gap: 12px; align-items: center;"
+				>
+					<span>{{ size }}</span>
+					<span>Label</span>
+					<span>Icon and label</span>
+					<span>Icon only</span>
+					<span>Icon, no icon-only</span>
+					<span>Icon slot</span>
+					<span>Dropdown trigger</span>
+					<template v-for="(state, row) in [false, loading]" :key="row">
+						<span>{{ state ? 'loading' : 'idle' }}</span>
+						<N8nButton variant="outline" :size="size" :loading="state">Save</N8nButton>
+						<N8nButton variant="outline" :size="size" :loading="state" icon="plus">Add item</N8nButton>
+						<N8nButton variant="outline" :size="size" :loading="state" icon="trash-2" icon-only aria-label="Delete" />
+						<N8nButton variant="outline" :size="size" :loading="state" icon="download" />
+						<N8nButton variant="outline" :size="size" :loading="state">
+							<template #icon><N8nIcon icon="plus" /></template>
+							Add item
+						</N8nButton>
+						<DropdownMenu :items="menuItems">
+							<template #trigger>
+								<N8nButton variant="outline" :size="size" :loading="state">
+									Actions
+									<N8nIcon icon="chevron-down" size="small" />
+								</N8nButton>
+							</template>
+						</DropdownMenu>
+					</template>
+				</div>
 			</div>
-		</div>
 		`,
 	}),
 	args: {},
@@ -155,16 +197,14 @@ export const Link: Story = {
 	render: () => ({
 		components: { N8nButton },
 		template: `
-		<div style="display: grid; place-items: center;">
 			<div style="display: flex; gap: 12px; align-items: center;">
 				<N8nButton variant="solid" size="medium" href="https://n8n.io">Link</N8nButton>
-				<N8nButton variant="subtle" size="medium" href="https://n8n.io">Link</N8nButton>
+				<N8nButton variant="brand" size="medium" href="https://n8n.io">Link</N8nButton>
 				<N8nButton variant="outline" size="medium" href="https://n8n.io">Link</N8nButton>
 				<N8nButton variant="ghost" size="medium" href="https://n8n.io">Link</N8nButton>
 				<N8nButton variant="destructive" size="medium" href="https://n8n.io">Link</N8nButton>
 				<N8nButton variant="success" size="medium" href="https://n8n.io">Link</N8nButton>
 			</div>
-		</div>
 		`,
 	}),
 	args: {},
@@ -174,7 +214,6 @@ export const IconOnly: Story = {
 	render: () => ({
 		components: { N8nButton, N8nIcon },
 		template: `
-		<div style="display: grid; place-items: center;">
 			<div style="display: flex; gap: 12px; align-items: center;">
 				<N8nButton variant="solid" size="xsmall" icon="plus" icon-only aria-label="Add" />
 				<N8nButton variant="solid" size="small" icon="plus" icon-only aria-label="Add" />
@@ -183,7 +222,6 @@ export const IconOnly: Story = {
 					<N8nIcon icon="plus" size="medium" />
 				</N8nButton>
 			</div>
-		</div>
 		`,
 	}),
 	args: {},
@@ -193,19 +231,55 @@ export const Disabled: Story = {
 	render: () => ({
 		components: { N8nButton },
 		template: `
-		<div style="display: grid; place-items: center;">
 			<div style="display: flex; gap: 12px; align-items: center;">
 				<N8nButton variant="solid" size="medium" disabled>Solid</N8nButton>
-				<N8nButton variant="subtle" size="medium" disabled>Subtle</N8nButton>
+				<N8nButton variant="brand" size="medium" disabled>Brand</N8nButton>
 				<N8nButton variant="outline" size="medium" disabled>Outline</N8nButton>
 				<N8nButton variant="ghost" size="medium" disabled>Ghost</N8nButton>
 				<N8nButton variant="destructive" size="medium" disabled>Destructive</N8nButton>
 				<N8nButton variant="success" size="medium" disabled>Success</N8nButton>
 			</div>
-		</div>
 		`,
 	}),
 	args: {},
+};
+
+export const DisabledWithExplanation: Story = {
+	parameters: {
+		docs: {
+			description: {
+				story:
+					'Use disabled and focusableWhenDisabled with N8nTooltip as-child. The button keeps its label and disabled state. Hover or Tab to show the explanation. Press Escape to dismiss it. Mouse, Enter, and Space cannot activate the disabled button or submit this form. Keep the same explanation visible next to the button for touch users. Link it with aria-describedby so it remains available when the tooltip is closed. Use localized text in product code. This opt-in applies to buttons, not links. Loading buttons stay natively disabled. Enable the button in Controls to test form submission.',
+			},
+		},
+	},
+	render: (args) => ({
+		components: { N8nButton, N8nTooltip },
+		setup() {
+			return {
+				args,
+				reasonId: useId(),
+				reason: 'Add a credential before you run this workflow',
+				submissions: ref(0),
+			};
+		},
+		template: `
+			<form style="display: grid; justify-items: start; gap: var(--spacing--xs);" @submit.prevent="submissions++">
+				<N8nTooltip as-child :content="reason" :disabled="!args.disabled || args.loading">
+					<N8nButton v-bind="args" type="submit" :aria-describedby="args.disabled ? reasonId : undefined">
+						Run workflow
+					</N8nButton>
+				</N8nTooltip>
+				<p v-if="args.disabled" :id="reasonId">{{ reason }}</p>
+				<output>Form submissions: {{ submissions }}</output>
+			</form>
+		`,
+	}),
+	args: {
+		disabled: true,
+		focusableWhenDisabled: true,
+		loading: false,
+	},
 };
 
 /**
@@ -216,7 +290,7 @@ export const Disabled: Story = {
  * | Legacy `type` | Current `variant` |
  * |---------------|-------------------|
  * | `primary`     | `solid`           |
- * | `secondary`   | `subtle`          |
+ * | `secondary`   | `outline`          |
  * | `tertiary`    | `ghost`           |
  * | `danger`      | `destructive`     |
  * | `success`     | `success`         |
@@ -240,8 +314,8 @@ export const TypeToVariantMapping: Story = {
 				<N8nButton variant="solid">Solid</N8nButton>
 
 				<code>type="secondary"</code>
-				<code>variant="subtle"</code>
-				<N8nButton variant="subtle">Subtle</N8nButton>
+				<code>variant="outline"</code>
+				<N8nButton variant="outline">Outline</N8nButton>
 
 				<code>type="tertiary"</code>
 				<code>variant="ghost"</code>
@@ -277,7 +351,6 @@ export const IconButtonPatterns: Story = {
 			<N8nIconButton icon="plus" title="Create" variant="solid" size="xlarge" />
 			<N8nIconButton icon="plus" title="Create" variant="solid" size="large" />
 			<N8nIconButton icon="plus" title="Create" variant="solid" size="medium" />
-			<N8nIconButton icon="plus" title="Create" variant="subtle" size="medium" />
 			<N8nIconButton icon="plus" title="Create" variant="ghost" size="medium" />
 			<N8nIconButton icon="plus" title="Create" variant="outline" size="medium" />
 			<N8nIconButton icon="plus" title="Create" variant="solid" :loading="true" size="medium" />

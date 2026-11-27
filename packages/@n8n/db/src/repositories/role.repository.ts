@@ -1,17 +1,42 @@
 import { Service } from '@n8n/di';
-import { DataSource, EntityManager, In, Repository } from '@n8n/typeorm';
-import { UserError } from 'n8n-workflow';
+import { DataSource, EntityManager, In } from '@n8n/typeorm';
+import { UserError } from '@n8n/errors';
 
-import { Project, ProjectRelation, Role, User } from '../entities';
+import { BaseRepository } from './base-repository';
+import { Project, ProjectRelation, Role, User, type UserKind } from '../entities';
+import { type OperationContext, TransactionRunner } from '../services/transaction';
+import { accountSummary } from '../utils/account-display-name';
+
+/** An account that holds a role, as a role member list shows it. */
+export type RoleMemberEntry = {
+	userId: string;
+	firstName: string | null;
+	lastName: string | null;
+	email: string;
+	role: string;
+	kind: UserKind;
+};
+
+function toRoleMember(user: User, roleSlug: string): RoleMemberEntry {
+	const { id, email, firstName, lastName } = accountSummary(user);
+	return {
+		userId: id,
+		firstName,
+		lastName,
+		email: email ?? '',
+		role: roleSlug,
+		kind: user.kind,
+	};
+}
 
 @Service()
-export class RoleRepository extends Repository<Role> {
-	constructor(dataSource: DataSource) {
-		super(Role, dataSource.manager);
+export class RoleRepository extends BaseRepository<Role> {
+	constructor(dataSource: DataSource, transactionRunner: TransactionRunner) {
+		super(Role, dataSource.manager, transactionRunner);
 	}
 
-	async findAll(trx?: EntityManager) {
-		const em = trx ?? this.manager;
+	async findAll(context?: EntityManager | OperationContext) {
+		const em = context instanceof EntityManager ? context : this.managerFor(context ?? {});
 		return await em.find(Role, { relations: ['scopes'] });
 	}
 
@@ -126,33 +151,22 @@ export class RoleRepository extends Repository<Role> {
 			.filter((r) => r !== null);
 	}
 
-	async findAllProjectMembers(
-		projectId: string,
-		roleSlug?: string,
-	): Promise<
-		Array<{
-			userId: string;
-			firstName: string | null;
-			lastName: string | null;
-			email: string;
-			role: string;
-		}>
-	> {
-		const qb = this.manager
-			.createQueryBuilder(ProjectRelation, 'pr')
-			.innerJoin(User, 'user', 'user.id = pr.userId')
-			.select('user.id', 'userId')
-			.addSelect('user.firstName', 'firstName')
-			.addSelect('user.lastName', 'lastName')
-			.addSelect('user.email', 'email')
-			.addSelect('pr.role', 'role')
-			.where('pr.projectId = :projectId', { projectId });
+	async findUsersWithGlobalRole(roleSlug: string): Promise<RoleMemberEntry[]> {
+		// Load entities, not raw columns: a service account keeps its name in its details.
+		const users = await this.manager.find(User, { where: { role: { slug: roleSlug } } });
 
-		if (roleSlug) {
-			qb.andWhere('pr.role = :roleSlug', { roleSlug });
-		}
+		return users.map((user) => toRoleMember(user, roleSlug));
+	}
 
-		return await qb.getRawMany();
+	async findAllProjectMembers(projectId: string, roleSlug: string): Promise<RoleMemberEntry[]> {
+		// Load entities, not raw columns: a service account keeps its name in its details.
+		// Do not load `role`: its scopes load eagerly, and the slug is already known.
+		const relations = await this.manager.find(ProjectRelation, {
+			where: { projectId, role: { slug: roleSlug } },
+			relations: { user: true },
+		});
+
+		return relations.map(({ user }) => toRoleMember(user, roleSlug));
 	}
 
 	async findBySlug(slug: string) {
@@ -174,6 +188,35 @@ export class RoleRepository extends Repository<Role> {
 		if (result.affected !== 1) {
 			throw new Error(`Failed to delete role "${slug}"`);
 		}
+	}
+
+	/**
+	 * Reassign every user currently holding `role` to `toSlug`, then delete `role`,
+	 * all within a single transaction so users are never left orphaned by a partial failure.
+	 */
+	async reassignUsersAndRemove(role: Role, toSlug: string) {
+		await this.manager.transaction(async (trx) => {
+			if (role.roleType === 'global') {
+				await trx
+					.createQueryBuilder()
+					.update(User)
+					.set({ role: { slug: toSlug } })
+					.where('roleSlug = :fromSlug', { fromSlug: role.slug })
+					.execute();
+			} else if (role.roleType === 'project') {
+				await trx
+					.createQueryBuilder()
+					.update(ProjectRelation)
+					.set({ role: { slug: toSlug } })
+					.where('role = :fromSlug', { fromSlug: role.slug })
+					.execute();
+			}
+
+			const result = await trx.delete(Role, { slug: role.slug });
+			if (result.affected !== 1) {
+				throw new Error(`Failed to delete role "${role.slug}"`);
+			}
+		});
 	}
 
 	private async updateEntityWithManager(

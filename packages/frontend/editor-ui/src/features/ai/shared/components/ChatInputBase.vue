@@ -1,25 +1,65 @@
 <script lang="ts" setup>
-import { ref, useTemplateRef, watch } from 'vue';
-import { N8nIconButton, N8nInput, N8nTooltip } from '@n8n/design-system';
+import { computed, ref, useId, useTemplateRef, watch, type Ref } from 'vue';
+import {
+	base64EncodedSize,
+	exceedsAttachmentSizeLimit,
+	formatAttachmentSizeLimit,
+	formatTotalAttachmentSizeLimit,
+	MAX_TOTAL_ATTACHMENT_BASE64_BYTES,
+} from '@n8n/api-types';
+import { useToast } from '@n8n/composables/useToast';
+import { N8nIconButton, N8nChatInput, N8nText, N8nTooltip } from '@n8n/design-system';
 import { useI18n } from '@n8n/i18n';
 import { useSpeechRecognition } from '@vueuse/core';
+import { useFileDrop } from '@/features/ai/shared/composables/useFileDrop';
+import { isFileAcceptedByAccept } from '@/features/ai/shared/utils/fileAccept';
 
 const props = withDefaults(
 	defineProps<{
+		/** Blocks workflow canvas shortcuts while the textarea has focus. Defaults to true. */
+		blockCanvasShortcuts?: boolean;
 		modelValue: string;
 		placeholder?: string;
+		/** Read animation frames here so chat hosts do not render on each tick. */
+		placeholderPreview?: Readonly<Ref<string | undefined>>;
 		isStreaming: boolean;
+		/** Override the action button separately from the composer busy state. */
+		showStopButton?: boolean;
 		canSubmit: boolean;
 		disabled?: boolean;
 		showVoice?: boolean;
 		showAttach?: boolean;
+		/**
+		 * Shows the built-in attach button. A host that renders its own attach
+		 * button sets this to false. Files can still be dropped or pasted.
+		 */
+		showAttachButton?: boolean;
+		/** Also shows the attach button. Without it, files can still be dropped or pasted. */
 		acceptedMimeTypes?: string;
+		/**
+		 * Base64-encoded size of the files already staged in the composer. Needed
+		 * because the combined budget spans the whole message, not just the batch being
+		 * added, and this component does not own the attachment list.
+		 *
+		 * Encoded rather than raw: base64 pads each file up to a multiple of 4, so
+		 * encoding a raw total undercounts the real payload and would let through a
+		 * batch the backend then rejects.
+		 */
+		attachedEncodedBytes?: number;
 		autosize?: boolean | { minRows: number; maxRows: number };
+		/** Keeps the composer at this CSS height, including its attachment row. */
+		composerHeight?: string;
+		maxLength?: number;
 	}>(),
 	{
+		blockCanvasShortcuts: true,
 		placeholder: undefined,
+		showStopButton: undefined,
+		showAttachButton: true,
 		acceptedMimeTypes: undefined,
+		attachedEncodedBytes: 0,
 		autosize: () => ({ minRows: 2, maxRows: 6 }),
+		maxLength: undefined,
 	},
 );
 
@@ -29,11 +69,26 @@ const emit = defineEmits<{
 	stop: [];
 	tab: [];
 	'files-selected': [files: File[]];
+	/** Files dropped, pasted or picked whose type `acceptedMimeTypes` does not allow. */
+	'files-rejected': [files: File[]];
 }>();
 
 const i18n = useI18n();
-const inputRef = useTemplateRef<HTMLElement>('inputRef');
+const voiceReasonId = useId();
+const toast = useToast();
+const inputRef = useTemplateRef<InstanceType<typeof N8nChatInput>>('inputRef');
 const fileInputRef = useTemplateRef<HTMLInputElement>('fileInputRef');
+const resolvedPlaceholder = computed(() => props.placeholderPreview?.value ?? props.placeholder);
+const canAcceptFiles = computed(() =>
+	Boolean(props.showAttach && !props.disabled && !props.isStreaming),
+);
+const acceptedMimeTypeList = computed(() =>
+	(props.acceptedMimeTypes ?? '')
+		.split(',')
+		.map((type) => type.trim())
+		.filter(Boolean),
+);
+const fileDrop = useFileDrop(canAcceptFiles, handleFiles, acceptedMimeTypeList);
 
 // Voice input
 const committedSpokenMessage = ref('');
@@ -44,7 +99,7 @@ const speechInput = useSpeechRecognition({
 });
 
 watch(speechInput.result, (spoken) => {
-	if (props.showVoice) {
+	if (props.showVoice && !props.disabled) {
 		const prefix = committedSpokenMessage.value;
 		const separator = prefix.length > 0 ? ' ' : '';
 		emit('update:modelValue', prefix + separator + spoken.trimStart());
@@ -61,6 +116,13 @@ watch(
 	{ flush: 'post' },
 );
 
+watch(
+	() => props.disabled,
+	(disabled) => {
+		if (disabled && speechInput.isListening.value) speechInput.stop();
+	},
+);
+
 function handleMic() {
 	committedSpokenMessage.value = props.modelValue;
 	if (speechInput.isListening.value) {
@@ -74,51 +136,140 @@ function handleAttach() {
 	fileInputRef.value?.click();
 }
 
+function focusInput(options?: FocusOptions) {
+	inputRef.value?.focusInput(options);
+}
+
+/** Returns the native textarea while the component is mounted. */
+function getInputElement(): HTMLTextAreaElement | undefined {
+	return inputRef.value?.getInputElement();
+}
+
+/** Returns the element around the send and stop button while the component is mounted. */
+function getSendStopButtonElement(): HTMLElement | undefined {
+	return inputRef.value?.getSendStopButtonElement();
+}
+
+/**
+ * Keep the files the backend will accept and warn about the rest.
+ *
+ * Checked here only so the user finds out before uploading megabytes — the backend
+ * enforces the same limits authoritatively. Both checks convert to the encoded size
+ * first: the limits are denominated in base64 bytes, so comparing `File.size` against
+ * them directly would admit files ~4/3 too large.
+ */
+function withinSizeLimit(files: File[]): File[] {
+	const oversized = files.filter((file) => exceedsAttachmentSizeLimit(file.size));
+	if (oversized.length > 0) {
+		toast.showError(
+			new Error(
+				i18n.baseText('chat.attachment.tooLarge.message', {
+					interpolate: {
+						fileNames: oversized.map((file) => file.name).join(', '),
+						limit: formatAttachmentSizeLimit(),
+					},
+				}),
+			),
+			i18n.baseText('chat.attachment.tooLarge.title'),
+		);
+	}
+
+	// Take files in order while they still fit the message-wide budget, so a partial
+	// selection still goes through rather than failing the batch wholesale.
+	let usedBytes = props.attachedEncodedBytes;
+	const accepted: File[] = [];
+	let droppedForBudget = false;
+
+	for (const file of files) {
+		if (exceedsAttachmentSizeLimit(file.size)) continue;
+		const encoded = base64EncodedSize(file.size);
+		if (usedBytes + encoded > MAX_TOTAL_ATTACHMENT_BASE64_BYTES) {
+			droppedForBudget = true;
+			continue;
+		}
+		usedBytes += encoded;
+		accepted.push(file);
+	}
+
+	if (droppedForBudget) {
+		toast.showError(
+			new Error(
+				i18n.baseText('chat.attachment.totalTooLarge.message', {
+					interpolate: { limit: formatTotalAttachmentSizeLimit() },
+				}),
+			),
+			i18n.baseText('chat.attachment.totalTooLarge.title'),
+		);
+	}
+
+	return accepted;
+}
+
+function handleFiles(files: File[]) {
+	const acceptedByType = files.filter((file) =>
+		isFileAcceptedByAccept(file.name, file.type, props.acceptedMimeTypes ?? ''),
+	);
+	const rejected = files.filter((file) => !acceptedByType.includes(file));
+	if (rejected.length > 0) emit('files-rejected', rejected);
+	const accepted = withinSizeLimit(acceptedByType);
+	if (accepted.length > 0) emit('files-selected', accepted);
+}
+
 function handleFileSelect(e: Event) {
 	const target = e.target as HTMLInputElement;
 	const files = target.files;
 	if (!files || files.length === 0) return;
-	emit('files-selected', Array.from(files));
+	handleFiles(Array.from(files));
 	target.value = '';
-	inputRef.value?.focus();
-}
-
-function handlePaste(e: ClipboardEvent) {
-	if (!props.showAttach || !e.clipboardData?.files.length) return;
-
-	const files = Array.from(e.clipboardData.files);
-	if (files.length > 0) {
-		e.preventDefault();
-		emit('files-selected', files);
-	}
+	focusInput();
 }
 
 function handleKeydown(e: KeyboardEvent) {
-	if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-		e.preventDefault();
-		speechInput.stop();
-		emit('submit');
-	} else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-		e.preventDefault();
-		speechInput.stop();
-		emit('submit');
-	} else if (e.key === 'Tab' && !e.shiftKey) {
+	// Only the textarea gets tab-to-autocomplete; other focusable children
+	// (attach/mic buttons, leading-slot chips) must keep normal Tab navigation.
+	const isTextareaFocused = (e.target as HTMLElement)?.tagName === 'TEXTAREA';
+	if (e.key === 'Tab' && !e.shiftKey && isTextareaFocused) {
 		e.preventDefault();
 		emit('tab');
 	}
 }
 
-function handleClickWrapper() {
-	inputRef.value?.focus();
+function handleSubmit() {
+	if (!props.canSubmit) {
+		return;
+	}
+
+	speechInput.stop();
+	emit('submit');
 }
 
 defineExpose({
-	focus: () => inputRef.value?.focus(),
+	focus: focusInput,
+	getInputElement,
+	getSendStopButtonElement,
+	openFilePicker: handleAttach,
 });
 </script>
 
 <template>
-	<div :class="$style.inputWrapper" @click="handleClickWrapper" @paste="handlePaste">
+	<div
+		:class="$style.inputWrapper"
+		@dragenter="fileDrop.handleDragEnter"
+		@dragleave="fileDrop.handleDragLeave"
+		@dragover="fileDrop.handleDragOver"
+		@drop="fileDrop.handleDrop"
+		@paste="fileDrop.handlePaste"
+		@keydown.capture="handleKeydown"
+	>
+		<slot name="above" />
+		<div
+			v-if="fileDrop.isDragging.value"
+			:class="$style.dropOverlay"
+			data-test-id="chat-input-drop-overlay"
+		>
+			<N8nText color="text-dark">{{ i18n.baseText('chatInputBase.dropOverlay') }}</N8nText>
+		</div>
+
 		<input
 			v-if="showAttach"
 			ref="fileInputRef"
@@ -129,129 +280,138 @@ defineExpose({
 			@change="handleFileSelect"
 		/>
 
-		<slot name="attachments" />
-		<N8nInput
+		<N8nChatInput
 			ref="inputRef"
+			:class="{ [$style.fixedHeightInput]: composerHeight }"
+			:style="composerHeight ? { '--chat-input-height': composerHeight } : undefined"
+			data-test-id="chat-input-composer"
+			:block-canvas-shortcuts="blockCanvasShortcuts"
 			:model-value="modelValue"
-			type="textarea"
-			:placeholder="placeholder"
-			autocomplete="off"
-			:autosize="autosize"
+			:placeholder="resolvedPlaceholder"
+			:streaming="showStopButton ?? isStreaming"
 			:disabled="disabled"
+			:submit-disabled="!canSubmit"
+			send-button-test-id="instance-ai-send-button"
+			stop-button-test-id="instance-ai-stop-button"
+			:autosize="composerHeight ? false : autosize"
+			:layout="composerHeight || autosize !== false ? 'multiline' : 'single-line'"
+			:max-length="maxLength"
 			@update:model-value="emit('update:modelValue', $event)"
-			@keydown="handleKeydown"
-		/>
-
-		<div :class="$style.footer">
-			<div :class="$style.footerStart">
+			@submit="handleSubmit"
+			@stop="emit('stop')"
+		>
+			<template #leading>
+				<div v-if="composerHeight" :class="$style.attachmentRow">
+					<slot name="header" />
+					<slot name="attachments" />
+				</div>
+				<template v-else>
+					<slot name="header" />
+					<slot name="attachments" />
+				</template>
+			</template>
+			<template #left-actions>
 				<slot name="footer-start" />
-			</div>
-			<div :class="$style.actions">
+			</template>
+			<template #right-actions>
+				<slot name="right-actions" />
 				<N8nTooltip
-					v-if="showAttach"
+					v-if="showAttach && showAttachButton && acceptedMimeTypes !== undefined"
+					as-child
 					:content="i18n.baseText('chatInputBase.button.attach')"
 					placement="top"
 				>
 					<N8nIconButton
 						variant="ghost"
 						:disabled="disabled || isStreaming"
+						focusable-when-disabled
 						icon="paperclip"
 						icon-size="large"
+						:aria-label="i18n.baseText('chatInputBase.button.attach')"
 						data-test-id="chat-input-attach-button"
 						@click.stop="handleAttach"
 					/>
 				</N8nTooltip>
-				<N8nIconButton
-					v-if="showVoice && speechInput.isSupported"
-					variant="ghost"
-					:disabled="disabled || isStreaming"
-					:icon="speechInput.isListening.value ? 'square' : 'mic'"
-					:class="{ [$style.recording]: speechInput.isListening.value }"
-					icon-size="large"
-					data-test-id="chat-input-voice-button"
-					@click.stop="handleMic"
-				/>
-				<N8nIconButton
-					v-if="isStreaming"
-					native-type="button"
-					:title="i18n.baseText('instanceAi.input.stop')"
-					icon="square"
-					icon-size="large"
-					data-test-id="instance-ai-stop-button"
-					@click.stop="emit('stop')"
-				/>
-				<N8nIconButton
-					v-else
-					native-type="button"
-					:disabled="!canSubmit"
-					:title="i18n.baseText('instanceAi.input.send')"
-					icon="arrow-up"
-					icon-size="large"
-					data-test-id="instance-ai-send-button"
-					@click.stop="emit('submit')"
-				/>
-			</div>
-		</div>
+				<N8nTooltip v-if="showVoice && speechInput.isSupported" as-child placement="top">
+					<template #content>{{
+						i18n.baseText(
+							isStreaming
+								? 'chatInputBase.button.dictate.stopResponse'
+								: 'chatInputBase.button.dictate',
+						)
+					}}</template>
+					<N8nIconButton
+						variant="ghost"
+						:disabled="disabled || isStreaming"
+						:focusable-when-disabled="isStreaming"
+						:aria-describedby="isStreaming ? voiceReasonId : undefined"
+						:icon="speechInput.isListening.value ? 'square' : 'mic'"
+						:class="{ [$style.recording]: speechInput.isListening.value }"
+						icon-size="large"
+						:aria-label="i18n.baseText('chatInputBase.button.dictate')"
+						data-test-id="chat-input-voice-button"
+						@click.stop="handleMic"
+					/>
+				</N8nTooltip>
+			</template>
+		</N8nChatInput>
+		<N8nText
+			v-if="showVoice && speechInput.isSupported && isStreaming"
+			:id="voiceReasonId"
+			tag="p"
+			size="small"
+			color="text-light"
+			>{{ i18n.baseText('chatInputBase.button.dictate.stopResponse') }}</N8nText
+		>
 	</div>
 </template>
 
 <style lang="scss" module>
 .inputWrapper {
+	position: relative;
 	width: 100%;
-	border-radius: var(--radius--xl);
-	padding: var(--spacing--sm);
-	box-shadow:
-		var(--shadow--xs),
-		inset 0 0 0 1px light-dark(var(--color--black-alpha-100), var(--color--white-alpha-100));
-	background-color: var(--background--surface);
+}
+
+.fixedHeightInput > div:has(> textarea) {
+	height: var(--chat-input-height);
+
+	> textarea {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+	}
+
+	> textarea + div {
+		flex-shrink: 0;
+	}
+}
+
+.attachmentRow {
 	display: flex;
 	flex-direction: column;
-	gap: var(--spacing--md);
-	outline: 1px solid transparent;
+	gap: var(--spacing--2xs);
+	flex-shrink: 0;
+	min-height: var(--height--xs);
+	max-height: var(--height--3xl);
+	overflow-y: auto;
 
-	&:focus-within {
-		outline-color: var(--focus--border-color);
-	}
-
-	& textarea {
-		font-size: var(--font-size--md);
-		line-height: 1.5em;
-		resize: none;
-		padding: 0 !important;
-		scrollbar-color: transparent transparent;
-	}
-
-	:global(.n8n-input) > div {
-		padding: 0;
-	}
-
-	:global(.n8n-input__wrapper) {
-		--input--radius: var(--radius--xl);
-		box-shadow: none !important;
-		outline: none !important;
-		background-color: transparent !important;
+	&:empty {
+		display: none;
 	}
 }
 
-.footer {
-	display: flex;
-	align-items: flex-end;
-	justify-content: flex-end;
-	gap: var(--spacing--sm);
-}
-
-.footerStart {
-	flex-grow: 1;
-}
-
-.actions {
+.dropOverlay {
+	position: absolute;
+	inset: 0;
+	z-index: 2;
 	display: flex;
 	align-items: center;
-	gap: var(--spacing--2xs);
-
-	& button path {
-		stroke-width: 2.5;
-	}
+	justify-content: center;
+	background-color: color-mix(in srgb, var(--color--background--light-2) 95%, transparent);
+	border: var(--border);
+	border-color: var(--color--secondary);
+	border-radius: var(--radius--lg);
+	pointer-events: none;
 }
 
 .fileInput {
@@ -259,17 +419,6 @@ defineExpose({
 }
 
 .recording {
-	animation: chatInputRecordingPulse 1.5s ease-in-out infinite;
-}
-
-@keyframes chatInputRecordingPulse {
-	0%,
-	100% {
-		opacity: 1;
-	}
-
-	50% {
-		opacity: 0.6;
-	}
+	color: var(--color--danger);
 }
 </style>

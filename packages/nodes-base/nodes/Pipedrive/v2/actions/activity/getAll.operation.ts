@@ -4,6 +4,7 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import { updateDisplayOptions } from '../../../../../utils/utilities';
 import {
@@ -152,8 +153,10 @@ export async function execute(this: IExecuteFunctions): Promise<INodeExecutionDa
 				qs.type = (filters.type as string[]).join(',');
 			}
 
+			// Pipedrive v2 activities filter param was renamed from `user_id` to `owner_id`;
+			// keep the UI field key as `user_id` for backward compatibility with saved workflows.
 			if (filters.user_id) {
-				qs.user_id = filters.user_id;
+				qs.owner_id = filters.user_id;
 			}
 
 			if (filters.done !== undefined) {
@@ -177,12 +180,18 @@ export async function execute(this: IExecuteFunctions): Promise<INodeExecutionDa
 				responseData = await pipedriveApiRequestAllItemsCursor.call(
 					this,
 					'GET',
-					'/activities',
+					requestPath`/activities`,
 					{},
 					qs,
 				);
 			} else {
-				responseData = await pipedriveApiRequest.call(this, 'GET', '/activities', {}, qs);
+				responseData = await pipedriveApiRequest.call(
+					this,
+					'GET',
+					requestPath`/activities`,
+					{},
+					qs,
+				);
 			}
 
 			const data = Array.isArray(responseData.data) ? responseData.data : [responseData.data];

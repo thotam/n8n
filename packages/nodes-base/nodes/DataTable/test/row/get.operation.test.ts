@@ -4,6 +4,7 @@ import type { IDataTableProjectService, IExecuteFunctions, INode } from 'n8n-wor
 import { ANY_CONDITION } from '../../common/constants';
 import { DATA_TABLE_ID_FIELD } from '../../common/fields';
 import * as getOperation from '../../actions/row/get.operation';
+import type { Mock } from 'vitest';
 
 describe('DataTable Get Operation - Sort Feature', () => {
 	let mockExecuteFunctions: IExecuteFunctions;
@@ -11,8 +12,8 @@ describe('DataTable Get Operation - Sort Feature', () => {
 	const node = { id: 'test', typeVersion: 1.1 } as INode;
 
 	beforeEach(() => {
-		const getManyRowsAndCount = jest.fn();
-		const getColumns = jest.fn();
+		const getManyRowsAndCount = vi.fn();
+		const getColumns = vi.fn();
 
 		mockDataTableProxy = {
 			getManyRowsAndCount,
@@ -27,20 +28,21 @@ describe('DataTable Get Operation - Sort Feature', () => {
 		]);
 
 		mockExecuteFunctions = {
-			getNode: jest.fn().mockReturnValue(node),
-			getNodeParameter: jest.fn(),
+			getNode: vi.fn().mockReturnValue(node),
+			getExecutionCancelSignal: vi.fn().mockReturnValue(undefined),
+			getNodeParameter: vi.fn(),
 			helpers: {
-				getDataTableProxy: jest.fn().mockResolvedValue(mockDataTableProxy),
+				getDataTableProxy: vi.fn().mockResolvedValue(mockDataTableProxy),
 			},
 		} as unknown as IExecuteFunctions;
 
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 	});
 
 	describe('Single Column Sort', () => {
 		it('should sort by column ascending', async () => {
 			// ARRANGE
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return true;
 				if (param === 'orderByColumn') return 'name';
@@ -52,7 +54,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [
 					{ id: 1, name: 'Alice' },
 					{ id: 2, name: 'Bob' },
@@ -73,7 +75,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 
 		it('should sort by column descending', async () => {
 			// ARRANGE
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return true;
 				if (param === 'orderByColumn') return 'age';
@@ -85,7 +87,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [
 					{ id: 2, age: 30 },
 					{ id: 1, age: 25 },
@@ -107,7 +109,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 		it.each(['createdAt', 'updatedAt'])(
 			'should allow sorting by system column %s even though getColumns does not include it',
 			async (column: string) => {
-				(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+				(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 					if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 					if (param === 'orderBy') return true;
 					if (param === 'orderByColumn') return column;
@@ -119,7 +121,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 					return undefined;
 				});
 
-				(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+				(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 					data: [{ id: 1 }],
 					count: 1,
 				});
@@ -136,7 +138,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 
 		it('should sort by id column', async () => {
 			// ARRANGE
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return true;
 				if (param === 'orderByColumn') return 'id';
@@ -147,7 +149,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [
 					{ id: 1, name: 'Alice' },
 					{ id: 2, name: 'Bob' },
@@ -171,7 +173,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 	describe('No Sort Rule', () => {
 		it('should work without sort rule (orderBy false)', async () => {
 			// ARRANGE
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return false;
 				if (param === 'returnAll') return false;
@@ -181,7 +183,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [{ id: 1 }],
 				count: 1,
 			});
@@ -200,9 +202,9 @@ describe('DataTable Get Operation - Sort Feature', () => {
 		it('should work with v1.0 (legacy version)', async () => {
 			// ARRANGE
 			const v10Node = { id: 'test', typeVersion: 1.0 } as INode;
-			(mockExecuteFunctions.getNode as jest.Mock).mockReturnValue(v10Node);
+			(mockExecuteFunctions.getNode as Mock).mockReturnValue(v10Node);
 
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return false;
 				if (param === 'returnAll') return false;
@@ -212,7 +214,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [{ id: 1 }],
 				count: 1,
 			});
@@ -232,7 +234,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 	describe('Sort with Filters', () => {
 		it('should combine sort and filters correctly', async () => {
 			// ARRANGE
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return true;
 				if (param === 'orderByColumn') return 'name';
@@ -246,7 +248,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [
 					{ id: 1, name: 'Alice', status: 'active' },
 					{ id: 2, name: 'Bob', status: 'active' },
@@ -278,7 +280,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 
 	describe('Column Validation', () => {
 		it('should throw when orderBy column does not exist in the table', async () => {
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return true;
 				if (param === 'orderByColumn') return 'nonExistentColumn';
@@ -296,7 +298,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 		});
 
 		it('should not throw when orderBy column exists in the table', async () => {
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return true;
 				if (param === 'orderByColumn') return 'name';
@@ -308,7 +310,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [{ id: 1, name: 'Alice' }],
 				count: 1,
 			});
@@ -321,7 +323,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 	describe('Sort with Pagination', () => {
 		it('should maintain sort order with returnAll=true', async () => {
 			// ARRANGE
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return true;
 				if (param === 'orderByColumn') return 'id';
@@ -332,7 +334,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [{ id: 5 }, { id: 4 }, { id: 3 }],
 				count: 3,
 			});
@@ -350,7 +352,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 
 		it('should maintain sort order with limit', async () => {
 			// ARRANGE
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((param) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((param) => {
 				if (param === DATA_TABLE_ID_FIELD) return { mode: 'id', value: 'table123' };
 				if (param === 'orderBy') return true;
 				if (param === 'orderByColumn') return 'name';
@@ -362,7 +364,7 @@ describe('DataTable Get Operation - Sort Feature', () => {
 				return undefined;
 			});
 
-			(mockDataTableProxy.getManyRowsAndCount as jest.Mock).mockResolvedValue({
+			(mockDataTableProxy.getManyRowsAndCount as Mock).mockResolvedValue({
 				data: [
 					{ id: 1, name: 'Alice' },
 					{ id: 2, name: 'Bob' },

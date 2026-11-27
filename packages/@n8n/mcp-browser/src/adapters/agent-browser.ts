@@ -12,17 +12,18 @@ import {
 	type ConnectionLostReason,
 } from '../errors';
 import { createLogger } from '../logger';
+import { HTML_PROBE_SCRIPT, parseHtmlProbeResult } from '../sensitivity/html-probe';
 import type {
 	Adapter,
 	ClickOptions,
 	ConnectConfig,
 	ConsoleEntry,
-	Cookie,
 	ElementTarget,
 	ModalState,
 	NavigateResult,
 	NetworkEntry,
 	PageInfo,
+	HtmlProbeResult,
 	ResolvedConfig,
 	ScreenshotOptions,
 	ScrollOptions,
@@ -191,7 +192,7 @@ export class AgentBrowserAdapter implements Adapter {
 		}
 
 		if (!this.relay.isExtensionConnected()) {
-			const extensionEndpoint = this.relay.extensionEndpoint(this.relayPort!);
+			const extensionEndpoint = this.relay.extensionEndpoint(this.relayPort);
 			// `N8N_EVAL_AUTO_BROWSER_CONNECT=1` mirrors the playwright adapter — see
 			// `playwright.ts` for the full justification. The extension only honors
 			// the flag when the relay URL is localhost, which it always is here.
@@ -219,7 +220,7 @@ export class AgentBrowserAdapter implements Adapter {
 			log.debug('launch: extension already connected to existing relay');
 		}
 
-		this.cdpEndpoint = this.relay.cdpEndpoint(this.relayPort!);
+		this.cdpEndpoint = this.relay.cdpEndpoint(this.relayPort);
 		log.debug('launch: cdp endpoint:', this.cdpEndpoint);
 
 		this.relay.onExtensionDisconnect = (reason) => {
@@ -264,7 +265,10 @@ export class AgentBrowserAdapter implements Adapter {
 		return (await this.listTabs()).map((t) => t.id);
 	}
 
-	async newPage(url?: string): Promise<PageInfo> {
+	async newPage(
+		url?: string,
+		_waitUntil?: 'load' | 'domcontentloaded' | 'networkidle',
+	): Promise<PageInfo> {
 		if (url) AgentBrowserAdapter.assertSafeArg(url, 'URL');
 		await this.run(['tab', 'new', ...(url ? [url] : [])]);
 		const tabs = await this.refreshTabs();
@@ -303,13 +307,19 @@ export class AgentBrowserAdapter implements Adapter {
 		return { title: tab?.title ?? '', url: currentUrl, status: 200 };
 	}
 
-	async back(pageId: string): Promise<NavigateResult> {
+	async back(
+		pageId: string,
+		_waitUntil?: 'load' | 'domcontentloaded' | 'networkidle',
+	): Promise<NavigateResult> {
 		await this.switchToTab(pageId);
 		await this.run(['back']);
 		return await this.navResult(pageId);
 	}
 
-	async forward(pageId: string): Promise<NavigateResult> {
+	async forward(
+		pageId: string,
+		_waitUntil?: 'load' | 'domcontentloaded' | 'networkidle',
+	): Promise<NavigateResult> {
 		await this.switchToTab(pageId);
 		await this.run(['forward']);
 		return await this.navResult(pageId);
@@ -345,6 +355,11 @@ export class AgentBrowserAdapter implements Adapter {
 		await this.switchToTab(pageId);
 		const ref = this.resolveTarget(target);
 		const baseCmd = options?.clear ? 'fill' : 'type';
+
+		// TODO: `mode: 'paste'` is accepted but not honoured here — this adapter still
+		// types key by key, so code editors are still corrupted. Implementing it needs an
+		// atomic insert that replaces existing content (the CLI's `fill` does not, on a
+		// contenteditable) and that reports failure (the `eval` channel does not).
 
 		// agent-browser's CLI scans all raw args for "--help"/"-h" before parsing,
 		// so any arg starting with "-" would be misinterpreted as a flag.
@@ -440,6 +455,20 @@ export class AgentBrowserAdapter implements Adapter {
 			typeof response.data === 'string' ? response.data : JSON.stringify(response.data ?? '');
 		const refCount = (tree.match(/@e\d+/g) ?? []).length;
 		return { tree: tree || '(empty page)', refCount };
+	}
+
+	async probePageHtml(pageId: string): Promise<HtmlProbeResult> {
+		try {
+			await this.switchToTab(pageId);
+			const resp = await this.run(['eval', HTML_PROBE_SCRIPT]);
+			const raw =
+				resp.data && typeof resp.data === 'object' && 'result' in resp.data
+					? resp.data.result
+					: resp.data;
+			return parseHtmlProbeResult(raw);
+		} catch (error) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	}
 
 	async screenshot(
@@ -539,38 +568,6 @@ export class AgentBrowserAdapter implements Adapter {
 	// State
 	// =========================================================================
 
-	async getCookies(pageId: string, _url?: string): Promise<Cookie[]> {
-		await this.switchToTab(pageId);
-		const script =
-			"document.cookie.split('; ').filter(Boolean)" +
-			".map(c=>{const i=c.indexOf('=');return{name:c.slice(0,i),value:c.slice(i+1)}})";
-		const resp = await this.run(['eval', script]);
-		return Array.isArray(resp.data) ? (resp.data as Cookie[]) : [];
-	}
-
-	async setCookies(pageId: string, cookies: Cookie[]): Promise<void> {
-		await this.switchToTab(pageId);
-		const assignments = cookies
-			.map((c) => {
-				let s = `${c.name}=${c.value}`;
-				if (c.path) s += ';path=' + c.path;
-				if (c.domain) s += ';domain=' + c.domain;
-				if (c.expires) s += ';expires=' + new Date(c.expires * 1000).toUTCString();
-				return 'document.cookie=' + JSON.stringify(s);
-			})
-			.join(';');
-		await this.run(['eval', assignments]);
-	}
-
-	async clearCookies(pageId: string): Promise<void> {
-		await this.switchToTab(pageId);
-		const script =
-			"document.cookie.split(';').forEach(c=>{" +
-			"const n=c.split('=')[0].trim();" +
-			"document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 UTC;path=/;'})";
-		await this.run(['eval', script]);
-	}
-
 	async getStorage(pageId: string, kind: 'local' | 'session'): Promise<Record<string, string>> {
 		await this.switchToTab(pageId);
 		const s = kind === 'local' ? 'localStorage' : 'sessionStorage';
@@ -610,5 +607,15 @@ export class AgentBrowserAdapter implements Adapter {
 
 	getPageUrl(pageId: string): string | undefined {
 		return this.urlCache.get(pageId);
+	}
+
+	async getElementValue(pageId: string, target: ElementTarget): Promise<string> {
+		await this.switchToTab(pageId);
+		const ref = this.resolveTarget(target);
+		const valueResp = await this.run(['get', 'value', ref]);
+		const value = (valueResp.data as { value?: string } | undefined)?.value ?? '';
+		if (value !== '') return value;
+		const textResp = await this.run(['get', 'text', ref]);
+		return (textResp.data as { text?: string } | undefined)?.text ?? '';
 	}
 }

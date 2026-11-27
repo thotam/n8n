@@ -1,20 +1,24 @@
 import { z } from 'zod';
 
 import {
+	appBlueprintResumeSchema,
+	credentialDestinationDecisionSchema,
 	domainAccessActionSchema,
+	instanceAiApprovalResumeSchema,
 	instanceGatewayResourceDecisionSchema,
+	mcpConnectResumeSchema,
 } from '../../schemas/instance-ai.schema';
 
 /**
  * Plain approval/denial. Also carries optional `userInput` for:
  *   - text-input confirmations (inputType='text')
- *   - plan-review feedback accompanying approve/request-changes
  *   - deferring/skipping credential or workflow setup wizards (`approved: false`)
+ *
+ * Payload fields (minus `kind`) are shared with tool `.resume()` schemas via
+ * `instanceAiApprovalResumeSchema` so wire/resume drift fails at typecheck.
  */
-const approvalConfirmSchema = z.object({
+const approvalConfirmSchema = instanceAiApprovalResumeSchema.extend({
 	kind: z.literal('approval'),
-	approved: z.boolean(),
-	userInput: z.string().optional(),
 });
 
 /** Q&A wizard submission (inputType='questions'). */
@@ -36,6 +40,19 @@ const credentialIdByTypeSchema = z.record(z.string());
 const credentialSelectionConfirmSchema = z.object({
 	kind: z.literal('credentialSelection'),
 	credentials: credentialIdByTypeSchema,
+});
+
+const credentialAutoSetupConfirmSchema = z.object({
+	kind: z.literal('credentialAutoSetup'),
+	credentialType: z.string(),
+	/** Client-generated id shared by the setup-choice telemetry events and the
+	 *  terminal setup-completed event, so retries can be told apart in the funnel. */
+	attemptId: z.string().trim().min(1).max(64).optional(),
+});
+
+const credentialDestinationConfirmSchema = credentialDestinationDecisionSchema.extend({
+	kind: z.literal('credentialDestination'),
+	approved: z.boolean(),
 });
 
 /** Domain-access approval — `domainAccessAction` carries which scope the user picked. */
@@ -61,15 +78,18 @@ const nodeCredentialsRecord = z.record(credentialIdByTypeSchema).optional();
 const nodeParametersRecord = z.record(z.record(z.unknown())).optional();
 
 /** Workflow-setup wizard: apply the chosen credentials/parameters. Approval is implied;
- *  the service maps this to `action: 'apply'` for the underlying Mastra resume schema. */
+ *  the service maps this to `action: 'apply'` for the setup resume schema. */
 const setupWorkflowApplyConfirmSchema = z.object({
 	kind: z.literal('setupWorkflowApply'),
 	nodeCredentials: nodeCredentialsRecord,
 	nodeParameters: nodeParametersRecord,
+	/** Nodes whose cards the user actively skipped in this panel. Without this the backend
+	 *  can only see that they're still unconfigured, which reads as "ask again". */
+	skippedNodes: z.array(z.string()).optional(),
 });
 
 /** Workflow-setup wizard: run a test-trigger against a specific node. Approval is implied;
- *  the service maps this to `action: 'test-trigger'` for the underlying Mastra resume schema. */
+ *  the service maps this to `action: 'test-trigger'` for the setup resume schema. */
 const setupWorkflowTestTriggerConfirmSchema = z.object({
 	kind: z.literal('setupWorkflowTestTrigger'),
 	testTriggerNode: z.string(),
@@ -77,15 +97,27 @@ const setupWorkflowTestTriggerConfirmSchema = z.object({
 	nodeParameters: nodeParametersRecord,
 });
 
+const mcpConnectConfirmSchema = mcpConnectResumeSchema.extend({
+	kind: z.literal('mcpConnect'),
+});
+
+const appBlueprintConfirmSchema = appBlueprintResumeSchema.extend({
+	kind: z.literal('appBlueprint'),
+});
+
 export const InstanceAiConfirmRequestDto = z.discriminatedUnion('kind', [
 	approvalConfirmSchema,
 	questionsConfirmSchema,
 	credentialSelectionConfirmSchema,
+	credentialAutoSetupConfirmSchema,
+	credentialDestinationConfirmSchema,
 	domainAccessApproveSchema,
 	domainAccessDenySchema,
 	resourceDecisionConfirmSchema,
 	setupWorkflowApplyConfirmSchema,
 	setupWorkflowTestTriggerConfirmSchema,
+	mcpConnectConfirmSchema,
+	appBlueprintConfirmSchema,
 ]);
 
 export type InstanceAiConfirmRequest = z.infer<typeof InstanceAiConfirmRequestDto>;

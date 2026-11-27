@@ -6,11 +6,9 @@ import type {
 	ResourceMapperFieldsRequestDto,
 } from '@n8n/api-types';
 import * as nodeTypesApi from '@n8n/rest-api-client/api/nodeTypes';
-import {
-	HTTP_REQUEST_NODE_TYPE,
-	CREDENTIAL_ONLY_HTTP_NODE_VERSION,
-	MODULE_ENABLED_NODES,
-} from '@/app/constants';
+import { HTTP_REQUEST_NODE_TYPE, CREDENTIAL_ONLY_HTTP_NODE_VERSION } from '@/app/constants';
+import { getNodeGatingModule, HUMAN_REVIEW_MODULE, isHumanReviewNodeType } from '@n8n/constants';
+import { AGENTS_MODULE_NAME } from '@/features/agents/constants';
 import { STORES } from '@n8n/stores';
 import type { NodeTypesByTypeNameAndVersion } from '@/Interface';
 import { addHeaders, addNodeTranslation } from '@n8n/i18n';
@@ -31,18 +29,21 @@ import { useCredentialsStore } from '@/features/credentials/credentials.store';
 import { useRootStore } from '@n8n/stores/useRootStore';
 import * as utils from '@/app/utils/credentialOnlyNodes';
 import { groupNodeTypesByNameAndType } from '@/app/utils/nodeTypes/nodeTypeTransforms';
-import { computed, ref } from 'vue';
+import { computed, shallowRef } from 'vue';
 import { useActionsGenerator } from '@/features/shared/nodeCreator/composables/useActionsGeneration';
 import { removePreviewToken } from '@/features/shared/nodeCreator/nodeCreator.utils';
-import { useSettingsStore } from '@/app/stores/settings.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import { isDataWorkerEnabled } from '@/app/workers/isDataWorkerEnabled';
 import type { WorkflowObjectAccessors } from '../types';
 
 export type NodeTypesStore = ReturnType<typeof useNodeTypesStore>;
 
 export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
-	const nodeTypes = ref<NodeTypesByTypeNameAndVersion>({});
+	// The catalog is immutable and only ever wholesale-replaced, so skip deep
+	// reactivity to avoid proxying thousands of nested schema objects.
+	const nodeTypes = shallowRef<NodeTypesByTypeNameAndVersion>({});
 
-	const vettedCommunityNodeTypes = ref<Map<string, CommunityNodeType>>(new Map());
+	const vettedCommunityNodeTypes = shallowRef<Map<string, CommunityNodeType>>(new Map());
 
 	const rootStore = useRootStore();
 
@@ -89,6 +90,8 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 		return actionsGenerator.generateMergedNodesAndActions(unofficialCommunityNodeTypes.value, []);
 	});
 
+	const hasNodeTypes = computed(() => Object.keys(nodeTypes.value).length > 0);
+
 	const allNodeTypes = computed(() => {
 		return Object.values(nodeTypes.value).flatMap((nodeType) =>
 			Object.keys(nodeType).map((version) => nodeType[Number(version)]),
@@ -104,23 +107,15 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 			.filter(Boolean);
 	});
 
-	// Nodes defined with `hidden: true` that are still shown if their modules are enabled
-	const moduleEnabledNodeTypes = computed<INodeTypeDescription[]>(() => {
-		return MODULE_ENABLED_NODES.flatMap((node) => {
-			const nodeVersions = nodeTypes.value[node.nodeType] ?? {};
-			const versionNumbers = Object.keys(nodeVersions).map(Number);
-			const latest = nodeVersions[Math.max(...versionNumbers)];
-
-			if (latest?.hidden && settingsStore.isModuleActive(node.module)) {
-				return {
-					...latest,
-					hidden: undefined,
-				};
-			}
-
-			return [];
-		});
-	});
+	// True for a module-gated node type whose module is off. Admins can also turn agents off in settings.
+	function isNodeTypeModuleDisabled(nodeTypeName: string): boolean {
+		if (isHumanReviewNodeType(nodeTypeName))
+			return !settingsStore.isAgentModuleActive(HUMAN_REVIEW_MODULE);
+		const moduleName = getNodeGatingModule(nodeTypeName);
+		if (!moduleName) return false;
+		if (moduleName === AGENTS_MODULE_NAME) return !settingsStore.isAgentsEnabled;
+		return !settingsStore.isModuleActive(moduleName);
+	}
 
 	const getNodeType = computed(() => {
 		return (nodeTypeName: string, version?: number): INodeTypeDescription | null => {
@@ -138,6 +133,11 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 		};
 	});
 
+	const isNodeDeprecated = computed(() => {
+		return (node: { type: string; typeVersion: number }): boolean =>
+			getNodeType.value(node.type, node.typeVersion)?.deprecated === true;
+	});
+
 	const getNodeVersions = computed(() => {
 		return (nodeTypeName: string): number[] => {
 			return Object.keys(nodeTypes.value[nodeTypeName] ?? {}).map(Number);
@@ -146,7 +146,7 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 
 	const getCredentialOnlyNodeType = computed(() => {
 		return (nodeTypeName: string, version?: number): INodeTypeDescription | null => {
-			const credentialName = utils.getCredentialTypeName(nodeTypeName);
+			const credentialName = utils.getCredentialOnlyNodeCredentialType(nodeTypeName);
 			const httpNode = getNodeType.value(
 				HTTP_REQUEST_NODE_TYPE,
 				version ?? CREDENTIAL_ONLY_HTTP_NODE_VERSION,
@@ -222,8 +222,10 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 	const visibleNodeTypes = computed(() => {
 		return allLatestNodeTypes.value
 			.concat(officialCommunityNodeTypes.value)
-			.concat(moduleEnabledNodeTypes.value)
-			.filter((nodeType) => !nodeType.hidden);
+			.filter(
+				(nodeType) =>
+					!nodeType.hidden && !nodeType.deprecated && !isNodeTypeModuleDisabled(nodeType.name),
+			);
 	});
 
 	const nativelyNumberSuffixedDefaults = computed(() => {
@@ -340,14 +342,45 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 		);
 	};
 
+	// Read full node descriptions from the local SQLite database, falling back to
+	// REST for any node not present locally (e.g. community/dynamic nodes).
+	const loadNodesInformationFromLocalDb = async (
+		nodeInfos: INodeTypeNameVersion[],
+	): Promise<INodeTypeDescription[]> => {
+		try {
+			const { getNodeType } = await import('@/app/workers');
+			const found: INodeTypeDescription[] = [];
+			const missing: INodeTypeNameVersion[] = [];
+
+			for (const nodeInfo of nodeInfos) {
+				const nodeType = await getNodeType(nodeInfo.name, nodeInfo.version);
+				if (nodeType) {
+					found.push(nodeType);
+				} else {
+					missing.push(nodeInfo);
+				}
+			}
+
+			if (missing.length) {
+				found.push(...(await nodeTypesApi.getNodesInformation(rootStore.restApiContext, missing)));
+			}
+
+			return found;
+		} catch (error) {
+			return await nodeTypesApi.getNodesInformation(rootStore.restApiContext, nodeInfos);
+		}
+	};
+
 	const getNodesInformation = async (
 		nodeInfos: INodeTypeNameVersion[],
 		replace = true,
 	): Promise<INodeTypeDescription[]> => {
-		const nodesInformation = await nodeTypesApi.getNodesInformation(
-			rootStore.restApiContext,
-			nodeInfos,
-		);
+		// The local DB holds untranslated descriptions, so only read from it for
+		// the English locale; other locales need per-node translations from REST.
+		const nodesInformation =
+			isDataWorkerEnabled() && rootStore.defaultLocale === 'en'
+				? await loadNodesInformationFromLocalDb(nodeInfos)
+				: await nodeTypesApi.getNodesInformation(rootStore.restApiContext, nodeInfos);
 
 		nodesInformation.forEach((nodeInformation) => {
 			if (nodeInformation.translation) {
@@ -372,17 +405,45 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 		}
 	};
 
+	// Sync the local SQLite database with the server (cheap incremental diff after
+	// the initial load) and read all node descriptions back from it. Returns an
+	// empty array if the database is unavailable so the caller can fall back to REST.
+	const loadNodeTypesFromLocalDb = async (): Promise<INodeTypeDescription[]> => {
+		try {
+			const { initialize, loadNodeTypes, getAllNodeTypes } = await import('@/app/workers');
+			// The worker must be initialized before it can sync. A second call returns at once.
+			await initialize({ version: rootStore.versionCli });
+			await loadNodeTypes(rootStore.baseUrl);
+			return await getAllNodeTypes();
+		} catch (error) {
+			return [];
+		}
+	};
+
 	const getNodeTypes = async () => {
-		const nodeTypes = await nodeTypesApi.getNodeTypes(rootStore.baseUrl);
+		const fetchedNodeTypes = isDataWorkerEnabled() ? await loadNodeTypesFromLocalDb() : [];
+		const nodeTypes = fetchedNodeTypes.length
+			? fetchedNodeTypes
+			: await nodeTypesApi.getNodeTypes(rootStore.baseUrl);
+
 		if (nodeTypes.length) {
 			setNodeTypes(nodeTypes);
 		}
 	};
 
+	// Callers that start while a load runs share that load, so the editor sends one request.
+	// The promise is cleared when the load ends, so a failed load can retry on the next call.
+	let nodeTypesLoad: Promise<void> | undefined;
+
 	const loadNodeTypesIfNotLoaded = async () => {
-		if (Object.keys(nodeTypes.value).length === 0) {
-			await getNodeTypes();
+		if (hasNodeTypes.value) {
+			return;
 		}
+
+		nodeTypesLoad ??= getNodeTypes().finally(() => {
+			nodeTypesLoad = undefined;
+		});
+		await nodeTypesLoad;
 	};
 
 	const getNodeTranslationHeaders = async () => {
@@ -453,6 +514,16 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 		}
 	};
 
+	// True for types the instance does not load (NODES_EXCLUDE, NODES_INCLUDE). Vetted community
+	// types stay available: the node creator offers them for installation. Before the types load,
+	// nothing counts as unavailable, so callers do not hide or skip every node.
+	function isNodeTypeUnavailable(nodeTypeName: string): boolean {
+		if (Object.keys(nodeTypes.value).length === 0) return false;
+		return (
+			!getNodeType.value(removePreviewToken(nodeTypeName)) && !communityNodeType.value(nodeTypeName)
+		);
+	}
+
 	const getIsNodeInstalled = computed(() => {
 		return (nodeTypeName: string) => {
 			const cleanedNodeTypeName = removePreviewToken(nodeTypeName);
@@ -480,7 +551,7 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 					description: nodeTypeDescription,
 					// As we do not have the trigger/poll functions available in the frontend
 					// we use the information available to figure out what are trigger nodes
-					// @ts-ignore
+					// @ts-expect-error frontend flags triggers with a boolean
 					trigger:
 						(![ERROR_TRIGGER_NODE_TYPE].includes(nodeType) &&
 							nodeTypeDescription.inputs.length === 0 &&
@@ -497,9 +568,11 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 
 	return {
 		nodeTypes,
+		hasNodeTypes,
 		allNodeTypes,
 		allLatestNodeTypes,
 		getNodeType,
+		isNodeDeprecated,
 		getNodeVersions,
 		getCredentialOnlyNodeType,
 		isConfigNode,
@@ -513,7 +586,10 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 		visibleNodeTypesByInputConnectionTypeNames,
 		isConfigurableNode,
 		communityNodesAndActions,
+		vettedCommunityNodeTypes,
 		communityNodeType,
+		officialCommunityNodeTypes,
+		unofficialCommunityNodeTypes,
 		fetchCommunityNodePreviews,
 		getResourceMapperFields,
 		getLocalResourceMapperFields,
@@ -530,5 +606,7 @@ export const useNodeTypesStore = defineStore(STORES.NODE_TYPES, () => {
 		removeNodeTypes,
 		getCommunityNodeAttributes,
 		getIsNodeInstalled,
+		isNodeTypeUnavailable,
+		isNodeTypeModuleDisabled,
 	};
 });

@@ -1,19 +1,38 @@
 import { createTestingPinia } from '@pinia/testing';
 import { setActivePinia } from 'pinia';
+import { ref } from 'vue';
 import { useNDVStore } from '@/features/ndv/shared/ndv.store';
+import {
+	createWorkflowDocumentId,
+	useWorkflowDocumentStore,
+} from '@/app/stores/workflowDocument.store';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { useFocusPanelStore } from '@/app/stores/focusPanel.store';
-import { useSettingsStore } from '@/app/stores/settings.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
 import { useNodeSettingsParameters } from './useNodeSettingsParameters';
 import * as nodeHelpers from '@/app/composables/useNodeHelpers';
 import * as workflowHelpers from '@/app/composables/useWorkflowHelpers';
 import * as nodeSettingsUtils from '@/features/ndv/shared/ndv.utils';
 import * as nodeTypesUtils from '@/app/utils/nodeTypesUtils';
-import type { INodeParameters, INodeProperties, INodeTypeDescription } from 'n8n-workflow';
+import type {
+	INodeParameters,
+	INodeProperties,
+	INodeTypeDescription,
+	NodeParameterValue,
+} from 'n8n-workflow';
 import type { MockedStore } from '@/__tests__/utils';
 import { mockedStore } from '@/__tests__/utils';
 import type { INodeUi } from '@/Interface';
 import { CHAT_TRIGGER_NODE_TYPE, HTTP_REQUEST_NODE_TYPE, WEBHOOK_NODE_TYPE } from '@/app/constants';
+
+vi.mock('@/app/composables/useWorkflowId', async () => {
+	const { computed } = await import('vue');
+	const { useWorkflowsStore } = await import('@/app/stores/workflows.store');
+	return {
+		useWorkflowId: () => computed(() => useWorkflowsStore().workflowId),
+		useRouteWorkflowId: () => computed(() => useWorkflowsStore().workflowId),
+	};
+});
 
 describe('useNodeSettingsParameters', () => {
 	beforeEach(() => {
@@ -27,7 +46,7 @@ describe('useNodeSettingsParameters', () => {
 		beforeEach(() => {
 			setActivePinia(createTestingPinia());
 
-			ndvStore = mockedStore(useNDVStore);
+			ndvStore = mockedStore(useNDVStore, createWorkflowDocumentId(''));
 			focusPanelStore = mockedStore(useFocusPanelStore);
 
 			ndvStore.activeNode = {
@@ -93,6 +112,304 @@ describe('useNodeSettingsParameters', () => {
 			handleFocus(undefined, 'parameters.foo', parameter);
 
 			expect(focusPanelStore.openWithFocusedNodeParameter).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('updateNodeParameter $fromAI key reconciliation', () => {
+		const AUTO_MARKER = '/*n8n-auto-generated-fromAI-override*/';
+		const staleOverride = (desc: string) =>
+			`={{ ${AUTO_MARKER} $fromAI('Field_Value', \`${desc}\`, 'string') }}`;
+
+		const toolNodeType: INodeTypeDescription = {
+			version: 1,
+			name: 'testTool',
+			displayName: 'Test Tool',
+			description: '',
+			group: ['transform'],
+			defaults: { name: 'Test Tool' },
+			inputs: [],
+			outputs: [],
+			properties: [
+				{
+					displayName: 'Fields',
+					name: 'fieldsUi',
+					type: 'fixedCollection',
+					default: {},
+					typeOptions: { multipleValues: true },
+					options: [
+						{
+							displayName: 'Field',
+							name: 'fieldValues',
+							values: [
+								{ displayName: 'Field Value', name: 'fieldValue', type: 'string', default: '' },
+							],
+						},
+					],
+				},
+			],
+		};
+
+		const node: INodeUi = {
+			id: 'n1',
+			name: 'My Supabase Tool',
+			type: 'testTool',
+			typeVersion: 1,
+			position: [0, 0],
+			parameters: {},
+		};
+
+		const collidingCollection = () => ({
+			fieldValues: [{ fieldValue: staleOverride('A') }, { fieldValue: staleOverride('B') }],
+		});
+
+		let docStore: MockedStore<typeof useWorkflowDocumentStore>;
+
+		beforeEach(() => {
+			setActivePinia(createTestingPinia());
+
+			const nodeTypesStore = mockedStore(useNodeTypesStore);
+			nodeTypesStore.getNodeType = vi.fn().mockReturnValue(toolNodeType);
+
+			docStore = mockedStore(useWorkflowDocumentStore, createWorkflowDocumentId(''));
+
+			vi.spyOn(nodeSettingsUtils, 'updateDynamicConnections').mockReturnValue(null);
+			vi.spyOn(nodeHelpers, 'useNodeHelpers').mockReturnValue({
+				...nodeHelpers.useNodeHelpers(),
+				updateNodeParameterIssuesByName: vi.fn(),
+				updateNodeCredentialIssuesByName: vi.fn(),
+			});
+		});
+
+		afterEach(() => {
+			vi.resetAllMocks();
+		});
+
+		const persistedFieldValues = () => {
+			const persisted = vi.mocked(docStore.setNodeParameters).mock.calls[0][0]
+				.value as INodeParameters;
+			return (persisted.fieldsUi as { fieldValues: INodeParameters[] }).fieldValues;
+		};
+
+		it('reindexes colliding auto-generated keys when the node is used as a tool', () => {
+			const { updateNodeParameter } = useNodeSettingsParameters();
+			const collection = collidingCollection();
+
+			updateNodeParameter(
+				ref<INodeParameters>({}),
+				{ name: 'parameters.fieldsUi', value: collection },
+				collection as unknown as NodeParameterValue,
+				node,
+				true,
+			);
+
+			const rows = persistedFieldValues();
+			expect(rows[0].fieldValue).toContain("$fromAI('fieldValues0_Field_Value'");
+			expect(rows[1].fieldValue).toContain("$fromAI('fieldValues1_Field_Value'");
+		});
+
+		it('leaves keys untouched when the node is not a tool', () => {
+			const { updateNodeParameter } = useNodeSettingsParameters();
+			const collection = collidingCollection();
+
+			updateNodeParameter(
+				ref<INodeParameters>({}),
+				{ name: 'parameters.fieldsUi', value: collection },
+				collection as unknown as NodeParameterValue,
+				node,
+				false,
+			);
+
+			const rows = persistedFieldValues();
+			expect(rows[0].fieldValue).toContain("$fromAI('Field_Value'");
+			expect(rows[1].fieldValue).toContain("$fromAI('Field_Value'");
+		});
+	});
+
+	describe('updateNodeParameter value shapes', () => {
+		const show = (operation: string) => ({ show: { operation: [operation] } });
+		const channelLocator = (operation: string): INodeProperties => ({
+			displayName: 'Channel',
+			name: 'channelId',
+			type: 'resourceLocator',
+			default: { mode: 'id', value: '' },
+			modes: [{ displayName: 'ID', name: 'id', type: 'string' }],
+			displayOptions: show(operation),
+		});
+
+		const nodeType: INodeTypeDescription = {
+			version: 1,
+			name: 'testChat',
+			displayName: 'Test Chat',
+			description: '',
+			group: ['output'],
+			defaults: { name: 'Test Chat' },
+			inputs: [],
+			outputs: [],
+			properties: [
+				{
+					displayName: 'Operation',
+					name: 'operation',
+					type: 'options',
+					noDataExpression: true,
+					options: [
+						{ name: 'Archive', value: 'archive' },
+						{ name: 'Create', value: 'create' },
+						{ name: 'Get', value: 'get' },
+					],
+					default: 'create',
+				},
+				channelLocator('get'),
+				channelLocator('archive'),
+				{
+					displayName: 'Channel',
+					name: 'channelId',
+					type: 'string',
+					default: '',
+					displayOptions: show('create'),
+				},
+				{
+					displayName: 'User',
+					name: 'userId',
+					type: 'options',
+					options: [{ name: 'Ann', value: 'U1' }],
+					default: '',
+					displayOptions: show('get'),
+				},
+				{
+					displayName: 'User',
+					name: 'userId',
+					type: 'string',
+					default: '',
+					displayOptions: show('create'),
+				},
+				{
+					displayName: 'Limit',
+					name: 'limit',
+					type: 'number',
+					default: 50,
+					displayOptions: show('get'),
+				},
+				{
+					displayName: 'Limit',
+					name: 'limit',
+					type: 'string',
+					default: '',
+					displayOptions: show('create'),
+				},
+				{ displayName: 'Many', name: 'many', type: 'boolean', default: false },
+				{
+					displayName: 'Method',
+					name: 'method',
+					type: 'options',
+					options: [
+						{ name: 'GET', value: 'GET' },
+						{ name: 'PUT', value: 'PUT' },
+					],
+					default: 'GET',
+					displayOptions: { show: { many: [false] } },
+				},
+				{
+					displayName: 'Methods',
+					name: 'method',
+					type: 'multiOptions',
+					options: [
+						{ name: 'GET', value: 'GET' },
+						{ name: 'PUT', value: 'PUT' },
+					],
+					default: ['GET'],
+					displayOptions: { show: { many: [true] } },
+				},
+			],
+		};
+
+		const picked = { __rl: true, mode: 'id', value: 'C0123' };
+
+		let docStore: MockedStore<typeof useWorkflowDocumentStore>;
+		let node: INodeUi;
+
+		const change = (name: string, value: unknown) => {
+			const { updateNodeParameter } = useNodeSettingsParameters();
+			updateNodeParameter(
+				ref<INodeParameters>({}),
+				{ name: `parameters.${name}`, value: value as NodeParameterValue },
+				value as NodeParameterValue,
+				node,
+				false,
+			);
+			const calls = vi.mocked(docStore.setNodeParameters).mock.calls;
+			node = { ...node, parameters: calls[calls.length - 1][0].value as INodeParameters };
+		};
+
+		beforeEach(() => {
+			setActivePinia(createTestingPinia());
+
+			const nodeTypesStore = mockedStore(useNodeTypesStore);
+			nodeTypesStore.getNodeType = vi.fn().mockReturnValue(nodeType);
+
+			docStore = mockedStore(useWorkflowDocumentStore, createWorkflowDocumentId(''));
+
+			vi.spyOn(nodeSettingsUtils, 'updateDynamicConnections').mockReturnValue(null);
+			vi.spyOn(nodeHelpers, 'useNodeHelpers').mockReturnValue({
+				...nodeHelpers.useNodeHelpers(),
+				updateNodeParameterIssuesByName: vi.fn(),
+				updateNodeCredentialIssuesByName: vi.fn(),
+			});
+
+			node = {
+				id: 'chat-node',
+				name: 'Post to team',
+				type: 'testChat',
+				typeVersion: 1,
+				position: [0, 0],
+				parameters: { operation: 'get' },
+			};
+		});
+
+		afterEach(() => {
+			vi.resetAllMocks();
+		});
+
+		it('does not carry a resource locator into a same-named string parameter', () => {
+			change('channelId', picked);
+			change('operation', 'create');
+
+			expect(node.parameters.channelId).toBe('');
+		});
+
+		it('does not carry a string into a same-named resource locator when the operation is its default', () => {
+			node = { ...node, parameters: { channelId: 'general' } };
+
+			change('operation', 'get');
+
+			expect(node.parameters.channelId).toEqual({ __rl: true, mode: 'id', value: '' });
+		});
+
+		it('does not carry a single option into a same-named multi-select', () => {
+			change('method', 'PUT');
+			change('many', true);
+
+			expect(node.parameters.method).toEqual(['GET']);
+		});
+
+		it('carries values between declarations of the same shape', () => {
+			change('channelId', picked);
+			change('operation', 'archive');
+
+			expect(node.parameters.channelId).toEqual(picked);
+		});
+
+		it('carries values between number and string parameters', () => {
+			change('limit', 10);
+			change('operation', 'create');
+
+			expect(node.parameters.limit).toBe(10);
+		});
+
+		it('carries values between string and options parameters', () => {
+			change('userId', 'U1');
+			change('operation', 'create');
+
+			expect(node.parameters.userId).toBe('U1');
 		});
 	});
 
@@ -212,6 +529,97 @@ describe('useNodeSettingsParameters', () => {
 				});
 				expect(result).toBe(true);
 				expect(displayParameterSpy).toHaveBeenCalled();
+			});
+		});
+
+		describe('envFeatureFlag', () => {
+			const gatedParameter: INodeProperties = {
+				...mockParameter,
+				envFeatureFlag: 'SOME_FEATURE',
+			};
+
+			it('returns false when the env feature flag is not enabled', async () => {
+				mockNodeHelpers();
+
+				const { shouldDisplayNodeParameter } = useNodeSettingsParameters();
+
+				const result = await shouldDisplayNodeParameter({}, null, gatedParameter);
+				expect(result).toBe(false);
+			});
+
+			it('does not call displayParameter when the env feature flag hides the parameter', async () => {
+				mockNodeHelpers();
+
+				const { shouldDisplayNodeParameter } = useNodeSettingsParameters();
+
+				await shouldDisplayNodeParameter({}, null, gatedParameter);
+				expect(displayParameterSpy).not.toHaveBeenCalled();
+			});
+
+			it('continues normal evaluation when the env feature flag is enabled', async () => {
+				vi.spyOn(nodeTypesUtils, 'getMainAuthField').mockReturnValueOnce(null);
+				mockNodeHelpers();
+				settingsStore.settings = {
+					...settingsStore.settings,
+					envFeatureFlags: { N8N_ENV_FEAT_SOME_FEATURE: 'true' },
+				};
+				displayParameterSpy.mockReturnValueOnce(true);
+
+				const { shouldDisplayNodeParameter } = useNodeSettingsParameters();
+
+				const result = await shouldDisplayNodeParameter({}, null, gatedParameter);
+				expect(result).toBe(true);
+			});
+
+			it('does not apply the env feature flag gate to disabledOptions checks', async () => {
+				vi.spyOn(nodeTypesUtils, 'getMainAuthField').mockReturnValueOnce(null);
+				mockNodeHelpers();
+
+				const { shouldDisplayNodeParameter } = useNodeSettingsParameters();
+
+				const result = await shouldDisplayNodeParameter(
+					{},
+					null,
+					gatedParameter,
+					'',
+					'disabledOptions',
+				);
+				expect(result).toBe(true);
+			});
+		});
+
+		describe('showOnDeployment', () => {
+			it('returns false when the parameter is limited to cloud on a hosted deployment', async () => {
+				mockNodeHelpers();
+				settingsStore.isCloudDeployment = false;
+
+				const { shouldDisplayNodeParameter } = useNodeSettingsParameters();
+
+				const parameter: INodeProperties = {
+					...mockParameter,
+					displayOptions: { showOnDeployment: 'cloud' },
+				};
+				const result = await shouldDisplayNodeParameter({}, null, parameter);
+
+				expect(result).toBe(false);
+				expect(displayParameterSpy).not.toHaveBeenCalled();
+			});
+
+			it('continues display evaluation when the deployment matches', async () => {
+				mockNodeHelpers();
+				settingsStore.isCloudDeployment = true;
+				displayParameterSpy.mockReturnValueOnce(true);
+
+				const { shouldDisplayNodeParameter } = useNodeSettingsParameters();
+
+				const parameter: INodeProperties = {
+					...mockParameter,
+					displayOptions: { showOnDeployment: 'cloud' },
+				};
+				const result = await shouldDisplayNodeParameter({}, null, parameter);
+
+				expect(result).toBe(true);
+				expect(displayParameterSpy).toHaveBeenCalledWith({}, parameter, '', null, 'displayOptions');
 			});
 		});
 

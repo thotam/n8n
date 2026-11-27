@@ -1,48 +1,62 @@
 import { NodeTestHarness } from '@nodes-testing/node-test-harness';
+import snowflake from 'snowflake-sdk';
 
-const mockExecute = jest.fn();
-const mockConnect = jest.fn();
-const mockDestroy = jest.fn();
-const mockConnection = { connect: mockConnect, execute: mockExecute, destroy: mockDestroy };
+import { setupSnowflakeMocks, snowflakeCredentials } from './snowflake-test-utils';
 
-jest.mock('snowflake-sdk', () => ({
-	configure: jest.fn(),
-	createConnection: jest.fn().mockReturnValue(mockConnection),
-}));
+const { mockExecute } = setupSnowflakeMocks();
 
-const snowflakeCredentials = {
-	authentication: 'password',
-	account: 'test-account',
-	database: 'TEST_DB',
-	schema: 'PUBLIC',
-	warehouse: 'WH',
-	role: 'SYSADMIN',
-	clientSessionKeepAlive: false,
-	username: 'user',
-	password: 'pass',
-};
-
-afterEach(() => jest.clearAllMocks());
-
-describe('Test Snowflake, insert - parameter binding', () => {
-	mockConnect.mockImplementation((callback: (err: null) => void) => callback(null));
-	mockDestroy.mockImplementation((callback: (err: null) => void) => callback(null));
-	mockExecute.mockImplementation(
-		({ complete }: { complete: (err: null, stmt: undefined, rows: unknown[]) => void }) =>
-			complete(null, undefined, []),
-	);
-
+describe('Test Snowflake, insert - parameter binding without origin hostname', () => {
 	new NodeTestHarness().setupTests({
 		workflowFiles: ['insert.workflow.json'],
 		credentials: { snowflake: snowflakeCredentials },
 		customAssertions() {
-			expect(mockExecute).toHaveBeenCalledTimes(1);
+			expect(snowflake.createConnection).toHaveBeenCalledWith({
+				account: 'test-account',
+				database: 'TEST_DB',
+				schema: 'PUBLIC',
+				warehouse: 'WH',
+				role: 'SYSADMIN',
+				clientSessionKeepAlive: false,
+				username: 'user',
+				password: 'pass',
+			});
+			// One ALTER SESSION (STRICT_JSON_OUTPUT) call plus one INSERT for the single row
+			expect(mockExecute).toHaveBeenCalledTimes(2);
+			expect(mockExecute).toHaveBeenCalledWith(
+				expect.objectContaining({ sqlText: 'ALTER SESSION SET STRICT_JSON_OUTPUT = TRUE' }),
+			);
 			expect(mockExecute).toHaveBeenCalledWith(
 				expect.objectContaining({
 					sqlText: 'INSERT INTO "ORDERS" ("NAME","STATUS") VALUES (?,?)',
 					binds: [['Alice', 'active']],
 				}),
 			);
+		},
+	});
+});
+
+describe('Test Snowflake, insert - parameter binding with origin hostname', () => {
+	new NodeTestHarness().setupTests({
+		workflowFiles: ['insert.workflow.json'],
+		credentials: {
+			snowflake: {
+				...snowflakeCredentials,
+				host: 'acme-org.us-east-1.snowflakecomputing.com',
+			},
+		},
+		customAssertions() {
+			expect(snowflake.createConnection).toHaveBeenCalledWith({
+				account: 'test-account',
+				database: 'TEST_DB',
+				schema: 'PUBLIC',
+				warehouse: 'WH',
+				role: 'SYSADMIN',
+				clientSessionKeepAlive: false,
+				host: 'acme-org.us-east-1.snowflakecomputing.com',
+				username: 'user',
+				password: 'pass',
+			});
+			expect(mockExecute).toHaveBeenCalledTimes(2);
 		},
 	});
 });

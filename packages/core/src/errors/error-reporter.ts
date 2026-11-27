@@ -1,14 +1,23 @@
 import { inTest, Logger } from '@n8n/backend-common';
+import { isAxiosError } from '@n8n/backend-network';
 import { type InstanceType } from '@n8n/constants';
 import { Service } from '@n8n/di';
 import type { ReportingOptions } from '@n8n/errors';
-import type { ErrorEvent, EventHint } from '@sentry/core';
-import type { NodeOptions } from '@sentry/node';
-import { AxiosError } from 'axios';
-import { ApplicationError, ExecutionCancelledError, BaseError } from 'n8n-workflow';
+import type { DataCollection, ErrorEvent, EventHint, Integration } from '@sentry/core';
+import type Sentry from '@sentry/node';
+import { ApplicationError, ExecutionCancelledError } from 'n8n-workflow';
+import { BaseError, UnexpectedError } from '@n8n/errors';
 import { createHash } from 'node:crypto';
 
-import { Tracing, SentryTracing } from '@/observability';
+import {
+	Tracing,
+	SentryTracing,
+	buildBeforeSendTransaction,
+	buildTracesSampler,
+	shouldIgnoreIncomingRequest,
+	shouldIgnoreOutgoingRequest,
+	DEFAULT_SLOW_SPAN_THRESHOLD_MS,
+} from '@/observability';
 
 type SentryIntegration = 'Redis' | 'Postgres' | 'Http' | 'Express';
 
@@ -26,11 +35,23 @@ type ErrorReporterInitOptions = {
 	/** Threshold in ms for event loop block detection. Only used if `withEventLoopBlockDetection` is true. */
 	eventLoopBlockThreshold?: number;
 
+	/** Max event loop block events per hour per instance. Only used if `withEventLoopBlockDetection` is true. */
+	eventLoopBlockMaxEventsPerHour?: number;
+
 	/** Sample rate for Sentry traces (0.0 to 1.0). 0 means disabled */
 	tracesSampleRate: number;
 
-	/** Sample rate for Sentry profiling (0.0 to 1.0). 0 means disabled */
-	profilesSampleRate: number;
+	/** Threshold in ms below which non-errored `db`/`http.client` spans are dropped. */
+	slowSpanThresholdMs?: number;
+
+	/** Production webhook endpoint path segment (e.g. `webhook`), used to sample webhook traces. */
+	webhookEndpoint?: string;
+
+	/** Sample rate (0.0 to 1.0) for successful production webhook transaction traces. */
+	webhookTracesSampleRate?: number;
+
+	/** Whether to profile every traced request. */
+	profilingEnabled: boolean;
 
 	/**
 	 * Function to allow filtering out errors before they are sent to Sentry.
@@ -53,6 +74,71 @@ const SIX_WEEKS_IN_MS = 6 * 7 * ONE_DAY_IN_MS;
 const RELEASE_EXPIRATION_WARNING =
 	'Error tracking disabled because this release is older than 6 weeks.';
 
+const SENTRY_MAX_VALUE_LENGTH = 500;
+
+const TRACING_INTEGRATIONS: Array<{
+	name: SentryIntegration;
+	injectsChannels: boolean;
+	create: (sentry: typeof Sentry) => Integration;
+}> = [
+	{
+		name: 'Http',
+		injectsChannels: false,
+		create: (sentry) =>
+			sentry.httpIntegration({
+				ignoreIncomingRequests: shouldIgnoreIncomingRequest,
+				ignoreOutgoingRequests: shouldIgnoreOutgoingRequest,
+			}),
+	},
+	{ name: 'Postgres', injectsChannels: true, create: (sentry) => sentry.postgresIntegration() },
+	{ name: 'Redis', injectsChannels: true, create: (sentry) => sentry.redisIntegration() },
+	{ name: 'Express', injectsChannels: true, create: (sentry) => sentry.expressIntegration() },
+];
+
+const PII_KEY_SNIPPETS = ['forwarded', '-ip', 'remote-', 'via', '-user'];
+
+const DATA_COLLECTION_WITHOUT_PII: DataCollection = {
+	userInfo: false,
+	cookies: false,
+	httpHeaders: {
+		request: { deny: PII_KEY_SNIPPETS },
+		response: { deny: PII_KEY_SNIPPETS },
+	},
+	httpBodies: [],
+	urlQueryParams: { deny: PII_KEY_SNIPPETS },
+	genAI: { inputs: false, outputs: false },
+	databaseQueryData: false,
+	queues: false,
+	graphQL: { document: false, variables: false },
+	frameContextLines: 7,
+};
+
+const PNPM_NESTED_FRAME_RE = /.*\/node_modules\/\.pnpm\/[^/]+\/node_modules\//;
+const N8N_CLI_INSTALL_PREFIX = '/usr/local/lib/node_modules/n8n/';
+
+type ErrorReportingOptions = ReportingOptions & {
+	/**
+	 * Capture in a forked Sentry isolation scope, dropping any ambient HTTP
+	 * request context. Use for errors reported from background work, which would
+	 * otherwise inherit whatever unrelated request is active at capture time.
+	 */
+	shouldIsolate?: boolean;
+	/** Groups the event into the Sentry issue for this key, instead of Sentry's default grouping. */
+	fingerprint?: string[];
+};
+
+/**
+ * Normalises a Sentry stack-frame filename so that pnpm-nested dependency
+ * paths and the n8n CLI install prefix become stable `app:///` roots. This
+ * lets Sentry code mappings match `n8n-core`, `n8n-nodes-base`, and cli
+ * frames without depending on the per-release pnpm peer-deps hash segment.
+ */
+export function normalizeFrameFilename(filename: string): string {
+	return filename
+		.replace(PNPM_NESTED_FRAME_RE, 'app:///')
+		.replace(N8N_CLI_INSTALL_PREFIX, 'app:///');
+}
+
 @Service()
 export class ErrorReporter {
 	private expirationTimer?: NodeJS.Timeout;
@@ -60,9 +146,11 @@ export class ErrorReporter {
 	/** Hashes of error stack traces, to deduplicate error reports. */
 	private seenErrors = new Set<string>();
 
-	private report: (error: Error | string, options?: ReportingOptions) => void;
+	private report: (error: Error | string, options?: ErrorReportingOptions) => void;
 
 	private beforeSendFilter?: (event: ErrorEvent, hint: EventHint) => boolean;
+
+	private sentryActive = false;
 
 	constructor(
 		private readonly logger: Logger,
@@ -79,7 +167,11 @@ export class ErrorReporter {
 			const { executionId } = options ?? {};
 			const context = executionId ? ` (execution ${executionId})` : '';
 
+			// Prevent infinite loops in cyclic cause chains.
+			const seen = new Set<Error>();
+
 			do {
+				seen.add(e);
 				let stack = '';
 				let meta = undefined;
 				if (e instanceof ApplicationError || e instanceof BaseError) {
@@ -96,7 +188,7 @@ export class ErrorReporter {
 					this.logger.error(msg, meta);
 				}
 				e = e.cause as Error;
-			} while (e);
+			} while (e && !seen.has(e));
 		}
 	}
 
@@ -116,8 +208,12 @@ export class ErrorReporter {
 		releaseDate,
 		withEventLoopBlockDetection,
 		eventLoopBlockThreshold,
-		profilesSampleRate,
+		eventLoopBlockMaxEventsPerHour,
+		profilingEnabled,
 		tracesSampleRate,
+		slowSpanThresholdMs = DEFAULT_SLOW_SPAN_THRESHOLD_MS,
+		webhookEndpoint,
+		webhookTracesSampleRate,
 		eligibleIntegrations = {},
 		healthEndpoint = '/healthz',
 	}: ErrorReporterInitOptions) {
@@ -140,8 +236,9 @@ export class ErrorReporter {
 					this.logger.warn(RELEASE_EXPIRATION_WARNING);
 					// eslint-disable-next-line @typescript-eslint/unbound-method
 					this.report = this.defaultReport;
+					this.sentryActive = false;
 				} else {
-					this.expirationTimer = setTimeout(checkForExpiration, ONE_DAY_IN_MS);
+					this.expirationTimer = setTimeout(checkForExpiration, ONE_DAY_IN_MS).unref();
 				}
 			};
 			checkForExpiration();
@@ -160,30 +257,20 @@ export class ErrorReporter {
 			setUser,
 			requestDataIntegration,
 			rewriteFramesIntegration,
+			withIsolationScope,
 		} = sentry;
 
-		// Most of the integrations are listed here:
-		// https://docs.sentry.io/platforms/javascript/guides/node/configuration/integrations/
-		const enabledIntegrations = new Set([
-			'InboundFilters',
-			'FunctionToString',
-			'LinkedErrors',
-			'OnUnhandledRejection',
-			'ContextLines',
-		]);
-
 		const isTracingEnabled = tracesSampleRate > 0;
+		const tracingIntegrations = isTracingEnabled
+			? TRACING_INTEGRATIONS.filter(({ name }) => !!eligibleIntegrations[name])
+			: [];
 		if (isTracingEnabled) {
-			const tracingIntegrations: SentryIntegration[] = ['Http', 'Postgres', 'Redis', 'Express'];
-			tracingIntegrations
-				.filter((integrationName) => !!eligibleIntegrations[integrationName])
-				.forEach((integrationName) => enabledIntegrations.add(integrationName));
-
 			this.tracing.setTracingImplementation(new SentryTracing(sentry));
 		}
 
-		const isProfilingEnabled = profilesSampleRate > 0;
-		if (isProfilingEnabled && !isTracingEnabled) {
+		const shouldInjectChannels = tracingIntegrations.some(({ injectsChannels }) => injectsChannels);
+
+		if (profilingEnabled && !isTracingEnabled) {
 			this.logger.warn('Profiling is enabled but tracing is disabled. Profiling will not work.');
 		}
 
@@ -196,25 +283,62 @@ export class ErrorReporter {
 						server_type: serverType,
 					},
 					eventLoopBlockThreshold,
+					eventLoopBlockMaxEventsPerHour,
 				)
 			: [];
 
-		const profilingIntegration = isProfilingEnabled ? await this.getProfilingIntegration() : [];
+		const profilingIntegration = profilingEnabled ? await this.getProfilingIntegration() : [];
 
 		init({
 			dsn,
 			release,
 			environment,
 			serverName,
-			...(isTracingEnabled ? { tracesSampleRate } : {}),
-			...(isProfilingEnabled ? { profilesSampleRate, profileLifecycle: 'trace' } : {}),
-			beforeSend: this.beforeSend.bind(this) as NodeOptions['beforeSend'],
-			ignoreTransactions: [`GET ${healthEndpoint}`, 'GET /metrics', 'SET search_path TO'],
-			ignoreSpans: [`GET ${healthEndpoint}`, 'GET /metrics', 'SET search_path TO'],
-			integrations: (integrations) => [
-				...integrations.filter(({ name }) => enabledIntegrations.has(name)),
-				rewriteFramesIntegration({ root: '/' }),
+			maxValueLength: SENTRY_MAX_VALUE_LENGTH,
+			dataCollection: DATA_COLLECTION_WITHOUT_PII,
+			enableRuntimeChannelInjection: shouldInjectChannels,
+			enableOpenTelemetrySetup: false,
+			tracePropagationTargets: [],
+			...(isTracingEnabled
+				? {
+						traceLifecycle: 'static',
+						tracesSampler: buildTracesSampler(tracesSampleRate),
+						// oxlint-disable-next-line typescript/no-deprecated -- This hook filters transactions in the static trace lifecycle.
+						beforeSendTransaction: buildBeforeSendTransaction(
+							slowSpanThresholdMs,
+							webhookEndpoint && webhookTracesSampleRate !== undefined
+								? { endpoint: webhookEndpoint, sampleRate: webhookTracesSampleRate }
+								: undefined,
+						),
+					}
+				: {}),
+			...(profilingEnabled ? { profileSessionSampleRate: 1, profileLifecycle: 'trace' } : {}),
+			beforeSend: this.beforeSend.bind(this),
+			ignoreSpans: [
+				`GET ${healthEndpoint}`,
+				'GET /metrics',
+				'SET search_path TO',
+				{ op: /^(middleware|router|handler)$/ },
+			],
+			defaultIntegrations: false,
+			integrations: [
+				sentry.eventFiltersIntegration(),
+				sentry.functionToStringIntegration(),
+				sentry.linkedErrorsIntegration(),
+				sentry.onUnhandledRejectionIntegration(),
+				sentry.contextLinesIntegration(),
+				...tracingIntegrations.map(({ create }) => create(sentry)),
+				rewriteFramesIntegration({
+					root: '/',
+					iteratee: (frame) => {
+						if (frame.filename) {
+							frame.filename = normalizeFrameFilename(frame.filename);
+						}
+						return frame;
+					},
+				}),
 				requestDataIntegration({
+					// oxlint-disable-next-line typescript/no-deprecated -- Keep explicit request-data exclusions for this integration.
 					include: {
 						cookies: false,
 						data: false,
@@ -234,8 +358,28 @@ export class ErrorReporter {
 			setUser({ id: serverName });
 		}
 
-		this.report = (error, options) => captureException(error, options);
+		this.report = (error, options) => {
+			if (options?.shouldIsolate) {
+				// The fork is a clone of the ambient isolation scope, so instance-level
+				// tags and user identity survive while request metadata is dropped.
+				withIsolationScope((isolationScope) => {
+					isolationScope.clearBreadcrumbs();
+					isolationScope.setSDKProcessingMetadata({
+						normalizedRequest: undefined,
+						ipAddress: undefined,
+					});
+					captureException(error, options);
+				});
+				return;
+			}
+			captureException(error, options);
+		};
+		this.sentryActive = true;
 		this.beforeSendFilter = beforeSendFilter;
+	}
+
+	isSentryActive() {
+		return this.sentryActive;
 	}
 
 	async beforeSend(event: ErrorEvent, hint: EventHint) {
@@ -256,7 +400,8 @@ export class ErrorReporter {
 			return null;
 		}
 
-		if (originalException instanceof AxiosError) return null;
+		// oxlint-disable-next-line typescript/no-deprecated
+		if (isAxiosError(originalException)) return null;
 
 		if (originalException instanceof BaseError) {
 			if (!originalException.shouldReport) return null;
@@ -291,7 +436,7 @@ export class ErrorReporter {
 		return event;
 	}
 
-	error(e: unknown, options?: ReportingOptions) {
+	error(e: unknown, options?: ErrorReportingOptions) {
 		if (e instanceof ExecutionCancelledError) return;
 		const toReport = this.wrap(e);
 		if (toReport) this.report(toReport, options);
@@ -301,13 +446,13 @@ export class ErrorReporter {
 		this.error(warning, { ...options, level: 'warning' });
 	}
 
-	info(msg: string, options?: ReportingOptions) {
+	info(msg: string, options?: ErrorReportingOptions) {
 		this.report(msg, { ...options, level: 'info' });
 	}
 
 	private wrap(e: unknown) {
 		if (e instanceof Error) return e;
-		if (typeof e === 'string') return new ApplicationError(e);
+		if (typeof e === 'string') return new UnexpectedError(e);
 		return;
 	}
 
@@ -330,17 +475,24 @@ export class ErrorReporter {
 		originalException: ApplicationError | BaseError,
 	) {
 		const { level, extra, tags } = originalException;
-		event.level = level;
+		// Sentry initializes exception events at `error`. A different level was
+		// explicitly supplied in the capture context and must take precedence.
+		if (event.level === undefined || event.level === 'error') event.level = level;
 		if (extra) event.extra = { ...event.extra, ...extra };
 		if (tags) event.tags = { ...event.tags, ...tags };
 	}
 
-	private async getEventLoopBlockIntegration(tags: Record<string, string>, threshold?: number) {
+	private async getEventLoopBlockIntegration(
+		tags: Record<string, string>,
+		threshold?: number,
+		maxEventsPerHour?: number,
+	) {
 		try {
 			const { eventLoopBlockIntegration } = await import('@sentry/node-native');
 			return [
 				eventLoopBlockIntegration({
 					...(threshold ? { threshold } : {}),
+					...(maxEventsPerHour ? { maxEventsPerHour } : {}),
 					staticTags: tags,
 				}),
 			];

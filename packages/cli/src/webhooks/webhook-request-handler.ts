@@ -1,12 +1,12 @@
 import { Logger } from '@n8n/backend-common';
 import { Container } from '@n8n/di';
 import type express from 'express';
-import { isWebhookHtmlSandboxingDisabled, getHtmlSandboxCSP } from 'n8n-core';
-import { ensureError, type IHttpRequestMethods } from 'n8n-workflow';
+import { ensureError } from '@n8n/utils/errors/ensure-error';
+import { type IHttpRequestMethods } from 'n8n-workflow';
 import { Readable } from 'stream';
-import { finished } from 'stream/promises';
 
 import { WebhookNotFoundError } from '@/errors/response-errors/webhook-not-found.error';
+import { PrometheusWebhookAndFormMetricsService } from '@/metrics/prometheus/webhook-and-form-metrics.service';
 import * as ResponseHelper from '@/response-helper';
 import type { ExpectedWebhookNodeType } from '@/webhooks/node-type-matcher';
 import type {
@@ -20,7 +20,12 @@ import {
 	isWebhookResponse,
 	isWebhookStreamResponse,
 } from '@/webhooks/webhook-response';
-import { WebhookResponseHeaders } from '@/webhooks/webhook-response-headers';
+import {
+	applySandboxCSP,
+	setRouteSandboxSetting,
+	WebhookResponseHeaders,
+	type WebhookSandboxSetting,
+} from '@/webhooks/webhook-response-headers';
 import type {
 	IWebhookManager,
 	WebhookOptionsRequest,
@@ -33,6 +38,7 @@ class WebhookRequestHandler {
 	constructor(
 		private readonly webhookManager: IWebhookManager,
 		private readonly expectedNodeType?: ExpectedWebhookNodeType,
+		private readonly sandboxSetting: WebhookSandboxSetting = 'webhook',
 	) {}
 
 	/**
@@ -41,6 +47,12 @@ class WebhookRequestHandler {
 	 */
 	async handleRequest(req: WebhookRequest | WebhookOptionsRequest, res: express.Response) {
 		const method = req.method;
+
+		// Set the sandbox before any writer runs, so that every response of the route has it,
+		// for all status codes and content types. Only an n8n page that must keep its origin
+		// replaces or removes it. Later writers follow the same setting through `res.locals`.
+		setRouteSandboxSetting(res, this.sandboxSetting);
+		applySandboxCSP(res);
 
 		if (method !== 'OPTIONS' && !WEBHOOK_METHODS.includes(method)) {
 			return ResponseHelper.sendErrorResponse(
@@ -72,7 +84,14 @@ class WebhookRequestHandler {
 				// pass the response from the webhookManager. However, we still have code
 				// that doesn't use that yet. We need to keep this here until all codepaths
 				// return a `WebhookResponse` instead.
-				this.sendLegacyResponse(res, response.data, true, response.responseCode, response.headers);
+				// oxlint-disable-next-line typescript/no-deprecated
+				await this.sendLegacyResponse(
+					res,
+					response.data,
+					true,
+					response.responseCode,
+					response.headers,
+				);
 			}
 		} catch (e) {
 			const error = ensureError(e);
@@ -84,7 +103,7 @@ class WebhookRequestHandler {
 			} else {
 				logger.error(
 					`Error in handling webhook request ${req.method} ${req.path}: ${error.message}`,
-					{ stacktrace: error.stack },
+					{ error },
 				);
 			}
 
@@ -111,13 +130,10 @@ class WebhookRequestHandler {
 	private async sendStreamResponse(res: express.Response, webhookResponse: WebhookResponseStream) {
 		const { stream, code, headers } = webhookResponse;
 
-		this.setResponseStatus(res, code);
-		this.setResponseHeaders(res, headers);
-
-		stream.pipe(res, { end: false });
-		await finished(stream);
-
-		process.nextTick(() => res.end());
+		await ResponseHelper.sendStreamToResponse(res, stream, () => {
+			this.setResponseStatus(res, code);
+			this.setResponseHeaders(res, headers);
+		});
 	}
 
 	private sendStaticResponse(res: express.Response, webhookResponse: WebhookStaticResponse) {
@@ -141,17 +157,14 @@ class WebhookRequestHandler {
 
 	private setResponseHeaders(res: express.Response, headers?: WebhookResponseHeaders) {
 		headers?.applyToResponse(res);
-
-		if (!isWebhookHtmlSandboxingDisabled()) {
-			res.setHeader('Content-Security-Policy', getHtmlSandboxCSP());
-		}
+		applySandboxCSP(res);
 	}
 
 	/**
 	 * Sends a legacy response to the client, i.e. when the webhook response is not a `WebhookResponse`.
 	 * @deprecated Use `sendWebhookResponse` instead.
 	 */
-	private sendLegacyResponse(
+	private async sendLegacyResponse(
 		res: express.Response,
 		data: any,
 		raw?: boolean,
@@ -164,7 +177,7 @@ class WebhookRequestHandler {
 		}
 
 		if (data instanceof Readable) {
-			data.pipe(res);
+			await ResponseHelper.sendStreamToResponse(res, data);
 			return;
 		}
 
@@ -188,7 +201,7 @@ class WebhookRequestHandler {
 		const method = req.method;
 		const { path } = req.params;
 
-		if (this.webhookManager.getWebhookMethods) {
+		if (method === 'OPTIONS' && this.webhookManager.getWebhookMethods) {
 			try {
 				const allowedMethods = await this.webhookManager.getWebhookMethods(path);
 				res.header('Access-Control-Allow-Methods', ['OPTIONS', ...allowedMethods].join(', '));
@@ -206,7 +219,10 @@ class WebhookRequestHandler {
 			const { allowedOrigins } = options ?? {};
 
 			if (allowedOrigins && allowedOrigins !== '*' && allowedOrigins !== req.headers.origin) {
-				const originsList = allowedOrigins.split(',');
+				const originsList = allowedOrigins
+					.split(',')
+					.map((origin) => origin.trim())
+					.filter((origin) => origin.length > 0);
 				const defaultOrigin = originsList[0];
 
 				if (originsList.length === 1) {
@@ -215,7 +231,7 @@ class WebhookRequestHandler {
 
 				if (originsList.includes(req.headers.origin as string)) {
 					res.header('Access-Control-Allow-Origin', req.headers.origin);
-				} else {
+				} else if (defaultOrigin) {
 					res.header('Access-Control-Allow-Origin', defaultOrigin);
 				}
 			} else {
@@ -235,11 +251,63 @@ class WebhookRequestHandler {
 	}
 }
 
+function trackWebhookMetrics(
+	metricsService: PrometheusWebhookAndFormMetricsService,
+	req: express.Request,
+	res: express.Response,
+	expectedNodeType: 'form' | 'webhook',
+	path: string,
+): void {
+	const startNs = process.hrtime.bigint();
+	res.on('finish', () => {
+		try {
+			const durationSeconds = Number(process.hrtime.bigint() - startNs) / 1e9;
+			const workflowId = (res.locals as { workflowId?: string }).workflowId ?? '';
+
+			if (expectedNodeType === 'form') {
+				// Only POST requests are form submissions; GET renders the form page.
+				if (req.method === 'POST') {
+					metricsService.observeFormSubmission({
+						statusCode: res.statusCode,
+						formPath: path,
+						workflowId,
+						durationSeconds,
+					});
+				}
+			} else {
+				// webhook node type
+				metricsService.observeWebhookRequest({
+					method: req.method,
+					statusCode: res.statusCode,
+					webhookPath: path,
+					workflowId,
+					durationSeconds,
+				});
+			}
+		} catch {
+			// intentional: metrics must never break request handling
+		}
+	});
+}
+
+/**
+ * Creates an Express request handler for the given webhook manager.
+ *
+ * When `expectedNodeType` is `'webhook'` or `'form'`, metrics are automatically
+ * recorded on each response: webhook requests via `observeWebhookRequest`,
+ * form submissions (POST only) via `observeFormSubmission`. No metrics are
+ * emitted for other node types.
+ *
+ * `sandboxSetting` selects the operator setting for the sandbox CSP. It defaults to the
+ * form setting for form routes and to the webhook setting for all other routes.
+ */
 export function createWebhookHandlerFor(
 	webhookManager: IWebhookManager,
 	expectedNodeType?: ExpectedWebhookNodeType,
+	sandboxSetting: WebhookSandboxSetting = expectedNodeType === 'form' ? 'form' : 'webhook',
 ): express.RequestHandler {
-	const handler = new WebhookRequestHandler(webhookManager, expectedNodeType);
+	const handler = new WebhookRequestHandler(webhookManager, expectedNodeType, sandboxSetting);
+	const metricsService = Container.get(PrometheusWebhookAndFormMetricsService);
 
 	return async (req, res) => {
 		const webhookRequest = req as WebhookRequest | WebhookOptionsRequest;
@@ -248,6 +316,11 @@ export function createWebhookHandlerFor(
 		if (Array.isArray(params.path)) {
 			params.path = params.path.join('/');
 		}
+
+		if (expectedNodeType === 'form' || expectedNodeType === 'webhook') {
+			trackWebhookMetrics(metricsService, req, res, expectedNodeType, params.path);
+		}
+
 		await handler.handleRequest(webhookRequest, res);
 	};
 }

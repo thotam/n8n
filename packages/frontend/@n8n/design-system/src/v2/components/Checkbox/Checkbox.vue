@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { reactiveOmit, reactivePick } from '@vueuse/core';
+import { reactivePick } from '@vueuse/core';
 import { CheckboxIndicator, CheckboxRoot, Label, Primitive, useForwardProps } from 'reka-ui';
 import { computed, useAttrs, useId } from 'vue';
 
-import Icon from '@n8n/design-system/components/N8nIcon/Icon.vue';
-
 import type { CheckboxEmits, CheckboxProps, CheckboxSlots } from './Checkbox.types';
+import Icon from '../../../components/N8nIcon/Icon.vue';
 
 defineOptions({ inheritAttrs: false });
 
@@ -20,8 +19,11 @@ const modelValue = defineModel<boolean>({ default: undefined });
 const computedValue = computed(() => (props.indeterminate ? 'indeterminate' : modelValue.value));
 
 const attrs = useAttrs();
-const primitiveClass = computed(() => attrs.class);
-const rootAttrs = computed(() => reactiveOmit(attrs, ['class']));
+const getRootAttrs = () => {
+	const rootAttrs = { ...attrs };
+	delete rootAttrs.class;
+	return rootAttrs;
+};
 
 function onUpdate(value: boolean | 'indeterminate') {
 	// @ts-expect-error - 'target' does not exist in type 'EventInit'
@@ -31,14 +33,10 @@ function onUpdate(value: boolean | 'indeterminate') {
 </script>
 
 <template>
-	<Primitive
-		:as
-		:class="[$style.checkbox, primitiveClass]"
-		:data-disabled="disabled ? '' : undefined"
-	>
+	<Primitive :as :class="[$style.checkbox, attrs.class]" :data-disabled="disabled ? '' : undefined">
 		<CheckboxRoot
 			:id="uuid"
-			v-bind="{ ...rootProps, ...rootAttrs }"
+			v-bind="{ ...rootProps, ...getRootAttrs() }"
 			:model-value="computedValue"
 			:name="name"
 			:disabled="disabled"
@@ -69,7 +67,7 @@ function onUpdate(value: boolean | 'indeterminate') {
 	flex-direction: row;
 	gap: var(--spacing--2xs);
 	cursor: pointer;
-	color: white;
+	color: var(--text-color--inverse);
 	&[data-disabled] {
 		cursor: not-allowed;
 	}
@@ -80,29 +78,37 @@ function onUpdate(value: boolean | 'indeterminate') {
 	background: transparent;
 	width: 16px;
 	height: 16px;
-	border-radius: var(--radius);
+	border-radius: var(--radius--3xs);
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	border: var(--border);
-	color: white;
+	border: none;
+	color: var(--text-color--inverse);
 	cursor: inherit;
 	flex-shrink: 0;
+
+	&[data-state='unchecked'] {
+		border: var(--border);
+		border-color: var(--border-color--strong);
+
+		&[data-disabled] {
+			border: var(--border);
+		}
+	}
 
 	&[data-state='checked'],
 	&[data-state='indeterminate'] {
 		background-color: var(--color--primary);
-		border-color: var(--color--primary--shade-1);
 
 		&[data-disabled] {
 			background: var(--color--foreground);
-			border-color: var(--color--foreground);
+			color: var(--color--text--tint-1);
 		}
 	}
 
 	&:focus-visible {
-		box-shadow: 0 0 0 2px var(--color--secondary);
-		outline: none;
+		outline: var(--focus--border-width) solid var(--focus--outline-color);
+		border-color: var(--focus--border-color);
 		z-index: 1;
 	}
 }
@@ -117,13 +123,13 @@ function onUpdate(value: boolean | 'indeterminate') {
 .label {
 	flex: 1;
 	padding-top: 1px;
-	font-size: var(--font-size--sm);
+	font-size: var(--checkbox--label--font-size, var(--font-size--sm));
 	line-height: 1;
 	color: var(--color--text--shade-1);
 	cursor: inherit;
 
 	&[data-disabled] {
-		color: var(--color--text--tint-1);
+		color: var(--checkbox--label--color--disabled);
 	}
 }
 </style>

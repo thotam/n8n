@@ -8,7 +8,8 @@
  * no infinite loops.
  */
 
-import { createTool } from '@mastra/core/tools';
+import { Tool } from '@n8n/agents';
+import { getLegacyBuilderToolNames } from '@n8n/api-types';
 import { z } from 'zod';
 
 import type { OrchestrationContext } from '../../types';
@@ -18,14 +19,12 @@ import {
 	type RemediationMetadata,
 	verificationVerdictSchema,
 } from '../../workflow-loop/workflow-loop-state';
+import { ORCHESTRATION_TOOL_IDS } from '../tool-ids';
 
 export const reportVerificationVerdictInputSchema = z.object({
 	workItemId: z.string().describe('The work item ID from the build task (wi_XXXXXXXX)'),
 	workflowId: z.string().describe('The workflow ID that was verified'),
-	executionId: z
-		.string()
-		.optional()
-		.describe('The execution ID from `executions(action="run")`, if available'),
+	executionId: z.string().optional().describe('The execution ID from `run_workflow`, if available'),
 	verdict: verificationVerdictSchema.describe(
 		'Your assessment: "verified" if the workflow ran correctly, ' +
 			'"needs_patch" if a specific node needs fixing, ' +
@@ -34,6 +33,12 @@ export const reportVerificationVerdictInputSchema = z.object({
 			'"needs_user_input" if user action is required (e.g. missing credentials), ' +
 			'"failed_terminal" if the failure cannot be fixed automatically',
 	),
+	workflowInspection: z
+		.string()
+		.min(1)
+		.describe(
+			'Brief note from inspecting the persisted workflow JSON/code after save. Mention why the saved graph does or does not match the requested outcome.',
+		),
 	failureSignature: z
 		.string()
 		.optional()
@@ -61,7 +66,9 @@ export const reportVerificationVerdictInputSchema = z.object({
 			attemptCount: z.number().int().min(0).optional(),
 		})
 		.optional()
-		.describe('Remediation metadata returned by verify-built-workflow, if available'),
+		.describe(
+			'Remediation metadata returned by workflow_builder_verify_built_workflow, if available',
+		),
 	summary: z.string().describe('One-sentence summary of the verification result'),
 });
 
@@ -99,17 +106,20 @@ function defaultRemediationForVerdict(
 }
 
 export function createReportVerificationVerdictTool(context: OrchestrationContext) {
-	return createTool({
-		id: 'report-verification-verdict',
-		description:
+	return new Tool(ORCHESTRATION_TOOL_IDS.REPORT_VERIFICATION_VERDICT)
+		.legacyNames(...getLegacyBuilderToolNames(ORCHESTRATION_TOOL_IDS.REPORT_VERIFICATION_VERDICT))
+		.description(
 			'Report the result of verifying a workflow after building it. ' +
-			'Call this after running a workflow and (optionally) debugging a failed execution. ' +
-			'Returns deterministic guidance on what to do next (done, rebuild, or blocked).',
-		inputSchema: reportVerificationVerdictInputSchema,
-		outputSchema: z.object({
-			guidance: z.string(),
-		}),
-		execute: async (input: z.infer<typeof reportVerificationVerdictInputSchema>) => {
+				'Call this after inspecting the persisted workflow, running it, and (optionally) debugging a failed execution. ' +
+				'Returns deterministic guidance on what to do next (done, rebuild, or blocked).',
+		)
+		.input(reportVerificationVerdictInputSchema)
+		.output(
+			z.object({
+				guidance: z.string(),
+			}),
+		)
+		.handler(async (input: z.infer<typeof reportVerificationVerdictInputSchema>) => {
 			if (!context.workflowTaskService) {
 				return { guidance: 'Error: verification verdict reporting not available.' };
 			}
@@ -128,6 +138,10 @@ export function createReportVerificationVerdictTool(context: OrchestrationContex
 				};
 			}
 
+			// The claim comes from the persisted run, never from the model: a
+			// `verified` verdict on a partially covered run must not upgrade it.
+			const claim = (await context.workflowTaskService.getBuildOutcome(input.workItemId))
+				?.verification?.claim;
 			const remediation = input.remediation ?? defaultRemediationForVerdict(input);
 			const forcedTerminalVerdict =
 				remediation && !remediation.shouldEdit
@@ -142,6 +156,8 @@ export function createReportVerificationVerdictTool(context: OrchestrationContex
 				workflowId: input.workflowId,
 				executionId: input.executionId,
 				verdict: forcedTerminalVerdict ?? input.verdict,
+				claim,
+				workflowInspection: input.workflowInspection,
 				failureSignature: forcedTerminalVerdict
 					? (remediation?.reason ?? input.failureSignature)
 					: input.failureSignature,
@@ -170,8 +186,11 @@ export function createReportVerificationVerdictTool(context: OrchestrationContex
 			}
 
 			return {
-				guidance: formatWorkflowLoopGuidance(action, { workItemId: input.workItemId }),
+				guidance: formatWorkflowLoopGuidance(action, {
+					workItemId: input.workItemId,
+					setupPanelEnabled: context.setupPanelEnabled === true,
+				}),
 			};
-		},
-	});
+		})
+		.build();
 }

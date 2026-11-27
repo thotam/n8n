@@ -1,9 +1,11 @@
 // Different LLMConfig type for this file - specific to LLM providers
+import type * as LangchainAnthropic from '@langchain/anthropic';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import type * as LangchainOpenAI from '@langchain/openai';
+import type { CustomFetch } from '@n8n/backend-network/transport';
+import { lazyImport } from '@n8n/utils/lazy-import';
 
 import { MAX_OUTPUT_TOKENS } from '@/constants';
-
-import { getProxyAgent } from './utils/http-proxy-agent';
 
 /**
  * Configuration for LLM provider initialization.
@@ -12,10 +14,19 @@ export interface LLMProviderConfig {
 	apiKey: string;
 	baseUrl?: string;
 	headers?: Record<string, string>;
+	/**
+	 * Proxy-aware `fetch` supplied by the caller, passed to the provider SDK's
+	 * `fetch` option. A `fetch` replacement (not an undici `dispatcher`) is used
+	 * so it stays compatible with the SDKs' bundled undici version. When omitted
+	 * the SDK uses its default transport.
+	 */
+	fetch?: CustomFetch;
 }
 
 export const gpt52 = async (config: LLMProviderConfig) => {
-	const { ChatOpenAI } = await import('@langchain/openai');
+	const { ChatOpenAI } = await lazyImport<typeof LangchainOpenAI>(
+		async () => await import('@langchain/openai'),
+	);
 	return new ChatOpenAI({
 		model: 'gpt-5.2-2025-12-11',
 		apiKey: config.apiKey,
@@ -24,38 +35,39 @@ export const gpt52 = async (config: LLMProviderConfig) => {
 		configuration: {
 			baseURL: config.baseUrl,
 			defaultHeaders: config.headers,
-			fetchOptions: {
-				dispatcher: getProxyAgent(config.baseUrl ?? 'https://api.openai.com/v1'),
-			},
+			fetch: config.fetch,
 		},
 	});
 };
 
-export const anthropicClaudeSonnet45 = async (config: LLMProviderConfig) => {
-	const { ChatAnthropic } = await import('@langchain/anthropic');
+export const anthropicClaudeSonnet46 = async (config: LLMProviderConfig) => {
+	const { ChatAnthropic } = await lazyImport<typeof LangchainAnthropic>(
+		async () => await import('@langchain/anthropic'),
+	);
 	const model = new ChatAnthropic({
-		model: 'claude-sonnet-4-5-20250929',
+		model: 'claude-sonnet-4-6',
 		apiKey: config.apiKey,
 		temperature: 0,
 		maxTokens: MAX_OUTPUT_TOKENS,
 		anthropicApiUrl: config.baseUrl,
 		clientOptions: {
 			defaultHeaders: config.headers,
-			fetchOptions: {
-				dispatcher: getProxyAgent(config.baseUrl),
-			},
+			fetch: config.fetch,
 		},
 	});
 
-	// Remove Langchain default topP parameter since Sonnet 4.5 doesn't allow setting both temperature and topP
+	// Remove Langchain default topP parameter since Sonnet 4.6 doesn't allow setting both temperature and topP
 	delete model.topP;
 
 	return model;
 };
-export const anthropicClaudeSonnet45Think = async (config: LLMProviderConfig) => {
-	const { ChatAnthropic } = await import('@langchain/anthropic');
+
+export const anthropicClaudeSonnet46Think = async (config: LLMProviderConfig) => {
+	const { ChatAnthropic } = await lazyImport<typeof LangchainAnthropic>(
+		async () => await import('@langchain/anthropic'),
+	);
 	const model = new ChatAnthropic({
-		model: 'claude-sonnet-4-5-20250929',
+		model: 'claude-sonnet-4-6',
 		apiKey: config.apiKey,
 		maxTokens: MAX_OUTPUT_TOKENS,
 		anthropicApiUrl: config.baseUrl,
@@ -65,13 +77,11 @@ export const anthropicClaudeSonnet45Think = async (config: LLMProviderConfig) =>
 		},
 		clientOptions: {
 			defaultHeaders: config.headers,
-			fetchOptions: {
-				dispatcher: getProxyAgent(config.baseUrl),
-			},
+			fetch: config.fetch,
 		},
 	});
 
-	// Remove Langchain default topP parameter since Sonnet 4.5 doesn't allow setting both temperature and topP
+	// Remove Langchain default topP parameter since Sonnet 4.6 doesn't allow setting both temperature and topP
 	delete model.topP;
 	delete model.temperature;
 
@@ -79,7 +89,9 @@ export const anthropicClaudeSonnet45Think = async (config: LLMProviderConfig) =>
 };
 
 export const anthropicHaiku45 = async (config: LLMProviderConfig) => {
-	const { ChatAnthropic } = await import('@langchain/anthropic');
+	const { ChatAnthropic } = await lazyImport<typeof LangchainAnthropic>(
+		async () => await import('@langchain/anthropic'),
+	);
 	const model = new ChatAnthropic({
 		model: 'claude-haiku-4-5-20251001',
 		apiKey: config.apiKey,
@@ -88,20 +100,20 @@ export const anthropicHaiku45 = async (config: LLMProviderConfig) => {
 		anthropicApiUrl: config.baseUrl,
 		clientOptions: {
 			defaultHeaders: config.headers,
-			fetchOptions: {
-				dispatcher: getProxyAgent(config.baseUrl),
-			},
+			fetch: config.fetch,
 		},
 	});
 
-	// Remove Langchain default topP parameter since Sonnet 4.5 doesn't allow setting both temperature and topP
+	// Remove Langchain default topP parameter since Haiku 4.5 doesn't allow setting both temperature and topP
 	delete model.topP;
 
 	return model;
 };
 
 export const anthropicClaudeOpus45 = async (config: LLMProviderConfig) => {
-	const { ChatAnthropic } = await import('@langchain/anthropic');
+	const { ChatAnthropic } = await lazyImport<typeof LangchainAnthropic>(
+		async () => await import('@langchain/anthropic'),
+	);
 	const model = new ChatAnthropic({
 		model: 'claude-opus-4-5-20251101',
 		apiKey: config.apiKey,
@@ -110,9 +122,7 @@ export const anthropicClaudeOpus45 = async (config: LLMProviderConfig) => {
 		anthropicApiUrl: config.baseUrl,
 		clientOptions: {
 			defaultHeaders: config.headers,
-			fetchOptions: {
-				dispatcher: getProxyAgent(config.baseUrl),
-			},
+			fetch: config.fetch,
 		},
 	});
 
@@ -134,7 +144,9 @@ const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
  */
 function createOpenRouterModel(modelName: string) {
 	return async (config: LLMProviderConfig) => {
-		const { ChatOpenAI } = await import('@langchain/openai');
+		const { ChatOpenAI } = await lazyImport<typeof LangchainOpenAI>(
+			async () => await import('@langchain/openai'),
+		);
 		return new ChatOpenAI({
 			model: modelName,
 			apiKey: config.apiKey,
@@ -147,9 +159,7 @@ function createOpenRouterModel(modelName: string) {
 					'HTTP-Referer': 'https://n8n.io',
 					'X-Title': 'n8n AI Workflow Builder',
 				},
-				fetchOptions: {
-					dispatcher: getProxyAgent(OPENROUTER_BASE_URL),
-				},
+				fetch: config.fetch,
 			},
 		});
 	};
@@ -187,8 +197,8 @@ export const devstral = createOpenRouterModel('mistralai/devstral-small');
 export type ModelId =
 	// Native models
 	| 'claude-opus-4.5'
-	| 'claude-sonnet-4.5'
-	| 'claude-sonnet-4.5-think'
+	| 'claude-sonnet-4.6'
+	| 'claude-sonnet-4.6-think'
 	| 'claude-haiku-4.5'
 	| 'gpt-5.2'
 	// OpenRouter models
@@ -207,8 +217,8 @@ export const MODEL_FACTORIES: Record<
 > = {
 	// Native models
 	'claude-opus-4.5': anthropicClaudeOpus45,
-	'claude-sonnet-4.5': anthropicClaudeSonnet45,
-	'claude-sonnet-4.5-think': anthropicClaudeSonnet45Think,
+	'claude-sonnet-4.6': anthropicClaudeSonnet46,
+	'claude-sonnet-4.6-think': anthropicClaudeSonnet46Think,
 	'claude-haiku-4.5': anthropicHaiku45,
 	'gpt-5.2': gpt52,
 	// OpenRouter models
@@ -248,7 +258,7 @@ export function getApiKeyEnvVar(modelId: ModelId): string {
 export const AVAILABLE_MODELS: readonly ModelId[] = [
 	// Native models
 	'claude-opus-4.5',
-	'claude-sonnet-4.5',
+	'claude-sonnet-4.6',
 	'claude-haiku-4.5',
 	'gpt-5.2',
 	// OpenRouter models
@@ -262,4 +272,4 @@ export const AVAILABLE_MODELS: readonly ModelId[] = [
 /**
  * Default model used when no model is specified.
  */
-export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4.5';
+export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4.6';

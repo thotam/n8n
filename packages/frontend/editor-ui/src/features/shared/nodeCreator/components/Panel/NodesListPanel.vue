@@ -1,13 +1,10 @@
 <script setup lang="ts">
-import type { INodeCreateElement, NodeFilterType, SimplifiedNodeType } from '@/Interface';
+import type { NodeFilterType } from '@/Interface';
 import {
-	AI_EVALUATION,
-	AI_NODE_CREATOR_VIEW,
-	AI_OTHERS_NODE_CREATOR_VIEW,
-	AI_UNCATEGORIZED_CATEGORY,
+	ADD_EMPTY_GROUP_NODE_CREATOR_ITEM,
+	DEBOUNCE_TIME,
 	HUMAN_IN_THE_LOOP_CATEGORY,
-	REGULAR_NODE_CREATOR_VIEW,
-	TRIGGER_NODE_CREATOR_VIEW,
+	isNodeCreatorOpenFromConnection,
 } from '@/app/constants';
 import { computed, onMounted, onUnmounted, watch } from 'vue';
 
@@ -15,19 +12,13 @@ import { useNodeCreatorStore } from '@/features/shared/nodeCreator/nodeCreator.s
 
 import NodeIcon from '@/app/components/NodeIcon.vue';
 import { getNodeIconSize } from '@/app/utils/nodeIcon';
-import { useDebounce } from '@/app/composables/useDebounce';
+import { useDebounce } from '@n8n/composables/useDebounce';
 import { useI18n } from '@n8n/i18n';
 import { useKeyboardNavigation } from '../../composables/useKeyboardNavigation';
 import { useViewStacks, type ViewStack } from '../../composables/useViewStacks';
-import {
-	AINodesView,
-	AIView,
-	HitlToolView,
-	RegularView,
-	TriggerView,
-	type NodeView,
-} from '../../views/viewsData';
+import { NODE_CREATOR_VIEWS } from '../../views/viewsData';
 import ActionsRenderer from '../Modes/ActionsMode.vue';
+import AgentsRenderer from '../Modes/AgentsMode.vue';
 import NodesRenderer from '../Modes/NodesMode.vue';
 import SearchBar from './SearchBar.vue';
 
@@ -35,18 +26,33 @@ import CommunityNodeDetails from '@/features/settings/communityNodes/components/
 import CommunityNodeDocsLink from '@/features/settings/communityNodes/components/nodeCreator/CommunityNodeDocsLink.vue';
 import CommunityNodeFooter from '@/features/settings/communityNodes/components/nodeCreator/CommunityNodeFooter.vue';
 import CommunityNodeInfo from '@/features/settings/communityNodes/components/nodeCreator/CommunityNodeInfo.vue';
-import { useUsersStore } from '@/features/settings/users/users.store';
+import { useUsersStore } from '@n8n/stores/users.store';
+import { useUIStore } from '@/app/stores/ui.store';
+import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
 
 import { N8nIcon, N8nNotice } from '@n8n/design-system';
 const i18n = useI18n();
-const { callDebounced } = useDebounce();
+const { callDebounced, debounce } = useDebounce();
 
 const { mergedNodes } = useNodeCreatorStore();
-const { pushViewStack, popViewStack, updateCurrentViewStack } = useViewStacks();
+const { pushViewStack, popViewStack, updateCurrentViewStack, viewStack } = useViewStacks();
 const { setActiveItemIndex, attachKeydownEvent, detachKeydownEvent } = useKeyboardNavigation();
 const nodeCreatorStore = useNodeCreatorStore();
+const uiStore = useUIStore();
+const workflowDocumentStore = injectWorkflowDocumentStore();
 
 const { isAdminOrOwner } = useUsersStore();
+
+const isAddingInsideGroup = computed(() => {
+	// Currently the only way to add an item inside group is from connection inside group
+	if (!isNodeCreatorOpenFromConnection(nodeCreatorStore.openSource)) return false;
+
+	const sourceNodeId = uiStore.lastInteractedWithNodeId;
+	return (
+		sourceNodeId !== undefined &&
+		workflowDocumentStore.value.getGroupForNode(sourceNodeId) !== undefined
+	);
+});
 
 const activeViewStack = computed(() => useViewStacks().activeViewStack);
 
@@ -55,6 +61,8 @@ const communityNodeDetails = computed(() => activeViewStack.value.communityNodeD
 const viewStacks = computed(() => useViewStacks().viewStacks);
 
 const isActionsMode = computed(() => useViewStacks().activeViewStackMode === 'actions');
+
+const isAgentsMode = computed(() => useViewStacks().activeViewStackMode === 'agents');
 
 const searchPlaceholder = computed(() => {
 	let node = activeViewStack.value?.title as string;
@@ -67,6 +75,10 @@ const searchPlaceholder = computed(() => {
 		return i18n.baseText('nodeCreator.actionsCategory.searchActions', {
 			interpolate: { node },
 		});
+	}
+
+	if (isAgentsMode.value) {
+		return i18n.baseText('nodeCreator.agentsPanel.searchPlaceholder');
 	}
 
 	return i18n.baseText('nodeCreator.searchBar.searchNodes');
@@ -102,41 +114,83 @@ function getDefaultActiveIndex(search: string = ''): number {
 	return 0;
 }
 
+function applySearch(value: string) {
+	if (!activeViewStack.value.uuid) return;
+	// Re-applying an identical term (e.g. a trailing space, trimmed on emit) would
+	// regenerate item uuids without the memoized list DOM picking them up,
+	// breaking Enter selection.
+	if (activeViewStack.value.search === value) return;
+	updateCurrentViewStack({ search: value });
+	void setActiveItemIndex(getDefaultActiveIndex(value));
+	if (value.length) {
+		callDebounced(
+			nodeCreatorStore.onNodeFilterChanged,
+			{ trailing: true, debounceTime: 2000 },
+			{
+				newValue: value,
+				filteredNodes: activeViewStack.value.items ?? [],
+				filterMode: activeViewStack.value.rootView ?? 'Regular',
+				subcategory: activeViewStack.value.subcategory,
+				title: activeViewStack.value.title,
+			},
+		);
+	}
+}
+
+// Debounce the actual filtering so rapid typing doesn't re-run the fuzzy
+// search (and re-render the list) on every keystroke. The view stack search is
+// only written once the user pauses, keeping the input responsive.
+const debouncedApplySearch = debounce(
+	(value: string, scheduledForViewUuid: string | undefined) => {
+		// The user may have navigated to another view (e.g. selected an item)
+		// while the search was pending; the stale term must not leak into it.
+		if (activeViewStack.value.uuid !== scheduledForViewUuid) return;
+		applySearch(value);
+	},
+	{ trailing: true, debounceTime: DEBOUNCE_TIME.INPUT.SEARCH },
+);
+
 function onSearch(value: string) {
-	if (activeViewStack.value.uuid) {
-		updateCurrentViewStack({ search: value });
-		void setActiveItemIndex(getDefaultActiveIndex(value));
-		if (value.length) {
-			callDebounced(
-				nodeCreatorStore.onNodeFilterChanged,
-				{ trailing: true, debounceTime: 2000 },
-				{
-					newValue: value,
-					filteredNodes: activeViewStack.value.items ?? [],
-					filterMode: activeViewStack.value.rootView ?? 'Regular',
-					subcategory: activeViewStack.value.subcategory,
-					title: activeViewStack.value.title,
-				},
-			);
-		}
+	if (value === '') {
+		// Clearing must take effect immediately, and a pending search for the
+		// previous value must not re-filter afterwards.
+		debouncedApplySearch.cancel();
+		applySearch(value);
+		return;
+	}
+	void debouncedApplySearch(value, activeViewStack.value.uuid);
+}
+
+function flushPendingSearchOnNavigation(event: KeyboardEvent) {
+	// Selection keys must act on the filtered list, so a pending search is
+	// applied synchronously before keyboard navigation reads the rendered items.
+	if (['Enter', 'ArrowDown', 'ArrowUp'].includes(event.key)) {
+		void debouncedApplySearch.flush();
 	}
 }
 
 function onTransitionEnd() {
-	cleanupopeningContext();
+	if (viewStacks.value.length === 0) {
+		cleanupopeningContext();
+	}
 	void setActiveItemIndex(getDefaultActiveIndex());
 }
 
 function cleanupopeningContext() {
 	nodeCreatorStore.openingContext = null;
+	nodeCreatorStore.isReplacingFromSetupPanel = false;
 }
 
 onMounted(() => {
+	// Registered before attachKeydownEvent so the flush runs first: keyboard
+	// navigation stops propagation of these keys on the same capture target.
+	document.addEventListener('keydown', flushPendingSearchOnNavigation, { capture: true });
 	attachKeydownEvent();
 	void setActiveItemIndex(getDefaultActiveIndex());
 });
 
 onUnmounted(() => {
+	document.removeEventListener('keydown', flushPendingSearchOnNavigation, { capture: true });
 	cleanupopeningContext();
 	detachKeydownEvent();
 });
@@ -144,16 +198,6 @@ onUnmounted(() => {
 watch(
 	() => nodeCreatorView.value,
 	(selectedView) => {
-		const views: Record<NodeFilterType, (nodes: SimplifiedNodeType[]) => NodeView> = {
-			[TRIGGER_NODE_CREATOR_VIEW]: TriggerView,
-			[REGULAR_NODE_CREATOR_VIEW]: RegularView,
-			[AI_NODE_CREATOR_VIEW]: AIView,
-			[AI_OTHERS_NODE_CREATOR_VIEW]: AINodesView,
-			[AI_UNCATEGORIZED_CATEGORY]: AINodesView,
-			[AI_EVALUATION]: AINodesView,
-			[HUMAN_IN_THE_LOOP_CATEGORY]: HitlToolView,
-		};
-
 		const additionalOptions: Partial<Record<NodeFilterType, Partial<ViewStack>>> = {
 			// is a root view, but it should behave like a subcategory view
 			[HUMAN_IN_THE_LOOP_CATEGORY]: {
@@ -161,27 +205,20 @@ watch(
 			},
 		};
 
-		const matchedView = views[selectedView];
-
-		if (!matchedView) {
-			console.warn(`No view found for ${selectedView}`);
-			return;
-		}
-		const view = matchedView(mergedNodes);
-		const viewStack: ViewStack = {
-			title: view.title,
-			subtitle: view?.subtitle ?? '',
-			items: view.items as INodeCreateElement[],
-			nodeIcon: view.nodeIcon,
-			info: view.info,
-			hasSearch: true,
-			mode: 'nodes',
-			rootView: selectedView,
-			// Root search should include all nodes
-			searchItems: mergedNodes,
+		const view = NODE_CREATOR_VIEWS[selectedView](mergedNodes);
+		const items = isAddingInsideGroup.value
+			? // Forbid adding groups inside groups (nesting not supported)
+				view.items.filter((item) => item.key !== ADD_EMPTY_GROUP_NODE_CREATOR_ITEM)
+			: view.items;
+		pushViewStack({
+			...viewStack({ ...view, items }, selectedView),
 			...additionalOptions[selectedView],
-		};
-		pushViewStack(viewStack);
+		});
+
+		const pending = nodeCreatorStore.consumePendingInitialViewStack();
+		if (pending) {
+			pushViewStack(pending);
+		}
 	},
 	{ immediate: true },
 );
@@ -216,7 +253,7 @@ function onBackButton() {
 						:class="$style.backButton"
 						@click="onBackButton"
 					>
-						<N8nIcon :class="$style.backButtonIcon" icon="arrow-left" :size="22" />
+						<N8nIcon :class="$style.backButtonIcon" icon="arrow-left" size="large" />
 					</button>
 					<NodeIcon
 						v-if="activeViewStack.nodeIcon"
@@ -270,6 +307,9 @@ function onBackButton() {
 				<!-- Actions mode -->
 				<ActionsRenderer v-if="isActionsMode && activeViewStack.subcategory" v-bind="$attrs" />
 
+				<!-- Agents mode -->
+				<AgentsRenderer v-else-if="isAgentsMode" v-bind="$attrs" />
+
 				<!-- Nodes Mode -->
 				<NodesRenderer v-else :root-view="nodeCreatorView" v-bind="$attrs" />
 			</div>
@@ -277,6 +317,7 @@ function onBackButton() {
 			<CommunityNodeFooter
 				v-if="communityNodeDetails && !isCommunityNodeActionsMode"
 				:package-name="communityNodeDetails.packageName"
+				:node-type-name="communityNodeDetails.key"
 				:show-manage="communityNodeDetails.installed && isAdminOrOwner"
 			/>
 		</aside>
@@ -284,6 +325,8 @@ function onBackButton() {
 </template>
 
 <style lang="scss" module>
+@use '@/app/css/variables' as *;
+
 :global(.panel-slide-in-leave-active),
 :global(.panel-slide-in-enter-active),
 :global(.panel-slide-out-leave-active),
@@ -314,7 +357,9 @@ function onBackButton() {
 	background: transparent;
 	border: none;
 	cursor: pointer;
-	padding: var(--spacing--2xs) var(--spacing--xs) 0 0;
+	display: inline-flex;
+	align-items: center;
+	padding: 0 var(--spacing--xs) 0 0;
 }
 
 .backButtonIcon {
@@ -374,7 +419,7 @@ function onBackButton() {
 }
 .header {
 	font-size: var(--font-size--lg);
-	font-weight: var(--font-weight--bold);
+	font-weight: var(--font-weight--medium);
 	line-height: var(--line-height--sm);
 
 	padding: var(--spacing--sm) var(--spacing--sm);
@@ -386,7 +431,7 @@ function onBackButton() {
 }
 .title {
 	line-height: 24px;
-	font-weight: var(--font-weight--bold);
+	font-weight: var(--font-weight--medium);
 	font-size: var(--font-size--lg);
 	margin: 0;
 
@@ -409,6 +454,8 @@ function onBackButton() {
 </style>
 
 <style lang="scss">
+@use '@/app/css/variables' as *;
+
 @each $node-type in $supplemental-node-types {
 	.nodes-list-panel-#{$node-type} .nodes-list-panel-header {
 		.n8n-node-icon svg {

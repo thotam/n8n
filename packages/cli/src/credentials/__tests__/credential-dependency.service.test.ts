@@ -1,7 +1,7 @@
 import type { CredentialDependencyRepository, SecretsProviderConnectionRepository } from '@n8n/db';
 import { In } from '@n8n/typeorm';
 import type { EntityManager } from '@n8n/typeorm';
-import { mock } from 'jest-mock-extended';
+import { mock } from 'vitest-mock-extended';
 
 import {
 	CredentialDependencyService,
@@ -17,7 +17,7 @@ describe('CredentialDependencyService', () => {
 	);
 
 	beforeEach(() => {
-		jest.resetAllMocks();
+		vi.resetAllMocks();
 	});
 
 	describe('resolveExternalSecretsStoreDependencyFilter', () => {
@@ -56,10 +56,10 @@ describe('CredentialDependencyService', () => {
 				entityManager,
 			});
 
-			expect(secretsProviderConnectionRepository.findIdsByProviderKeys).toHaveBeenCalledWith([
-				'vault',
-				'awsSecretsManager',
-			]);
+			expect(secretsProviderConnectionRepository.findIdsByProviderKeys).toHaveBeenCalledWith(
+				['vault', 'awsSecretsManager'],
+				entityManager,
+			);
 			expect(credentialDependencyRepository.upsertDependenciesForCredential).toHaveBeenCalledWith({
 				credentialId: 'cred-1',
 				dependencyType: EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE,
@@ -78,7 +78,10 @@ describe('CredentialDependencyService', () => {
 				entityManager,
 			});
 
-			expect(secretsProviderConnectionRepository.findIdsByProviderKeys).toHaveBeenCalledWith([]);
+			expect(secretsProviderConnectionRepository.findIdsByProviderKeys).toHaveBeenCalledWith(
+				[],
+				entityManager,
+			);
 			expect(credentialDependencyRepository.upsertDependenciesForCredential).toHaveBeenCalledWith({
 				credentialId: 'cred-1',
 				dependencyType: EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE,
@@ -102,10 +105,10 @@ describe('CredentialDependencyService', () => {
 				entityManager,
 			});
 
-			expect(secretsProviderConnectionRepository.findIdsByProviderKeys).toHaveBeenCalledWith([
-				'vault',
-				'awsSecretsManager',
-			]);
+			expect(secretsProviderConnectionRepository.findIdsByProviderKeys).toHaveBeenCalledWith(
+				['vault', 'awsSecretsManager'],
+				entityManager,
+			);
 			expect(credentialDependencyRepository.syncDependenciesForCredential).toHaveBeenCalledWith({
 				credentialId: 'cred-1',
 				dependencyType: EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE,
@@ -124,7 +127,10 @@ describe('CredentialDependencyService', () => {
 				entityManager,
 			});
 
-			expect(secretsProviderConnectionRepository.findIdsByProviderKeys).toHaveBeenCalledWith([]);
+			expect(secretsProviderConnectionRepository.findIdsByProviderKeys).toHaveBeenCalledWith(
+				[],
+				entityManager,
+			);
 			expect(credentialDependencyRepository.syncDependenciesForCredential).toHaveBeenCalledWith({
 				credentialId: 'cred-1',
 				dependencyType: EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE,

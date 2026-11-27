@@ -1,15 +1,19 @@
 import { createHmac } from 'crypto';
-import { NodeOperationError } from 'n8n-workflow';
+import type { IDataObject, IHookFunctions } from 'n8n-workflow';
+import { NodeOperationError, requestPath } from 'n8n-workflow';
+import { mock } from 'vitest-mock-extended';
 
 import * as GenericFunctions from '../GenericFunctions';
 import { WooCommerceTrigger } from '../WooCommerceTrigger.node';
+import type { Mock } from 'vitest';
+import type * as _importType0 from '../GenericFunctions';
 
-jest.mock('../GenericFunctions', () => ({
-	...jest.requireActual('../GenericFunctions'),
-	woocommerceApiRequest: jest.fn(),
+vi.mock('../GenericFunctions', async () => ({
+	...(await vi.importActual<typeof _importType0>('../GenericFunctions')),
+	woocommerceApiRequest: vi.fn(),
 }));
 
-const woocommerceApiRequestMock = GenericFunctions.woocommerceApiRequest as jest.Mock;
+const woocommerceApiRequestMock = GenericFunctions.woocommerceApiRequest as Mock;
 
 describe('WooCommerceTrigger Node', () => {
 	describe('webhook method', () => {
@@ -21,7 +25,7 @@ describe('WooCommerceTrigger Node', () => {
 
 		let webhookData: Record<string, unknown>;
 		let headers: Record<string, string | undefined>;
-		let response: { status: jest.Mock; send: jest.Mock; end: jest.Mock };
+		let response: { status: Mock; send: Mock; end: Mock };
 		let mockThis: any;
 
 		beforeEach(() => {
@@ -31,19 +35,19 @@ describe('WooCommerceTrigger Node', () => {
 				'x-wc-webhook-signature': validSignature,
 			};
 			response = {
-				status: jest.fn().mockReturnThis(),
-				send: jest.fn().mockReturnThis(),
-				end: jest.fn(),
+				status: vi.fn().mockReturnThis(),
+				send: vi.fn().mockReturnThis(),
+				end: vi.fn(),
 			};
 
 			mockThis = {
-				getWorkflowStaticData: jest.fn().mockImplementation(() => webhookData),
-				getHeaderData: jest.fn().mockImplementation(() => headers),
-				getRequestObject: jest.fn().mockReturnValue({ rawBody, body }),
-				getResponseObject: jest.fn().mockReturnValue(response),
-				getNode: jest.fn().mockReturnValue({ name: 'WooCommerce Trigger' }),
+				getWorkflowStaticData: vi.fn().mockImplementation(() => webhookData),
+				getHeaderData: vi.fn().mockImplementation(() => headers),
+				getRequestObject: vi.fn().mockReturnValue({ rawBody, body }),
+				getResponseObject: vi.fn().mockReturnValue(response),
+				getNode: vi.fn().mockReturnValue({ name: 'WooCommerce Trigger' }),
 				helpers: {
-					returnJsonArray: jest.fn().mockImplementation((data) => [data]),
+					returnJsonArray: vi.fn().mockImplementation((data) => [data]),
 				},
 			};
 		});
@@ -106,17 +110,17 @@ describe('WooCommerceTrigger Node', () => {
 		const event = 'order.created';
 
 		let webhookData: Record<string, unknown>;
-		let logger: { warn: jest.Mock };
+		let logger: { warn: Mock };
 		let mockThis: any;
 
 		beforeEach(() => {
 			webhookData = { secret: 'stored-secret' };
-			logger = { warn: jest.fn() };
+			logger = { warn: vi.fn() };
 
 			mockThis = {
-				getNodeWebhookUrl: jest.fn().mockReturnValue(webhookUrl),
-				getWorkflowStaticData: jest.fn().mockImplementation(() => webhookData),
-				getNodeParameter: jest.fn().mockReturnValue(event),
+				getNodeWebhookUrl: vi.fn().mockReturnValue(webhookUrl),
+				getWorkflowStaticData: vi.fn().mockImplementation(() => webhookData),
+				getNodeParameter: vi.fn().mockReturnValue(event),
 				logger,
 			};
 
@@ -136,7 +140,7 @@ describe('WooCommerceTrigger Node', () => {
 			expect(woocommerceApiRequestMock).toHaveBeenCalledTimes(1);
 			expect(woocommerceApiRequestMock).toHaveBeenCalledWith(
 				'GET',
-				'/webhooks',
+				requestPath`/webhooks`,
 				{},
 				{ status: 'active', per_page: 100 },
 			);
@@ -158,7 +162,7 @@ describe('WooCommerceTrigger Node', () => {
 			expect(woocommerceApiRequestMock).toHaveBeenNthCalledWith(
 				2,
 				'DELETE',
-				'/webhooks/99',
+				requestPath`/webhooks/99`,
 				{},
 				{ force: true },
 			);
@@ -197,6 +201,48 @@ describe('WooCommerceTrigger Node', () => {
 			expect(result).toBe(false);
 			expect(webhookData.webhookId).toBeUndefined();
 			expect(woocommerceApiRequestMock).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe('create and delete methods', () => {
+		let webhookData: IDataObject;
+		const mockThis = mock<IHookFunctions>();
+
+		beforeEach(() => {
+			webhookData = { webhookId: 99, secret: 'stored-secret' };
+			mockThis.getCredentials.mockResolvedValue({ consumerKey: 'ck', consumerSecret: 'cs' });
+			mockThis.getNodeWebhookUrl.mockReturnValue('https://n8n.example.com/webhook/test');
+			mockThis.getWorkflowStaticData.mockReturnValue(webhookData);
+			mockThis.getNodeParameter.mockReturnValue('order.created');
+
+			woocommerceApiRequestMock.mockReset();
+		});
+
+		it('posts the webhook to the webhooks endpoint', async () => {
+			woocommerceApiRequestMock.mockResolvedValueOnce({ id: 100 });
+
+			await new WooCommerceTrigger().webhookMethods.default.create.call(mockThis);
+
+			expect(woocommerceApiRequestMock).toHaveBeenCalledWith(
+				'POST',
+				requestPath`/webhooks`,
+				expect.objectContaining({ topic: 'order.created' }),
+			);
+			expect(webhookData.webhookId).toBe(100);
+		});
+
+		it('deletes the stored webhook', async () => {
+			woocommerceApiRequestMock.mockResolvedValueOnce({});
+
+			const result = await new WooCommerceTrigger().webhookMethods.default.delete.call(mockThis);
+
+			expect(result).toBe(true);
+			expect(woocommerceApiRequestMock).toHaveBeenCalledWith(
+				'DELETE',
+				requestPath`/webhooks/99`,
+				{},
+				{ force: true },
+			);
 		});
 	});
 });

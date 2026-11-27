@@ -5,6 +5,13 @@
 export const LOGS_EXECUTION_DATA_THROTTLE_DURATION = 1000;
 export const CANVAS_EXECUTION_DATA_THROTTLE_DURATION = 500;
 
+/**
+ * Repeat group-header clicks within this window are treated as one
+ * double-click and toggle collapse only once. Kept well below the OS
+ * double-click interval (~500ms) so deliberate fast re-clicks still register.
+ */
+export const CANVAS_GROUP_HEADER_TOGGLE_SUPPRESS_DURATION = 250;
+
 export const EXPRESSION_EDITOR_PARSER_TIMEOUT = 15_000; // ms
 
 export const CLOUD_TRIAL_CHECK_INTERVAL = 5000;
@@ -24,67 +31,58 @@ export const THREE_DAYS_IN_MILLIS = 3 * TIME.DAY;
 export const SEVEN_DAYS_IN_MILLIS = 7 * TIME.DAY;
 export const SIX_MONTHS_IN_MILLIS = 6 * 30 * TIME.DAY;
 
+/**
+ * Progress polling for an agent eval run. A run executes the agent once per case,
+ * so seconds is the right granularity — polling tighter only adds requests without
+ * the user seeing anything sooner.
+ */
+export const AGENT_EVAL_RUN_POLL_INTERVAL = 2 * TIME.SECOND;
+/** Give up on a run that never settles, so a forgotten tab can't poll indefinitely. */
+export const AGENT_EVAL_RUN_POLL_TIMEOUT = 10 * TIME.MINUTE;
+/** One failed poll is a blip worth retrying; a sustained run of them means we've lost the run. */
+export const AGENT_EVAL_RUN_POLL_MAX_ERRORS = 3;
+
+/** How often to ask again for a cloud browser's live view until its browser is live. */
+export const CLOUD_BROWSER_LIVE_VIEW_RETRY_INTERVAL = 3 * TIME.SECOND;
+
+/** How long the editor waits for `nodeExecuteAfterData` before it fetches the node's output. */
+export const TRIMMED_RUN_DATA_FILL_DELAY = 3 * TIME.SECOND;
+
 export const LOADING_ANIMATION_MIN_DURATION = 1000;
 
-/**
- * Get debounce time with optional multiplier from sessionStorage.
- * Reads 'N8N_DEBOUNCE_MULTIPLIER' - defaults to 1 if not set.
- */
-export function getDebounceTime(time: number): number {
-	const stored = sessionStorage.getItem('N8N_DEBOUNCE_MULTIPLIER');
-	const multiplier = stored !== null ? parseFloat(stored) : 1;
-	return Math.round(time * (Number.isNaN(multiplier) ? 1 : multiplier));
-}
+export const AGENT_EXTERNAL_UPDATE_NOTICE_DURATION = 5 * TIME.MINUTE;
 
-/** Centralized debounce timing constants. Use with getDebounceTime(). */
-export const DEBOUNCE_TIME = {
-	/** UI responsiveness - very fast feedback */
-	UI: {
-		/** Window/element resize events */
-		RESIZE: 50,
-		/** Quick UI state changes */
-		QUICK: 10,
-	},
+/** Shows the summary fallback if background results never reach the agent. */
+export const AGENT_SUMMARY_WAIT_TIMEOUT = 2 * TIME.MINUTE;
 
-	/** Input validation and real-time feedback */
-	INPUT: {
-		/** Fast validation feedback (100ms) */
-		VALIDATION: 100,
-		/** Text input changes (200ms) */
-		TEXT_CHANGE: 200,
-		/** Search input in UI (250-300ms) */
-		SEARCH: 300,
-	},
+/** Keeps short agent tool and skill calls perceptible without adding continuous motion. */
+export const AGENT_CAPABILITY_ACTIVE_MIN_DURATION = 300;
 
-	/** API and resource operations */
-	API: {
-		/** Resource dropdown search (500ms) */
-		RESOURCE_SEARCH: 500,
-		/** Heavy operations like pagination (1000ms) */
-		HEAVY_OPERATION: 1000,
-		/** Workflow autosave debounce (1500ms) */
-		AUTOSAVE: 1500,
-		/** Workflow autosave max wait - forces save (5000ms) */
-		AUTOSAVE_MAX_WAIT: 5000,
-	},
+/** Keeps a completed setup item visible briefly before returning to the checklist. */
+export const SETUP_PANEL_SUCCESS_DELAY = 650;
 
-	/** Telemetry and analytics */
-	TELEMETRY: {
-		/** Analytics event batching (2000ms) */
-		BATCH: 2000,
-		/** Tracking filter changes (1000ms) */
-		TRACK: 1000,
-	},
-
-	/** Collaboration features */
-	COLLABORATION: {
-		/** Activity recording (100ms) */
-		ACTIVITY: 100,
-	},
-
-	/** Connection management */
-	CONNECTION: {
-		/** WebSocket disconnect debounce (500ms) */
-		WEBSOCKET_DISCONNECT: 500,
-	},
+/** Hover-intent delays for reveal-on-hover affordances (e.g. a collapsed group's description). */
+export const HOVER_DELAY = {
+	/** Delay before a hovered affordance reveals its content. */
+	SHOW: 300,
+	/** Grace period before hiding, so the cursor can bridge onto the revealed content. */
+	LEAVE: 150,
 } as const;
+
+// `DEBOUNCE_TIME` moved to `@n8n/frontend-constants/durations` so a module outside the
+// shell can debounce with the same values. Re-exported here for existing importers.
+export { DEBOUNCE_TIME } from '@n8n/frontend-constants/durations';
+
+/** Timing for the Agent builder's template prompt preview. */
+export const AGENT_PROMPT_INSPIRATION_TIMING = {
+	TYPE: 35,
+	ERASE: 15,
+	HOLD: 5 * TIME.SECOND,
+} as const;
+
+/**
+ * Modal prefetch (`usePrefetchModals`). The idle timeout starts a load on a page that is
+ * never idle. The fallback delay replaces the idle wait where `requestIdleCallback` is missing.
+ */
+export const MODAL_PREFETCH_IDLE_TIMEOUT = 5 * TIME.SECOND;
+export const MODAL_PREFETCH_FALLBACK_DELAY = 2 * TIME.SECOND;

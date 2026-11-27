@@ -1,7 +1,8 @@
 import { computed } from 'vue';
 import { defineStore } from 'pinia';
 import { saveAs } from 'file-saver';
-import type { IWorkflowDb } from '@/Interface';
+import { applyVersionedSettings, pickVersionedSettings } from 'n8n-workflow';
+import type { IWorkflowDb, IWorkflowToShare } from '@/Interface';
 import type { WorkflowDataUpdate } from '@n8n/rest-api-client/api/workflows';
 import type {
 	WorkflowHistory,
@@ -14,16 +15,21 @@ import type {
 import * as whApi from '@n8n/rest-api-client/api/workflowHistory';
 import { getFirstAdoptionDate } from '@n8n/rest-api-client/api/instance-version-history';
 import { useRootStore } from '@n8n/stores/useRootStore';
-import { useSettingsStore } from '@/app/stores/settings.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { useWorkflowsListStore } from '@/app/stores/workflowsList.store';
 import { getNewWorkflow } from '@/app/api/workflows';
+import { useEmptyCanvasGroupsFlag } from '@/features/workflows/canvas/composables/useEmptyCanvasGroupsFlag';
+import { removeEmptyCanvasGroupsFromWorkflowData } from '@/features/workflows/canvas/emptyGroup.utils';
+
+type WorkflowVersionActionData = { formattedCreatedAt: string };
 
 export const useWorkflowHistoryStore = defineStore('workflowHistory', () => {
 	const rootStore = useRootStore();
 	const settingsStore = useSettingsStore();
 	const workflowsStore = useWorkflowsStore();
 	const workflowsListStore = useWorkflowsListStore();
+	const emptyCanvasGroupsEnabled = useEmptyCanvasGroupsFlag();
 
 	const licensePruneTime = computed(() => settingsStore.settings.workflowHistory?.licensePruneTime);
 	// pruneTime is already evaluated by backend (getWorkflowHistoryPruneTime)
@@ -50,14 +56,34 @@ export const useWorkflowHistoryStore = defineStore('workflowHistory', () => {
 	const downloadVersion = async (
 		workflowId: string,
 		workflowVersionId: WorkflowVersionId,
-		data: { formattedCreatedAt: string },
+		data: WorkflowVersionActionData,
 	) => {
 		const [workflow, workflowVersion] = await Promise.all([
 			workflowsListStore.fetchWorkflow(workflowId),
 			getWorkflowVersion(workflowId, workflowVersionId),
 		]);
-		const { connections, nodes } = workflowVersion;
-		const blob = new Blob([JSON.stringify({ ...workflow, nodes, connections }, null, 2)], {
+		const { connections, nodes, nodeGroups } = workflowVersion;
+		// Same fields as Export JSON. Do not spread `workflow`: it has API-only fields.
+		const workflowData: IWorkflowToShare = {
+			id: workflow.id,
+			name: workflow.name,
+			nodes,
+			pinData: workflow.pinData,
+			connections,
+			active: workflow.active,
+			settings: applyVersionedSettings(
+				workflow.settings,
+				pickVersionedSettings(workflowVersion.settings),
+			),
+			tags: workflow.tags ?? [],
+			versionId: workflowVersion.versionId,
+			meta: { ...workflow.meta, instanceId: rootStore.instanceId },
+			nodeGroups: nodeGroups ?? [],
+		};
+		if (!emptyCanvasGroupsEnabled.value) {
+			removeEmptyCanvasGroupsFromWorkflowData(workflowData);
+		}
+		const blob = new Blob([JSON.stringify(workflowData, null, 2)], {
 			type: 'application/json;charset=utf-8',
 		});
 		saveAs(blob, `${workflow.name}(${data.formattedCreatedAt}).json`);
@@ -66,13 +92,13 @@ export const useWorkflowHistoryStore = defineStore('workflowHistory', () => {
 	const cloneIntoNewWorkflow = async (
 		workflowId: string,
 		workflowVersionId: string,
-		data: { formattedCreatedAt: string },
+		data: WorkflowVersionActionData,
 	): Promise<IWorkflowDb> => {
 		const [workflow, workflowVersion] = await Promise.all([
 			workflowsListStore.fetchWorkflow(workflowId),
 			getWorkflowVersion(workflowId, workflowVersionId),
 		]);
-		const { connections, nodes } = workflowVersion;
+		const { connections, nodes, nodeGroups } = workflowVersion;
 		const { name } = workflow;
 		const newWorkflow = await getNewWorkflow(rootStore.restApiContext, {
 			name: `${name} (${data.formattedCreatedAt})`,
@@ -80,8 +106,14 @@ export const useWorkflowHistoryStore = defineStore('workflowHistory', () => {
 		const newWorkflowData: WorkflowDataUpdate = {
 			nodes,
 			connections,
+			nodeGroups: nodeGroups ?? [],
 			name: newWorkflow.name,
+			// Without settings, the server sets the default engine of the instance.
+			settings: pickVersionedSettings(workflowVersion.settings),
 		};
+		if (!emptyCanvasGroupsEnabled.value) {
+			removeEmptyCanvasGroupsFromWorkflowData(newWorkflowData);
+		}
 		return await workflowsStore.createNewWorkflow(newWorkflowData);
 	};
 
@@ -90,8 +122,14 @@ export const useWorkflowHistoryStore = defineStore('workflowHistory', () => {
 		workflowVersionId: string,
 	): Promise<IWorkflowDb> => {
 		const workflowVersion = await getWorkflowVersion(workflowId, workflowVersionId);
-		const { connections, nodes } = workflowVersion;
-		const updateData: WorkflowDataUpdate = { connections, nodes };
+		const { connections, nodes, nodeGroups } = workflowVersion;
+		const updateData: WorkflowDataUpdate = {
+			connections,
+			nodes,
+			nodeGroups: nodeGroups ?? [],
+			// Lets the server keep this version's nodes, including credentials the user cannot use.
+			restoredFromVersionId: workflowVersionId,
+		};
 
 		return await workflowsStore
 			.updateWorkflow(workflowId, updateData, true)
@@ -116,8 +154,11 @@ export const useWorkflowHistoryStore = defineStore('workflowHistory', () => {
 		await whApi.updateWorkflowHistoryVersion(rootStore.restApiContext, workflowId, versionId, data);
 	};
 
-	const getPublishTimeline = async (workflowId: string): Promise<PublishTimelineEvent[]> =>
-		await whApi.getPublishTimeline(rootStore.restApiContext, workflowId);
+	const getPublishTimeline = async (
+		workflowId: string,
+		queryParams: WorkflowHistoryRequestParams,
+	): Promise<PublishTimelineEvent[]> =>
+		await whApi.getPublishTimeline(rootStore.restApiContext, workflowId, queryParams);
 
 	const getVersionFirstAdoptionDate = async (version: {
 		major: number;

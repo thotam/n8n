@@ -3,6 +3,7 @@ import type { IDataObject, INode } from 'n8n-workflow';
 import { createMockExecuteFunction } from '@test/nodes/Helpers';
 
 import * as mode from '../../v3/actions/mode';
+import { resetSandboxCache } from '../../v3/helpers/sandbox-utils';
 
 const node: INode = {
 	id: '123456',
@@ -90,6 +91,18 @@ const inputsData = [
 	],
 ];
 describe('Test MergeV3, combineBySql operation', () => {
+	// Each test runs against a fresh isolate. The sandbox caches a single isolate
+	// across calls, and V8 does not always reclaim a released Context's memory
+	// between rapid back-to-back tests; resetting per test keeps the heap small so
+	// a test never inherits near-limit memory from a prior one.
+	beforeEach(() => {
+		resetSandboxCache();
+	});
+
+	afterAll(() => {
+		resetSandboxCache();
+	});
+
 	it('LEFT JOIN', async () => {
 		const nodeParameters: IDataObject = {
 			operation: 'combineBySql',
@@ -110,6 +123,187 @@ describe('Test MergeV3, combineBySql operation', () => {
 			country: 'PL',
 		});
 	});
+
+	it('handles query parameters', async () => {
+		const nodeParameters: IDataObject = {
+			operation: 'combineBySql',
+			query: 'SELECT name FROM input1 WHERE id = ?',
+			options: {
+				queryParameters: '2',
+			},
+		};
+
+		const returnData = await mode.combineBySql.execute.call(
+			createMockExecuteFunction(nodeParameters, { ...node, typeVersion: 3.2 }),
+			inputsData,
+		);
+
+		expect(returnData[0]).toHaveLength(1);
+		expect(returnData[0][0].json).toEqual({ name: 'Dan' });
+	});
+
+	it('handles query parameters from evaluated values', async () => {
+		const nodeParameters: IDataObject = {
+			operation: 'combineBySql',
+			query: 'SELECT name FROM input1 WHERE name = ?',
+			options: {
+				queryParameters: ['Dan'],
+			},
+		};
+
+		const returnData = await mode.combineBySql.execute.call(
+			createMockExecuteFunction(nodeParameters, { ...node, typeVersion: 3.2 }),
+			inputsData,
+		);
+
+		expect(returnData[0]).toHaveLength(1);
+		expect(returnData[0][0].json).toEqual({ name: 'Dan' });
+	});
+
+	it('handles unsupported query parameter objects', async () => {
+		const nodeParameters = {
+			operation: 'combineBySql',
+			query: 'SELECT name FROM input1 WHERE name = ?',
+			options: {
+				queryParameters: [{ name: 'Dan' }],
+			},
+		} as unknown as IDataObject;
+
+		await expect(
+			mode.combineBySql.execute.call(
+				createMockExecuteFunction(nodeParameters, { ...node, typeVersion: 3.2 }),
+				inputsData,
+			),
+		).rejects.toMatchObject({
+			message: 'Query parameter 1 must be a string, number, boolean, or null',
+		});
+	});
+
+	it('handles unsupported query parameter functions', async () => {
+		const nodeParameters = {
+			operation: 'combineBySql',
+			query: 'SELECT name FROM input1 WHERE name = ?',
+			options: {
+				queryParameters: [() => 'Dan'],
+			},
+		} as unknown as IDataObject;
+
+		await expect(
+			mode.combineBySql.execute.call(
+				createMockExecuteFunction(nodeParameters, { ...node, typeVersion: 3.2 }),
+				inputsData,
+			),
+		).rejects.toMatchObject({
+			message: 'Query parameter 1 must be a string, number, boolean, or null',
+		});
+	});
+
+	it('handles unsupported evaluated query parameter values', async () => {
+		const nodeParameters = {
+			operation: 'combineBySql',
+			query: 'SELECT name FROM input1 WHERE name = ?',
+			options: {
+				queryParameters: false,
+			},
+		} as unknown as IDataObject;
+
+		await expect(
+			mode.combineBySql.execute.call(
+				createMockExecuteFunction(nodeParameters, { ...node, typeVersion: 3.2 }),
+				inputsData,
+			),
+		).rejects.toMatchObject({
+			message: 'Query parameters must be a string, number, or array',
+		});
+	});
+
+	it('handles query parameter values as text', async () => {
+		const nodeParameters: IDataObject = {
+			operation: 'combineBySql',
+			query: 'SELECT name FROM input1 WHERE name = ?',
+			options: {
+				queryParameters: "Sam' OR name = 'Dan",
+			},
+		};
+
+		const returnData = await mode.combineBySql.execute.call(
+			createMockExecuteFunction(nodeParameters, { ...node, typeVersion: 3.2 }),
+			inputsData,
+		);
+
+		expect(returnData).toEqual([[]]);
+	});
+
+	it('handles multiple query parameters', async () => {
+		const nodeParameters: IDataObject = {
+			operation: 'combineBySql',
+			query: 'SELECT name FROM input1 WHERE id = ? OR name = ? ORDER BY id',
+			options: {
+				queryParameters: '2,Sam',
+			},
+		};
+
+		const returnData = await mode.combineBySql.execute.call(
+			createMockExecuteFunction(nodeParameters, { ...node, typeVersion: 3.2 }),
+			inputsData,
+		);
+
+		expect(returnData[0].map((item) => item.json.name)).toEqual(['Sam', 'Dan']);
+	});
+
+	it('keeps a resolved value out of another parameter slot', async () => {
+		const mergeNode: INode = {
+			...node,
+			typeVersion: 3.2,
+			parameters: {
+				options: { queryParameters: '={{ $json.name }},Jon' },
+			},
+		};
+		const context = {
+			...createMockExecuteFunction(
+				{
+					operation: 'combineBySql',
+					query: 'SELECT name FROM input1 WHERE name = ? OR name = ?',
+					options: { queryParameters: 'Sam, Dan,Jon' },
+				},
+				mergeNode,
+			),
+			evaluateExpression: (expr: string) => (expr === '{{ $json.name }}' ? 'Sam, Dan' : expr),
+			getWorkflow: () => ({ id: 'test-workflow-id', name: 'Test Workflow', active: false }),
+		};
+
+		const returnData = await mode.combineBySql.execute.call(context as never, inputsData);
+
+		expect(returnData[0].map((item) => item.json.name)).toEqual(['Jon']);
+	});
+
+	it.each([
+		{ typeVersion: 3.3, expected: ['1$&2', '1$$2'] },
+		{ typeVersion: 3.2, expected: ['1{{ $json.sql }}2', '1$2'] },
+	])(
+		'should insert the resolved query for version $typeVersion',
+		async ({ typeVersion, expected }) => {
+			const context = {
+				...createMockExecuteFunction(
+					{ operation: 'combineBySql', query: '{{ $json.sql }}' },
+					{ ...node, typeVersion },
+				),
+				evaluateExpression: () => "SELECT * FROM input1 WHERE code IN ('1$&2', '1$$2')",
+			};
+
+			const returnData = await mode.combineBySql.execute.call(context as never, [
+				[
+					{ json: { code: '1$&2' } },
+					{ json: { code: '1$$2' } },
+					{ json: { code: '1{{ $json.sql }}2' } },
+					{ json: { code: '1$2' } },
+				],
+			]);
+
+			expect(returnData[0].map((item) => item.json.code)).toEqual(expected);
+		},
+	);
+
 	it('LEFT JOIN, missing input 2(empty array)', async () => {
 		const nodeParameters: IDataObject = {
 			operation: 'combineBySql',

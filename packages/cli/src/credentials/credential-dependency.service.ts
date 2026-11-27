@@ -1,13 +1,16 @@
 import type { CredentialDependencyType } from '@n8n/db';
-import { CredentialDependencyRepository, SecretsProviderConnectionRepository } from '@n8n/db';
+import {
+	CredentialDependencyRepository,
+	EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE,
+	SecretsProviderConnectionRepository,
+} from '@n8n/db';
 import { Service } from '@n8n/di';
-// eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
 import { In, type EntityManager } from '@n8n/typeorm';
 import type { ICredentialDataDecryptedObject } from 'n8n-workflow';
 
 import { extractProviderKeysFromCredentialData } from './external-secrets.utils';
 
-export const EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE = 'externalSecretProvider' as const;
+export { EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE } from '@n8n/db';
 
 export type CredentialDependencyFilter = {
 	dependencyType: CredentialDependencyType;
@@ -36,11 +39,15 @@ export class CredentialDependencyService {
 		};
 	}
 
-	private async resolveProviderIdsFromCredentialData(
+	async resolveProviderIdsFromCredentialData(
 		decryptedCredentialData: ICredentialDataDecryptedObject,
+		entityManager?: EntityManager,
 	): Promise<string[]> {
 		const providerKeys = [...extractProviderKeysFromCredentialData(decryptedCredentialData)];
-		return await this.secretsProviderConnectionRepository.findIdsByProviderKeys(providerKeys);
+		return await this.secretsProviderConnectionRepository.findIdsByProviderKeys(
+			providerKeys,
+			entityManager,
+		);
 	}
 
 	async upsertExternalSecretProviderDependenciesForCredential({
@@ -52,7 +59,10 @@ export class CredentialDependencyService {
 		decryptedCredentialData: ICredentialDataDecryptedObject;
 		entityManager: EntityManager;
 	}): Promise<void> {
-		const dependencyIds = await this.resolveProviderIdsFromCredentialData(decryptedCredentialData);
+		const dependencyIds = await this.resolveProviderIdsFromCredentialData(
+			decryptedCredentialData,
+			entityManager,
+		);
 		await this.credentialDependencyRepository.upsertDependenciesForCredential({
 			credentialId,
 			dependencyType: EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE,
@@ -70,7 +80,10 @@ export class CredentialDependencyService {
 		decryptedCredentialData: ICredentialDataDecryptedObject;
 		entityManager: EntityManager;
 	}): Promise<void> {
-		const dependencyIds = await this.resolveProviderIdsFromCredentialData(decryptedCredentialData);
+		const dependencyIds = await this.resolveProviderIdsFromCredentialData(
+			decryptedCredentialData,
+			entityManager,
+		);
 		await this.credentialDependencyRepository.syncDependenciesForCredential({
 			credentialId,
 			dependencyType: EXTERNAL_SECRET_PROVIDER_DEPENDENCY_TYPE,

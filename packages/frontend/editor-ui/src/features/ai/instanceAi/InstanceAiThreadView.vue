@@ -1,410 +1,1057 @@
 <script lang="ts" setup>
+import { computed, onMounted, onUnmounted, provide, ref, useTemplateRef, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import {
-	computed,
-	nextTick,
-	onMounted,
-	onUnmounted,
-	provide,
-	ref,
-	useTemplateRef,
-	watch,
-} from 'vue';
-import { storeToRefs } from 'pinia';
-import { useRouter } from 'vue-router';
-import {
-	N8nHeading,
 	N8nIconButton,
 	N8nResizeWrapper,
-	N8nScrollArea,
+	N8nTabsRoot,
 	N8nText,
+	N8nTooltip,
+	TOOLTIP_DELAY_MS,
 } from '@n8n/design-system';
-import { useElementSize, useScroll } from '@vueuse/core';
+import { useDebounceFn, useElementSize, useWindowSize } from '@vueuse/core';
 import { useI18n } from '@n8n/i18n';
-import type { InstanceAiAttachment } from '@n8n/api-types';
+import type { InstanceAiAgentAttachment, InstanceAiConfirmationInputType } from '@n8n/api-types';
 import { useRootStore } from '@n8n/stores/useRootStore';
-import { usePageRedirectionHelper } from '@/app/composables/usePageRedirectionHelper';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import { DEBOUNCE_TIME } from '@/app/constants';
+import { useDocumentTitle } from '@/app/composables/useDocumentTitle';
+import { COLLAPSED_MAIN_SIDEBAR_WIDTH, useSidebarLayout } from '@/app/composables/useSidebarLayout';
+import { getDebounceTime } from '@n8n/composables/useDebounce';
+import { useToast } from '@n8n/composables/useToast';
 import { provideThread, useInstanceAiStore } from './instanceAi.store';
-import { useCanvasPreview } from './useCanvasPreview';
-import { useEventRelay } from './useEventRelay';
-import { useExecutionPushEvents } from './useExecutionPushEvents';
-import { useCreditWarningBanner } from './composables/useCreditWarningBanner';
-import { INSTANCE_AI_VIEW, NEW_CONVERSATION_TITLE } from './constants';
-import InstanceAiMessage from './components/InstanceAiMessage.vue';
-import InstanceAiInput from './components/InstanceAiInput.vue';
+import {
+	getAgentBuilderTargetFromThreadMetadata,
+	getAppTargetsFromThreadMetadata,
+	getAgentPreviewSessionFromThreadMetadata,
+	getAgentPreviewViewFromThreadMetadata,
+	getThreadDisplayTitle,
+	threadTargetsAgent,
+} from './instanceAi.threadRuntime';
+import { useInstanceAiSettingsStore } from './instanceAiSettings.store';
+import { isArtifactTab, isSavedArtifactTab, useCanvasPreview } from './useCanvasPreview';
+import { useAssistantAwayTelemetry } from './composables/useAssistantAwayTelemetry';
+import { getCurrentTurn } from './assistantTurn';
+import { CloudBrowserTasksKey, useCloudBrowserTasks } from './composables/useCloudBrowserTasks';
+import {
+	CloudBrowserLiveViewRefreshKey,
+	CloudBrowserLiveViewsKey,
+	useCloudBrowserLiveViews,
+} from './composables/useCloudBrowserLiveViews';
+import { fetchThreadTabs, saveThreadTabs } from './instanceAi.memory.api';
+import { buildInstanceAiAgentPreviewHandoffContext } from './composables/useInstanceAiHandoff';
+import { INSTANCE_AI_APP_ID_QUERY } from './constants';
+import type { AgentTestHandoffParams } from './composables/useInstanceAiAgentTestHandoff';
+import {
+	MIN_WIDTH_FOR_PINNED_ARTIFACTS_PANEL,
+	useArtifactsPanelToggle,
+	usePreviewPanelWidth,
+	usePreviewToggle,
+} from './composables/useArtifactsLayout';
+import { useTransitionGate } from './useTransitionGate';
+import { INSTANCE_AI_VIEW } from './constants';
+import { getDismissedContextKeys } from './instanceAi.handoffContext';
+import ApprovalModeSelector from './components/ApprovalModeSelector.vue';
 import InstanceAiDebugPanel from './components/InstanceAiDebugPanel.vue';
 import InstanceAiArtifactsPanel from './components/InstanceAiArtifactsPanel.vue';
-import InstanceAiStatusBar from './components/InstanceAiStatusBar.vue';
-import InstanceAiConfirmationPanel from './components/InstanceAiConfirmationPanel.vue';
+import InstanceAiFixWithAiPanel from './components/InstanceAiFixWithAiPanel.vue';
+import InstanceAiSetupPanel from './components/setupPanel/InstanceAiSetupPanel.vue';
+import InstanceAiTestAgentPanel from './components/InstanceAiTestAgentPanel.vue';
+import InstanceAiTestAgentPreviewPanel from './components/InstanceAiTestAgentPreviewPanel.vue';
 import InstanceAiPreviewTabBar from './components/InstanceAiPreviewTabBar.vue';
+import InstanceAiResourcePicker from './components/InstanceAiResourcePicker.vue';
 import InstanceAiViewHeader from './components/InstanceAiViewHeader.vue';
-import AgentSection from './components/AgentSection.vue';
-import { collectActiveBuilderAgents, messageHasVisibleContent } from './builderAgents';
-import CreditWarningBanner from '@/features/ai/assistant/components/Agent/CreditWarningBanner.vue';
-import InstanceAiWorkflowPreview from './components/InstanceAiWorkflowPreview.vue';
+import InstanceAiConversation from './components/InstanceAiConversation.vue';
+// Experiment cleanup: remove with openWorkflowInAssistant.
+import OpenWorkflowInAssistantNotification from '@/experiments/openWorkflowInAssistant/components/OpenWorkflowInAssistantNotification.vue';
+import InstanceAiWorkflowPreview, {
+	type WorkflowFailuresReport,
+} from './components/InstanceAiWorkflowPreview.vue';
+import { buildFixWithAiPrompt } from './fixWithAi';
+import { isAgentWorthTesting, testAgentOfferKey } from './testAgentOffer';
 import InstanceAiDataTablePreview from './components/InstanceAiDataTablePreview.vue';
-import { TabsRoot } from 'reka-ui';
+import InstanceAiAgentPreview from './components/InstanceAiAgentPreview.vue';
+import InstanceAiBrowserPreview from './components/InstanceAiBrowserPreview.vue';
+import InstanceAiCloudBrowserUserActionPanel from './components/InstanceAiCloudBrowserUserActionPanel.vue';
+import InstanceAiWorkflowDraftPreview from './components/InstanceAiWorkflowDraftPreview.vue';
+import InstanceAiCanvasRunOverlay from './components/InstanceAiCanvasRunOverlay.vue';
+import { isPendingItemFloating } from './confirmationKinds';
+import { useDraftWorkflowPreviewTelemetry } from '@/experiments/instanceAiDraftWorkflowPreview/useDraftWorkflowPreviewTelemetry';
+import { collectActiveBuilderAgents } from './builderAgents';
+import { isStagingDraft } from './instanceAi.workflowStaging';
+import { useDraftWorkflowPreview } from './composables/useDraftWorkflowPreview';
+import InstanceAiSkillPreview from './components/InstanceAiSkillPreview.vue';
+import InstanceAiAppPreview from './components/InstanceAiAppPreview.vue';
+import { useAgentEvalsFlag } from '@/features/ai/evaluation.ee/composables/useAgentEvalsFlag';
+import { useAgentCapabilitySummary } from '@/features/agents/composables/useAgentCapabilitySummary';
+import { useAgentEvalsStore } from '@/features/agents/agentEvals.store';
+import { useIsAgentWorking } from './composables/useIsAgentWorking';
+import { useAgentReturnContextStore } from '@/features/agents/agentReturnContext.store';
+import { useIsAssistantAtMentionsEnabled } from '@/features/ai/assistant-at-mentions/composables/useIsAssistantAtMentionsEnabled';
+import { useTestAgentPreviewFlag } from '@/features/agents/composables/useTestAgentPreviewFlag';
 
-const props = defineProps<{
-	threadId: string;
-}>();
+const props = defineProps<{ threadId: string }>();
 
 const store = useInstanceAiStore();
+const settingsStore = useInstanceAiSettingsStore();
+const appSettingsStore = useSettingsStore();
 const thread = provideThread(props.threadId);
-const { isLowCredits } = storeToRefs(store);
+useAssistantAwayTelemetry({
+	threadId: () => props.threadId,
+	// A run that waits for the user is still active.
+	isRunning: () => thread.isStreaming || thread.isSendingMessage,
+	isAwaitingUser: () => thread.isAwaitingUserInput,
+	isReady: () => thread.hydrationStatus === 'ready',
+	turn: () => getCurrentTurn(thread.artifactTurns),
+});
 const rootStore = useRootStore();
 const i18n = useI18n();
 const router = useRouter();
-const { goToUpgrade } = usePageRedirectionHelper();
-const creditBanner = useCreditWarningBanner(isLowCredits);
+const route = useRoute();
+const { width: windowWidth } = useWindowSize();
+const { isCollapsed: isMainSidebarCollapsed, sidebarWidth: mainSidebarWidth } = useSidebarLayout();
+const toast = useToast();
+const mentionsEnabled = useIsAssistantAtMentionsEnabled();
 
-// Running builders render in a dedicated bottom section of the conversation.
-// Once a builder finishes it falls out of this list and AgentTimeline renders
-// it in its natural chronological slot.
-const builderAgents = computed(() => collectActiveBuilderAgents(thread.messages));
+const conversationRef = useTemplateRef<InstanceType<typeof InstanceAiConversation>>('conversation');
 
-// Assistant messages whose only content has been extracted to the bottom
-// builder section (or which haven't produced anything renderable yet) would
-// otherwise leave an empty wrapper in the list — filter them out.
-const displayedMessages = computed(() => thread.messages.filter(messageHasVisibleContent));
+// The conversation owns the composer-handoff state; read it through the
+// template ref for the agent-preview session id below and for
+// `InstanceAiArtifactsPanel`, a sibling of the conversation rather than a
+// descendant of it.
+const handoffContext = computed(() => conversationRef.value?.pendingComposerContext ?? null);
 
-// --- Execution tracking via push events ---
-const executionTracking = useExecutionPushEvents();
+function onThreadMissing() {
+	// The user may have navigated to another thread before this one reported
+	// missing; only redirect if we're still on the thread that went missing.
+	if (router.currentRoute.value.params.threadId !== props.threadId) return;
+	void router.replace({ name: INSTANCE_AI_VIEW });
+}
+
+function onAgentAttachmentRestored(attachment: InstanceAiAgentAttachment) {
+	preview.openAgentPreview(attachment.id, attachment.projectId);
+}
+
+// --- Fix-with-AI offer (failure data emitted by the artifact host) ---
+const failedRun = ref<WorkflowFailuresReport | null>(null);
+const dismissedExecutionId = ref<string | null>(null);
+
+const isChatInProgress = computed(
+	() => thread.isStreaming || thread.isSendingMessage || thread.isAwaitingConfirmation,
+);
+
+const activeFixWithAiOffer = computed(() => {
+	const run = failedRun.value;
+	if (!run) return null;
+	if (run.executionId === dismissedExecutionId.value) return null;
+	if (isChatInProgress.value) return null;
+	return {
+		...run,
+		workflowName: thread.producedArtifacts.get(run.workflowId)?.name,
+	};
+});
+
+// --- "Test your agent" offer (post-setup suggestion) ---
+const isAgentEvalsEnabled = useAgentEvalsFlag();
+const agentEvalsStore = useAgentEvalsStore();
+
+// Operator override (`N8N_FORCE_AGENT_WORTH_TESTING`) that bypasses the
+// capability check below, e.g. for demos or support debugging.
+const forceAgentWorthTesting = computed(
+	() => appSettingsStore.settings.evaluation?.forceAgentWorthTesting === true,
+);
+
+// Passed the local runtime because this component provides the thread rather
+// than inheriting it, so the composable's own `useThread()` inject would fail.
+const isAgentWorking = useIsAgentWorking(thread);
+
+// The agent the builder actually persisted in this thread. Absent until then,
+// which is what keeps the suggestion from firing mid-build.
+const agentBuilderTarget = computed(() =>
+	getAgentBuilderTargetFromThreadMetadata(store.getThreadMetadata(thread.id)),
+);
+
+/**
+ * The agent this thread would offer to test, before the checks that need its
+ * capabilities. Resolves to null for the conditions we can decide without a
+ * network call — flag off, nothing built, already dismissed — so the capability
+ * summary is never fetched for a card the user will not be shown.
+ */
+const testAgentOfferCandidate = computed(() => {
+	if (!isAgentEvalsEnabled.value) return null;
+	const target = agentBuilderTarget.value;
+	if (!target) return null;
+
+	const dismissedKeys = new Set(getDismissedContextKeys(store.getThreadMetadata(thread.id)));
+	return dismissedKeys.has(testAgentOfferKey(target.agentId)) ? null : target;
+});
+
+const offerAgentId = computed(() => testAgentOfferCandidate.value?.agentId ?? '');
+const offerProjectId = computed(() => testAgentOfferCandidate.value?.projectId ?? '');
+
+const { summary: offerAgentSummary } = useAgentCapabilitySummary(offerProjectId, offerAgentId);
+
+const activeTestAgentOffer = computed(() => {
+	const target = testAgentOfferCandidate.value;
+	if (!target) return null;
+	// Waiting for the run to settle keeps the card from appearing while the
+	// assistant is still adding tools the generated cases would need to cover.
+	if (isAgentWorking.value) return null;
+	// Don't offer to draft cases for an agent that already has some — e.g. the
+	// user generated them from the Evals tab without dismissing this card.
+	// Only suppresses when the store already knows; deliberately no fetch just to
+	// answer this, so a cold thread can still offer once against an agent whose
+	// datasets have never been loaded.
+	if (
+		agentEvalsStore.isLoaded(target.agentId) &&
+		agentEvalsStore.getDatasets(target.agentId).length
+	)
+		return null;
+	if (!isAgentWorthTesting(offerAgentSummary.value, forceAgentWorthTesting.value)) return null;
+
+	return target;
+});
+
+// Latches the offer once it starts showing, so the preview panel's own commit
+// (which persists the dismissal and fills the dataset cache `activeTestAgentOffer`
+// checks) can't tear it down mid-flow.
+//
+// Scoped to one target: the latch moves to a different agent as soon as that
+// agent becomes the offer, and it drops when the offer is lost (the agent starts
+// working again, or datasets appear from the Evals tab) — except once the panel
+// has committed ("Looks good"), which is the only time it must outlive the offer.
+// Cleared by an explicit dismiss or open-evals action.
+const latchedTestAgentOffer = ref<typeof activeTestAgentOffer.value>(null);
+const isTestAgentOfferCommitted = ref(false);
+
+function clearTestAgentOfferLatch() {
+	latchedTestAgentOffer.value = null;
+	isTestAgentOfferCommitted.value = false;
+}
+
+watch(
+	activeTestAgentOffer,
+	(offer) => {
+		const latched = latchedTestAgentOffer.value;
+		if (offer) {
+			if (latched?.agentId === offer.agentId) return;
+			latchedTestAgentOffer.value = offer;
+			isTestAgentOfferCommitted.value = false;
+			return;
+		}
+		if (latched && !isTestAgentOfferCommitted.value) clearTestAgentOfferLatch();
+	},
+	{ immediate: true },
+);
+
+const { isFeatureEnabled: isTestAgentPreviewEnabled } = useTestAgentPreviewFlag();
 
 // --- Header title ---
 // Returns the resolved title once we have one, or undefined while we're still
 // figuring out which thread to show. Rendering only on a defined value avoids
 // the "New conversation" → real title flash when resuming a recent thread.
-const currentThreadTitle = computed<string | undefined>(() => {
-	const threadSummary = store.threads.find((t) => t.id === props.threadId);
-	if (threadSummary && threadSummary.title && threadSummary.title !== NEW_CONVERSATION_TITLE) {
-		return threadSummary.title;
-	}
-	const firstUserMsg = thread.messages.find((m) => m.role === 'user');
-	if (firstUserMsg?.content) {
-		const text = firstUserMsg.content.trim();
-		return text.length > 60 ? text.slice(0, 60) + '…' : text;
-	}
-	return undefined;
+const currentThreadTitle = computed<string | undefined>(() =>
+	getThreadDisplayTitle(
+		store.threads.find((t) => t.id === props.threadId),
+		thread.messages,
+	),
+);
+
+// An onboarding thread hides the header and the artifacts panel until the user leaves the
+// onboarding. The header keeps its space, so the chat does not move to the top edge.
+const isOnboardingChromeHidden = computed(() => store.isOnboardingChromeHidden(props.threadId));
+
+// The tab names the conversation, not the workflow previewed inside it — the
+// parent view claims the title so the embedded canvas can't overwrite this.
+const documentTitle = useDocumentTitle();
+watch(
+	currentThreadTitle,
+	(title) => documentTitle.set(title ?? i18n.baseText('instanceAi.view.title')),
+	{ immediate: true },
+);
+
+// Experiment cleanup (137_instance_ai_draft_workflow_preview)
+// A reload can restore the open question from history and not the run, for example after a
+// restart. The chat still asks the question, so the canvas waits too.
+const isAwaitingUser = () => thread.isAwaitingUserInput || thread.pendingConfirmations.length > 0;
+const ANSWER_INPUT_TYPES = new Set<InstanceAiConfirmationInputType>([
+	'questions',
+	'text',
+	'continue',
+]);
+const draftPreview = useDraftWorkflowPreview({
+	threadId: () => props.threadId,
+	turns: () => thread.artifactTurns,
+	workflowDrafts: () => thread.workflowDrafts,
+	dismissWorkflowDrafts: (workflowId) => thread.dismissWorkflowDrafts(workflowId),
+	// A builder can still work in the background after the orchestrator run ended.
+	isRunning: () => thread.isStreaming || collectActiveBuilderAgents(thread.messages).length > 0,
+	isAwaitingUser,
+	// The card in the chat input slot comes first, as the pill focuses it. A card that waits for
+	// user input asks for an answer. Any other card asks for an approval.
+	isAwaitingApproval: () => {
+		const pending = thread.pendingConfirmations;
+		const shown = pending.find(isPendingItemFloating) ?? pending[0];
+		return !ANSWER_INPUT_TYPES.has(shown?.toolCall.confirmation.inputType ?? 'approval');
+	},
 });
+// EOF Experiment cleanup
 
 // --- Canvas / data table preview ---
+const appTargets = computed(() =>
+	getAppTargetsFromThreadMetadata(store.getThreadMetadata(props.threadId)),
+);
+const requestedAppId = computed(() => {
+	const appId = route.query[INSTANCE_AI_APP_ID_QUERY];
+	return typeof appId === 'string' && appTargets.value.some((target) => target.appId === appId)
+		? appId
+		: undefined;
+});
+const cloudBrowserTasks = useCloudBrowserTasks(thread);
 const preview = useCanvasPreview({
 	thread,
 	threadId: () => props.threadId,
+	cloudBrowserTasks: () => cloudBrowserTasks.value,
+	initialAgentId: () =>
+		getAgentBuilderTargetFromThreadMetadata(store.getThreadMetadata(props.threadId))?.agentId,
+	initialAppId: () => requestedAppId.value ?? appTargets.value[0]?.appId,
+	tabsStorage: {
+		load: async () => (await fetchThreadTabs(rootStore.restApiContext, props.threadId)).state,
+		save: async (state) => {
+			await saveThreadTabs(rootStore.restApiContext, props.threadId, state);
+		},
+	},
+	...draftPreview.canvasOptions,
+});
+const openSkillTabs = computed(() => preview.openTabs.value.filter((tab) => tab.type === 'skill'));
+watch(
+	[requestedAppId, () => preview.tabsLoaded.value],
+	([appId, tabsLoaded]) => {
+		if (appId && tabsLoaded) preview.openAppPreview(appId);
+	},
+	{ immediate: true },
+);
+
+const canvasRunState = draftPreview.useCanvasRunState(preview);
+
+// Experiment cleanup (137_instance_ai_draft_workflow_preview)
+const draftPreviewTelemetry = useDraftWorkflowPreviewTelemetry(thread);
+watch(
+	() => {
+		const draft = preview.activeWorkflowDraft.value;
+		if (!preview.isPreviewVisible.value || !draft) return undefined;
+		return isStagingDraft(draft) ? 'staging' : 'draft';
+	},
+	(kind) => {
+		if (kind) draftPreviewTelemetry.trackCanvasRendered(kind);
+	},
+	{ immediate: true },
+);
+// EOF Experiment cleanup
+
+// The saved canvas loaded under its draft, so the draft has nothing left to cover.
+function handleSavedWorkflowLoaded(workflowId: string) {
+	// Only the workflow that the build works on counts, not one the user opens.
+	if (draftPreview.isBuiltWorkflow(workflowId)) draftPreviewTelemetry.trackCanvasRendered('saved');
+	thread.dismissWorkflowDrafts(workflowId);
+}
+watch(
+	[() => preview.activeTabId.value, () => preview.isPreviewVisible.value],
+	([tabId, previewVisible]) => {
+		// The agent knows saved artifacts only. A browser or draft tab has no id that it can use.
+		const isArtifact = preview.openTabs.value.some(
+			(tab) => tab.id === tabId && isSavedArtifactTab(tab),
+		);
+		thread.setActiveArtifactId(previewVisible && isArtifact ? tabId : undefined);
+	},
+	{ immediate: true },
+);
+// The agent sees the open tabs, not every artifact the thread produced. Until the
+// stored tabs load, the default tabs can still hold closed ones, so send none.
+watch(
+	[() => preview.openTabs.value, () => preview.tabsLoaded.value],
+	([tabs, loaded]) => thread.setOpenTabs(loaded ? tabs.filter(isSavedArtifactTab) : null),
+	{ immediate: true },
+);
+// --- Setup panel (checklist docked above the composer) ---
+// Early setup announcements can arrive before the first workflow artifact.
+const setupPanelWorkflowId = computed(() => {
+	if (!settingsStore.isInstanceAiSetupPanelEnabled) return undefined;
+	const active = preview.activeWorkflowId.value;
+	if (preview.activeTabId.value) return active ?? undefined;
+	let latest: string | undefined;
+	for (const entry of thread.producedArtifacts.values()) {
+		if (entry.type === 'workflow') latest = entry.id;
+	}
+	return latest ?? thread.latestSetupWorkflowId;
+});
+const setupPanelProjectId = computed(() =>
+	setupPanelWorkflowId.value
+		? thread.producedArtifacts.get(setupPanelWorkflowId.value)?.projectId
+		: undefined,
+);
+const setupOverlapHeight = ref(0);
+const setupPanelRef = useTemplateRef<InstanceType<typeof InstanceAiSetupPanel>>('setupPanel');
+onUnmounted(
+	thread.registerSetupChatTelemetryContext(() => {
+		const context = setupPanelRef.value?.getChatTelemetryContext();
+		return context?.workflow_id === setupPanelWorkflowId.value ? context : undefined;
+	}),
+);
+
+const agentReturnContext = useAgentReturnContextStore().consumePendingArtifactReturn();
+const agentReturnWorkflowId = agentReturnContext?.workflowId;
+const agentReturnNodeId = ref(agentReturnContext?.nodeId);
+if (agentReturnWorkflowId) {
+	preview.openWorkflowPreview(agentReturnWorkflowId);
+}
+
+function consumeAgentReturnNodeId() {
+	agentReturnNodeId.value = undefined;
+}
+
+function openAgentChatPreview(agentId: string, projectId: string): boolean {
+	preview.openAgentPreview(agentId, projectId);
+	isAgentTestDockOpen.value = true;
+	return true;
+}
+
+const activeAgentPreviewSessionId = computed(() => {
+	const context = handoffContext.value;
+	if (context?.source === 'agent-preview' && context.agentId === preview.activeAgentId.value) {
+		return context.threadId;
+	}
+
+	const metadata = store.getThreadMetadata(props.threadId);
+	const persisted =
+		getAgentPreviewViewFromThreadMetadata(metadata) ??
+		getAgentPreviewSessionFromThreadMetadata(metadata);
+	return persisted?.agentId === preview.activeAgentId.value ? persisted.threadId : undefined;
 });
 
 provide('openWorkflowPreview', preview.openWorkflowPreview);
+provide('showMentionedWorkflow', preview.showMentionedWorkflow);
 provide('openDataTablePreview', preview.openDataTablePreview);
+provide('openAgentPreview', preview.openAgentPreview);
+provide('openCloudBrowserTab', preview.openCloudBrowserTab);
+provide(CloudBrowserTasksKey, preview.cloudBrowserTasks);
+// Only a running task has a browser to show.
+const runningCloudBrowserTasks = computed(() =>
+	preview.cloudBrowserTasks.value.filter((task) => task.state === 'running'),
+);
+const cloudBrowserLiveViews = useCloudBrowserLiveViews(
+	runningCloudBrowserTasks,
+	() => props.threadId,
+);
+provide(CloudBrowserLiveViewsKey, cloudBrowserLiveViews.views);
+provide(CloudBrowserLiveViewRefreshKey, cloudBrowserLiveViews.refresh);
+provide('openAgentChatPreview', openAgentChatPreview);
+provide('openSkillPreview', preview.openSkillPreview);
+provide('openAppPreview', preview.openAppPreview);
+provide('pendingComposerContext', handoffContext);
+provide(
+	'dismissPendingComposerContext',
+	(key: string) => conversationRef.value?.dismissPendingComposerContext(key) ?? false,
+);
 
 // --- Side panels ---
-const showArtifactsPanel = ref(true);
 const showDebugPanel = ref(false);
 const isDebugEnabled = computed(() => localStorage.getItem('instanceAi.debugMode') === 'true');
+const hasPreviewTabs = computed(() => preview.openTabs.value.length > 0);
+// Wait for the stored tabs: a resource opened before they load replaces them.
+const showOpenResourcePicker = computed(
+	() => preview.tabsLoaded.value && !preview.isPreviewVisible.value && !hasPreviewTabs.value,
+);
+const artifactsPanelTransitionGate = useTransitionGate({
+	isBlocked: () => thread.isHydratingThread,
+});
+const previewPanelTransitionGate = useTransitionGate({
+	isBlocked: () => thread.isHydratingThread,
+});
+const isArtifactsPanelTransitionEnabled = artifactsPanelTransitionGate.isEnabled;
+const isPreviewPanelTransitionEnabled = previewPanelTransitionGate.isEnabled;
+const isPreviewPanelTransitioning = ref(false);
+const { previewToggleLabel: artifactsPreviewToggleLabel, togglePreview: toggleArtifactsPreview } =
+	usePreviewToggle(preview);
+const artifactsPanelTransitionName = computed(() =>
+	isPreviewPanelTransitioning.value ? 'artifacts-panel-preview' : 'artifacts-panel-fade',
+);
+
+function enablePanelTransitionsAfterStableRender() {
+	artifactsPanelTransitionGate.enableAfterStableRender();
+	previewPanelTransitionGate.enableAfterStableRender();
+}
+
+function suppressPanelTransitionsUntilStableRender() {
+	artifactsPanelTransitionGate.suppressUntilStableRender();
+	previewPanelTransitionGate.suppressUntilStableRender();
+}
 
 // --- Preview panel resize (when canvas is visible) ---
-// Cap the preview at 50% of the *available* thread area, not the full window —
-// with the layout sidebar open the chat side would otherwise get less than 50%.
 const threadAreaRef = useTemplateRef<HTMLElement>('threadArea');
 const { width: threadAreaWidth } = useElementSize(threadAreaRef);
-const previewPanelWidth = ref(0);
-const isResizingPreview = ref(false);
-const previewMaxWidth = computed(() => Math.round(threadAreaWidth.value / 2));
-
-// Clamp preview width when the available area shrinks (sidebar open, window
-// resize, etc.)
-watch(previewMaxWidth, (max) => {
-	if (previewPanelWidth.value > max) {
-		previewPanelWidth.value = max;
-	}
-});
-
-function handlePreviewResize({ width }: { width: number }) {
-	previewPanelWidth.value = width;
-}
-
-// Re-compute default width when preview opens so it starts at 50% of the
-// currently-available thread area.
-watch(preview.isPreviewVisible, (visible) => {
-	if (visible) {
-		previewPanelWidth.value = Math.round(threadAreaWidth.value / 2);
-	}
-});
-
-// Late-initialize if the panel became visible before the ResizeObserver
-// reported the container size (otherwise the panel would render at 0px).
-watch(threadAreaWidth, (width) => {
-	if (width > 0 && previewPanelWidth.value === 0 && preview.isPreviewVisible.value) {
-		previewPanelWidth.value = Math.round(width / 2);
-	}
-});
-
-// --- Scroll management ---
-const scrollableRef = useTemplateRef<HTMLElement>('scrollable');
-// The actual scroll container is the reka-ui viewport inside N8nScrollArea,
-// NOT the immediate parent (which is a non-scrolling content wrapper).
-const scrollContainerRef = computed(
+const mainSidebarOccupiedWidth = computed(() =>
+	isMainSidebarCollapsed.value ? COLLAPSED_MAIN_SIDEBAR_WIDTH : (mainSidebarWidth.value ?? 0),
+);
+const availableWidthForPinnedArtifactsPanel = computed(
+	() => windowWidth.value - mainSidebarOccupiedWidth.value,
+);
+const isArtifactsPanelInLayout = computed(
+	() => availableWidthForPinnedArtifactsPanel.value >= MIN_WIDTH_FOR_PINNED_ARTIFACTS_PANEL,
+);
+const canShowArtifactsPanel = computed(
 	() =>
-		(scrollableRef.value?.closest('[data-reka-scroll-area-viewport]') as HTMLElement | null) ??
-		null,
+		thread.hasMessages ||
+		preview.openTabs.value.length > 0 ||
+		(Boolean(props.threadId) && thread.isHydratingThread),
 );
-const { arrivedState } = useScroll(scrollContainerRef, {
-	throttle: 100,
-	offset: { bottom: 100 },
-});
-const userScrolledUp = ref(false);
-
-watch(
-	() => arrivedState.bottom,
-	(atBottom) => {
-		userScrolledUp.value = !atBottom;
-	},
-);
-
-function scrollToBottom(smooth = false) {
-	const container = scrollContainerRef.value;
-	if (container) {
-		container.scrollTo({
-			top: container.scrollHeight,
-			behavior: smooth ? 'smooth' : 'instant',
-		});
-	}
-}
-
-// Auto-scroll when content height changes (handles text deltas, tool calls,
-// sub-agent spawns, results, etc. — anything that grows the DOM).
-let contentResizeObserver: ResizeObserver | null = null;
-
-watch(
-	scrollableRef,
-	(el) => {
-		contentResizeObserver?.disconnect();
-		if (el) {
-			contentResizeObserver = new ResizeObserver(() => {
-				if (!userScrolledUp.value) {
-					scrollToBottom();
-				}
-			});
-			contentResizeObserver.observe(el);
-		}
-	},
-	{ immediate: true },
-);
-
-// --- Chat input ref for auto-focus ---
-const chatInputRef = ref<InstanceType<typeof InstanceAiInput> | null>(null);
-
-// Focus input on initial render (ref rebinds when messages load)
-watch(chatInputRef, (el) => {
-	if (el) {
-		void nextTick(() => el.focus());
-	}
-});
-
-// --- Floating input dynamic padding ---
-const inputContainerRef = useTemplateRef<HTMLElement>('inputContainer');
-const inputAreaHeight = ref(120);
-let resizeObserver: ResizeObserver | null = null;
-
-watch(
-	inputContainerRef,
-	(el) => {
-		resizeObserver?.disconnect();
-		if (el) {
-			resizeObserver = new ResizeObserver((entries) => {
-				for (const entry of entries) {
-					inputAreaHeight.value = entry.borderBoxSize[0]?.blockSize ?? entry.contentRect.height;
-				}
-			});
-			resizeObserver.observe(el);
-		}
-	},
-	{ immediate: true },
-);
-
-function reconnectThreadAfterHydration(): void {
-	void thread.loadHistoricalMessages().then((hydrationStatus) => {
-		if (hydrationStatus === 'stale') return;
-		void thread.loadThreadStatus();
-		thread.connectSSE();
+const { showArtifactsPanel, artifactsPanelToggleLabel, toggleArtifactsPanel } =
+	useArtifactsPanelToggle({
+		isInLayout: () => isArtifactsPanelInLayout.value,
+		canShow: () => canShowArtifactsPanel.value,
+		isPreviewVisible: () => preview.isPreviewVisible.value,
+		isHidden: () => isOnboardingChromeHidden.value,
+		panelSlot: useTemplateRef<HTMLElement>('artifactsPanelSlot'),
+		toggleSelector: '[data-test-id="instance-ai-artifacts-panel-toggle"]',
 	});
+const showArtifactsPanelToggle = computed(
+	() => canShowArtifactsPanel.value && !preview.isPreviewVisible.value,
+);
+const reserveArtifactsPanelLayout = computed(
+	() => showArtifactsPanel.value && isArtifactsPanelInLayout.value,
+);
+const shouldAnimateArtifactsPanel = computed(
+	() => isArtifactsPanelTransitionEnabled.value && isArtifactsPanelInLayout.value,
+);
+const shouldSuppressContentLayoutTransitions = computed(
+	() => !isPreviewPanelTransitionEnabled.value,
+);
+const isResizingPreview = ref(false);
+const isThreadAreaResizing = ref(false);
+const isPreviewExpanded = ref(false);
+const isAgentTestDockOpen = ref(false);
+const agentPreviewChatTarget = useTemplateRef<HTMLElement>('agentPreviewChatTarget');
+
+// The composer requesting focus (e.g. after a canvas action) reads as the user
+// wanting the chat back — collapse the expanded preview so it's visible again.
+// The conversation itself owns focusing the input for the same trigger.
+watch(
+	() => store.composerFocusRequest,
+	() => {
+		isPreviewExpanded.value = false;
+	},
+);
+
+watch(
+	preview.activeTabId,
+	(activeTabId, previousActiveTabId) => {
+		if (activeTabId !== previousActiveTabId) {
+			isAgentTestDockOpen.value = false;
+		}
+	},
+	{ flush: 'sync' },
+);
+
+const {
+	previewMinWidth,
+	previewMaxWidth,
+	previewPanelWidth,
+	isPreviewResizeEnabled,
+	handlePreviewResize,
+} = usePreviewPanelWidth({ threadAreaWidth, isExpanded: () => isPreviewExpanded.value });
+const shouldAnimatePreviewLayout = computed(
+	() =>
+		isPreviewPanelTransitionEnabled.value &&
+		!isResizingPreview.value &&
+		!isThreadAreaResizing.value,
+);
+const agentPreviewPanelStyle = computed(() =>
+	isPreviewExpanded.value ? undefined : { width: `${previewPanelWidth.value}px` },
+);
+
+function togglePreviewExpanded() {
+	isPreviewExpanded.value = !isPreviewExpanded.value;
+	if (isPreviewExpanded.value) isAgentTestDockOpen.value = false;
 }
 
-// Validate the route's :threadId against the loaded thread list, then connect
-// this route-scoped runtime. Route changes remount this component, so no
-// store-level "active thread" state is needed here.
-async function syncRouteToStore() {
-	const requestedThreadId = props.threadId;
-	if (!store.threads.length) {
-		await store.loadThreads();
-	}
-	// User may have navigated elsewhere while we awaited
-	if (requestedThreadId !== props.threadId) return;
-	if (!store.threads.some((t) => t.id === requestedThreadId)) {
-		void router.replace({ name: INSTANCE_AI_VIEW });
-		return;
-	}
-	if (thread.sseState === 'disconnected') {
-		reconnectThreadAfterHydration();
+function handleAgentTestDockOpenChange(open: boolean) {
+	const wasOpen = isAgentTestDockOpen.value;
+	isAgentTestDockOpen.value = open;
+	if (open) {
+		isPreviewExpanded.value = false;
+	} else if (wasOpen) {
+		store.requestComposerFocus();
 	}
 }
+
+function handlePreviewPanelAfterEnter() {
+	isPreviewPanelTransitioning.value = false;
+	// The slide-in animates the panel width from 0 to its target, so any
+	// fitView the iframe ran during the transition computed zoom against a
+	// near-zero viewport. Re-fit now that the iframe has its final size.
+	workflowPreviewRef.value?.requestFitView();
+}
+
+function handlePreviewPanelAfterLeave() {
+	isPreviewPanelTransitioning.value = false;
+	isPreviewExpanded.value = false;
+}
+
+watch(
+	preview.isPreviewVisible,
+	(visible, wasVisible) => {
+		if (visible !== wasVisible) {
+			isPreviewPanelTransitioning.value = isPreviewPanelTransitionEnabled.value;
+		}
+
+		if (!visible) isAgentTestDockOpen.value = false;
+	},
+	{ flush: 'sync' },
+);
+
+const finishThreadAreaResize = useDebounceFn(() => {
+	isThreadAreaResizing.value = false;
+}, getDebounceTime(DEBOUNCE_TIME.UI.RESIZE));
+
+watch(
+	threadAreaWidth,
+	(width, previousWidth) => {
+		if (
+			typeof previousWidth === 'number' &&
+			previousWidth > 0 &&
+			width !== previousWidth &&
+			preview.isPreviewVisible.value
+		) {
+			isThreadAreaResizing.value = true;
+			void finishThreadAreaResize();
+		}
+	},
+	{ immediate: true },
+);
+
+watch(
+	() => props.threadId,
+	(threadId, previousThreadId) => {
+		if (threadId !== previousThreadId) {
+			isAgentTestDockOpen.value = false;
+			suppressPanelTransitionsUntilStableRender();
+		}
+	},
+);
+
+watch(
+	() => thread.isHydratingThread,
+	(isHydrating) => {
+		if (isHydrating) {
+			artifactsPanelTransitionGate.suppress();
+			previewPanelTransitionGate.suppress();
+			return;
+		}
+		suppressPanelTransitionsUntilStableRender();
+	},
+);
 
 onMounted(() => {
-	void syncRouteToStore();
-	void nextTick(() => chatInputRef.value?.focus());
+	enablePanelTransitionsAfterStableRender();
 });
 
 onUnmounted(() => {
-	thread.closeSSE();
-	contentResizeObserver?.disconnect();
-	resizeObserver?.disconnect();
-	executionTracking.cleanup();
+	// This view owns its thread's runtime, so it disposes it here (closes the
+	// SSE, clears state, drops it from the store) — but only once the app has
+	// left this thread's route. Suspense can create a duplicate instance of
+	// this view for the same thread during layout transitions (e.g. an editor
+	// hand-off that loads the AIA chunks) and discard one; that discarded
+	// instance's unmount fires while the route still points at the thread, and
+	// must not tear down the runtime the live instance is rendering.
+	if (router.currentRoute.value.params.threadId !== props.threadId) {
+		store.disposeRuntime(props.threadId);
+		// Guarded by the same route check, and scoped to this thread's agent: a
+		// discarded duplicate instance must not drop a request the live instance's
+		// builder is still about to claim.
+		const offeredAgentId = agentBuilderTarget.value?.agentId;
+		if (offeredAgentId) agentEvalsStore.clearEvalsFocus(offeredAgentId);
+	}
 });
 
-// --- Workflow preview ref for iframe relay ---
 const workflowPreviewRef =
 	useTemplateRef<InstanceType<typeof InstanceAiWorkflowPreview>>('workflowPreview');
 
-const eventRelay = useEventRelay({
-	workflowExecutions: executionTracking.workflowExecutions,
-	activeWorkflowId: preview.activeWorkflowId,
-	getBufferedEvents: executionTracking.getBufferedEvents,
-	clearEventLog: executionTracking.clearEventLog,
-	relay: (event) => workflowPreviewRef.value?.relayPushEvent(event),
-});
+function handleFixWithAiFromOffer() {
+	const offer = activeFixWithAiOffer.value;
+	if (!offer) return;
 
-// --- Message handlers ---
-function handleSubmit(message: string, attachments?: InstanceAiAttachment[]) {
-	// Reset scroll on new user message
-	userScrolledUp.value = false;
-	void thread.sendMessage(message, attachments, rootStore.pushRef);
+	dismissedExecutionId.value = offer.executionId;
+	conversationRef.value?.resetScroll();
+	void thread.sendMessage(
+		buildFixWithAiPrompt({ workflowName: offer.workflowName, errors: offer.errors }),
+		{
+			authorship: { kind: 'prefill', prefillType: 'handoff_fix_with_ai' },
+			pushRef: rootStore.pushRef,
+			// Names the failed run, so the agent reads that execution instead of
+			// guessing from the list. A run that n8n did not save has no list entry.
+			attachments: [
+				{
+					type: 'workflow',
+					id: offer.workflowId,
+					...(offer.workflowName ? { name: offer.workflowName } : {}),
+					executionId: offer.executionId,
+				},
+			],
+		},
+	);
 }
 
-function handleStop() {
-	void thread.cancelRun();
+function dismissFixWithAiOffer() {
+	const offer = activeFixWithAiOffer.value;
+	if (!offer) return;
+	dismissedExecutionId.value = offer.executionId;
+}
+
+function handleWorkflowFailures(report: WorkflowFailuresReport) {
+	failedRun.value = report;
+}
+
+function handleAgentPreviewAssistantHandoff(params: AgentTestHandoffParams) {
+	if (
+		params.agentId !== preview.activeAgentId.value ||
+		params.projectId !== preview.activeAgentProjectId.value
+	) {
+		return;
+	}
+	if (conversationRef.value?.isDirty()) {
+		toast.showMessage({
+			title: i18n.baseText('instanceAi.input.finishDraftBeforeHandoff.title'),
+			message: i18n.baseText('instanceAi.input.finishDraftBeforeHandoff.message'),
+			type: 'warning',
+		});
+		return;
+	}
+
+	// The request now belongs to the assistant composer beside it, so leaving the
+	// preview chat open reads as two places to ask the same thing.
+	isAgentTestDockOpen.value = false;
+
+	if (!conversationRef.value) return;
+	conversationRef.value.applyHandoff(
+		buildInstanceAiAgentPreviewHandoffContext(params),
+		params.initialDraft,
+	);
+	params.onAccepted?.();
+}
+
+/**
+ * Reveal the agent artifact, then hand off to the builder to select its Evals
+ * tab and generate. Generation deliberately stays in the builder: it already
+ * owns the call, its loading flag and its error toast, so driving it from here
+ * would be a second call site for the same operation.
+ */
+async function handleGenerateTestCasesFromOffer() {
+	// Reads the latch, not activeTestAgentOffer: by the time this fires the
+	// generic offer flow doesn't trigger dataset generation itself, but the
+	// latch is still the authoritative "which target is this offer for" source.
+	const target = latchedTestAgentOffer.value;
+	if (!target) return;
+
+	// Raise the request before revealing the artifact: the builder consumes it on
+	// mount, so ordering doesn't matter, and the panel may not be open yet.
+	agentEvalsStore.requestEvalsFocus(target.agentId, true);
+	preview.openAgentPreview(target.agentId, target.projectId);
+	await persistTestAgentOfferDismissal(target.agentId);
+	clearTestAgentOfferLatch();
+}
+
+async function dismissTestAgentOffer() {
+	const target = latchedTestAgentOffer.value;
+	if (!target) return;
+	await persistTestAgentOfferDismissal(target.agentId);
+	clearTestAgentOfferLatch();
+}
+
+/**
+ * The preview panel confirms as soon as the user says "Looks good", before it
+ * generates the rest of the suite — dismissal happens on that signal alone,
+ * matching the generic offer's CTA, which also persists immediately rather
+ * than waiting for generation to finish. The latch stays set: the flow
+ * continues (the panel keeps generating and offers "Open evals" next), so the
+ * panel must not unmount yet.
+ */
+async function handleConfirmTestAgentPreview() {
+	const target = latchedTestAgentOffer.value;
+	if (!target) return;
+	// Set before the await: persisting the dismissal is what makes the live offer
+	// disappear, and the latch has to already be committed by then.
+	isTestAgentOfferCommitted.value = true;
+	await persistTestAgentOfferDismissal(target.agentId);
+}
+
+/**
+ * The preview panel has already generated every case by the time this fires,
+ * so — unlike `handleGenerateTestCasesFromOffer` — this does not request
+ * generation on arrival. This is the end of the preview flow, so the latch
+ * clears here.
+ */
+function handleOpenEvalsFromPreview(resultId: string | null) {
+	const target = latchedTestAgentOffer.value;
+	if (!target) return;
+	agentEvalsStore.requestEvalsFocus(target.agentId, false, resultId ?? undefined);
+	preview.openAgentPreview(target.agentId, target.projectId);
+	// Opening a single case is a peek: the chat panel stays so the user can come back.
+	if (!resultId) clearTestAgentOfferLatch();
+}
+
+function handleTryAgentFromPreview() {
+	const target = latchedTestAgentOffer.value;
+	if (!target) return;
+	openAgentChatPreview(target.agentId, target.projectId);
+}
+
+// Persisted for the CTA as well as "Maybe later": once the user has acted on the
+// suggestion, re-offering it on the next visit is noise.
+async function persistTestAgentOfferDismissal(agentId: string) {
+	const dismissedKeys = new Set(getDismissedContextKeys(store.getThreadMetadata(thread.id)));
+	dismissedKeys.add(testAgentOfferKey(agentId));
+	await store.updateThreadMetadata(thread.id, {
+		dismissedContextKeys: [...dismissedKeys],
+	});
+}
+
+function handleNewThreadClick() {
+	void router.push({ name: INSTANCE_AI_VIEW });
 }
 </script>
 
 <template>
-	<div ref="threadArea" :class="$style.threadArea">
+	<div
+		ref="threadArea"
+		:class="[
+			$style.threadArea,
+			{
+				agentPreviewDockOpen: isAgentTestDockOpen,
+			},
+		]"
+		data-test-id="instance-ai-thread-area"
+	>
 		<!-- Main chat area -->
-		<div :class="$style.chatArea">
-			<InstanceAiViewHeader>
-				<template #title>
-					<N8nHeading v-if="currentThreadTitle" tag="h2" size="small" :class="$style.headerTitle">
-						{{ currentThreadTitle }}
-					</N8nHeading>
-					<N8nText
-						v-if="thread.sseState === 'reconnecting'"
-						size="small"
-						color="text-light"
-						:class="$style.reconnecting"
-					>
-						{{ i18n.baseText('instanceAi.view.reconnecting') }}
-					</N8nText>
-				</template>
-				<template #actions>
-					<N8nIconButton
-						v-if="isDebugEnabled"
-						icon="bug"
-						variant="ghost"
-						size="small"
-						icon-size="large"
-						:class="{ [$style.activeButton]: showDebugPanel }"
-						@click="
-							showDebugPanel = !showDebugPanel;
-							store.debugMode = showDebugPanel;
-						"
-					/>
-					<N8nIconButton
-						v-if="!preview.isPreviewVisible.value"
-						icon="panel-right"
-						variant="ghost"
-						size="small"
-						icon-size="large"
-						@click="showArtifactsPanel = !showArtifactsPanel"
-					/>
-				</template>
-			</InstanceAiViewHeader>
+		<div
+			ref="agentPreviewChatTarget"
+			:class="[
+				$style.chatArea,
+				{
+					[$style.agentPreviewLayoutTransition]: shouldAnimatePreviewLayout,
+				},
+			]"
+			:data-layout-animated="shouldAnimatePreviewLayout"
+			data-test-id="instance-ai-builder-chat"
+		>
+			<div
+				:class="[$style.builderChatHeader, { [$style.chromeHidden]: isOnboardingChromeHidden }]"
+				:inert="isAgentTestDockOpen || undefined"
+				:aria-hidden="isAgentTestDockOpen || undefined"
+				data-test-id="instance-ai-builder-chat-header"
+			>
+				<InstanceAiViewHeader
+					:title="currentThreadTitle"
+					:thread-credits-used="store.threadCreditsUsed(props.threadId)"
+				>
+					<template #status>
+						<N8nText
+							v-if="thread.sseState === 'reconnecting'"
+							size="small"
+							color="text-light"
+							:class="$style.reconnecting"
+						>
+							{{ i18n.baseText('instanceAi.view.reconnecting') }}
+						</N8nText>
+					</template>
+					<template #actions>
+						<N8nTooltip
+							:content="i18n.baseText('instanceAi.thread.new')"
+							placement="bottom"
+							:show-after="TOOLTIP_DELAY_MS"
+						>
+							<N8nIconButton
+								icon="message-circle-plus"
+								variant="ghost"
+								size="small"
+								icon-size="large"
+								:aria-label="i18n.baseText('instanceAi.thread.new')"
+								data-test-id="instance-ai-embed-new-thread"
+								@click="handleNewThreadClick"
+							/>
+						</N8nTooltip>
+						<N8nIconButton
+							v-if="isDebugEnabled"
+							icon="bug"
+							variant="ghost"
+							size="small"
+							icon-size="large"
+							:class="{ [$style.activeButton]: showDebugPanel }"
+							@click="
+								showDebugPanel = !showDebugPanel;
+								store.debugMode = showDebugPanel;
+							"
+						/>
+						<Transition name="preview-toggle-opacity" :css="isArtifactsPanelTransitionEnabled">
+							<span v-if="showArtifactsPanelToggle">
+								<N8nTooltip
+									as-child
+									:content="artifactsPanelToggleLabel"
+									placement="bottom"
+									:show-after="TOOLTIP_DELAY_MS"
+								>
+									<N8nIconButton
+										icon="list"
+										variant="ghost"
+										size="small"
+										icon-size="large"
+										data-test-id="instance-ai-artifacts-panel-toggle"
+										:aria-label="artifactsPanelToggleLabel"
+										:aria-pressed="showArtifactsPanel"
+										:disabled="!canShowArtifactsPanel"
+										focusable-when-disabled
+										@click="toggleArtifactsPanel"
+									/>
+								</N8nTooltip>
+							</span>
+						</Transition>
+						<!-- With no tabs to show, the toggle opens a resource in a new tab. -->
+						<InstanceAiResourcePicker
+							v-if="showOpenResourcePicker && thread.projectId"
+							:project-id="thread.projectId"
+							:excluded-tabs="preview.openTabs.value.filter(isArtifactTab)"
+							placement="bottom-end"
+							content-test-id="instance-ai-open-resource-picker"
+							@select="preview.openTab"
+						>
+							<template #trigger>
+								<N8nTooltip
+									:content="i18n.baseText('instanceAi.artifactsPanel.openResource')"
+									placement="bottom"
+									:show-after="TOOLTIP_DELAY_MS"
+									as-child
+								>
+									<N8nIconButton
+										icon="square-plus"
+										variant="ghost"
+										size="small"
+										icon-size="large"
+										data-test-id="instance-ai-open-resource"
+										:aria-label="i18n.baseText('instanceAi.artifactsPanel.openResource')"
+									/>
+								</N8nTooltip>
+							</template>
+						</InstanceAiResourcePicker>
+						<Transition v-else name="preview-toggle-opacity" :css="isPreviewPanelTransitionEnabled">
+							<span v-if="!preview.isPreviewVisible.value">
+								<N8nTooltip
+									as-child
+									:content="artifactsPreviewToggleLabel"
+									placement="bottom"
+									:show-after="TOOLTIP_DELAY_MS"
+								>
+									<N8nIconButton
+										icon="panel-right"
+										variant="ghost"
+										size="small"
+										icon-size="large"
+										data-test-id="instance-ai-artifacts-preview-toggle"
+										:aria-label="artifactsPreviewToggleLabel"
+										:aria-pressed="preview.isPreviewVisible.value"
+										:disabled="!hasPreviewTabs"
+										focusable-when-disabled
+										@click="toggleArtifactsPreview"
+									/>
+								</N8nTooltip>
+							</span>
+						</Transition>
+					</template>
+				</InstanceAiViewHeader>
+			</div>
 
 			<!-- Content area: chat + artifacts side by side below header -->
-			<div :class="$style.contentArea">
-				<div :class="$style.chatContent">
-					<N8nScrollArea :class="$style.scrollArea">
-						<div
-							ref="scrollable"
-							:class="$style.messageList"
-							:style="{ paddingBottom: `calc(${inputAreaHeight}px + var(--spacing--sm))` }"
-						>
-							<TransitionGroup name="message-slide">
-								<InstanceAiMessage
-									v-for="message in displayedMessages"
-									:key="message.id"
-									:message="message"
-								/>
-							</TransitionGroup>
-							<!-- Builder sub-agents are extracted from their parent assistant
-							     messages and rendered here so they always sit at the bottom
-							     of the conversation. -->
-							<div v-if="builderAgents.length" :class="$style.builderAgents">
-								<AgentSection
-									v-for="builder in builderAgents"
-									:key="builder.agentId"
-									:agent-node="builder"
-								/>
-							</div>
-							<InstanceAiConfirmationPanel />
-						</div>
-					</N8nScrollArea>
-
-					<!-- Scroll to bottom button -->
-					<div
-						:class="$style.scrollButtonContainer"
-						:style="{ bottom: `${inputAreaHeight + 8}px` }"
+			<div
+				:class="[
+					$style.contentArea,
+					{
+						[$style.contentAreaWithPinnedArtifacts]: reserveArtifactsPanelLayout,
+					},
+					{ [$style.contentAreaWithoutLayoutTransitions]: shouldSuppressContentLayoutTransitions },
+				]"
+				:data-layout-transitions-enabled="isPreviewPanelTransitionEnabled"
+				:inert="isAgentTestDockOpen || undefined"
+				:aria-hidden="isAgentTestDockOpen || undefined"
+				data-test-id="instance-ai-content-area"
+			>
+				<InstanceAiConversation
+					ref="conversation"
+					:above-input-overlap-height="setupPanelWorkflowId ? setupOverlapHeight : undefined"
+					:mentions-enabled="mentionsEnabled"
+					@thread-missing="onThreadMissing"
+					@agent-attachment-restored="onAgentAttachmentRestored"
+				>
+					<!-- A thread that builds an agent always runs in Manual mode. -->
+					<template
+						v-if="!threadTargetsAgent(store.getThreadMetadata(props.threadId))"
+						#composer-controls
 					>
-						<Transition name="fade">
-							<N8nIconButton
-								v-if="userScrolledUp && thread.hasMessages"
-								variant="outline"
-								icon="arrow-down"
-								:class="$style.scrollToBottomButton"
-								@click="
-									scrollToBottom(true);
-									userScrolledUp = false;
-								"
+						<ApprovalModeSelector :thread-id="props.threadId" />
+					</template>
+					<template #above-input>
+						<InstanceAiCloudBrowserUserActionPanel />
+						<InstanceAiSetupPanel
+							v-if="setupPanelWorkflowId"
+							ref="setupPanel"
+							:workflow-id="setupPanelWorkflowId"
+							:project-id="setupPanelProjectId"
+							@update:overlap-height="setupOverlapHeight = $event"
+						/>
+					</template>
+					<template #inline-offers>
+						<Transition name="confirmation-slide">
+							<InstanceAiFixWithAiPanel
+								v-if="activeFixWithAiOffer"
+								:node-name="activeFixWithAiOffer.errors[0].nodeName"
+								:error-message="activeFixWithAiOffer.errors[0].errorMessage"
+								:failed-count="activeFixWithAiOffer.errors.length"
+								@fix-with-ai="handleFixWithAiFromOffer"
+								@dismiss="dismissFixWithAiOffer"
 							/>
 						</Transition>
-					</div>
-
-					<!-- Floating input -->
-					<div ref="inputContainer" :class="$style.inputContainer">
-						<div :class="$style.inputConstraint">
-							<InstanceAiStatusBar />
-							<CreditWarningBanner
-								v-if="creditBanner.visible.value"
-								:credits-remaining="store.creditsRemaining"
-								:credits-quota="store.creditsQuota"
-								@upgrade-click="goToUpgrade('instance-ai', 'upgrade-instance-ai')"
-								@dismiss="creditBanner.dismiss()"
+						<Transition name="confirmation-slide">
+							<InstanceAiTestAgentPanel
+								v-if="activeTestAgentOffer && !isTestAgentPreviewEnabled"
+								@generate="handleGenerateTestCasesFromOffer"
+								@dismiss="dismissTestAgentOffer"
 							/>
-							<InstanceAiInput
-								ref="chatInputRef"
-								:is-streaming="thread.isStreaming"
-								:is-submitting="thread.isSendingMessage"
-								:is-awaiting-confirmation="thread.isAwaitingConfirmation"
-								:current-thread-id="thread.id"
-								:amend-context="thread.amendContext"
-								:contextual-suggestion="thread.contextualSuggestion"
-								:research-mode="store.researchMode"
-								@submit="handleSubmit"
-								@stop="handleStop"
-								@toggle-research-mode="store.toggleResearchMode()"
+						</Transition>
+						<Transition name="confirmation-slide">
+							<InstanceAiTestAgentPreviewPanel
+								v-if="latchedTestAgentOffer && isTestAgentPreviewEnabled"
+								:key="latchedTestAgentOffer.agentId"
+								:target="latchedTestAgentOffer"
+								@confirm="handleConfirmTestAgentPreview"
+								@dismiss="dismissTestAgentOffer"
+								@open-evals="handleOpenEvalsFromPreview($event)"
+								@try-agent="handleTryAgentFromPreview"
 							/>
-						</div>
-					</div>
-				</div>
+						</Transition>
+					</template>
+				</InstanceAiConversation>
 
 				<!-- Artifacts panel (below header, beside chat) -->
-				<InstanceAiArtifactsPanel v-if="showArtifactsPanel && !preview.isPreviewVisible.value" />
+				<Transition :name="artifactsPanelTransitionName" :css="shouldAnimateArtifactsPanel">
+					<div
+						v-if="showArtifactsPanel"
+						ref="artifactsPanelSlot"
+						:class="[
+							$style.artifactsPanelSlot,
+							{ [$style.artifactsPanelSlotOverlay]: !reserveArtifactsPanelLayout },
+						]"
+						data-test-id="instance-ai-artifacts-sidebar-slot"
+					>
+						<InstanceAiArtifactsPanel />
+					</div>
+				</Transition>
 
 				<!-- Overlay panels -->
 				<InstanceAiDebugPanel
@@ -418,64 +1065,177 @@ function handleStop() {
 		</div>
 
 		<!-- Resizable preview panel (workflow OR datatable) -->
-		<N8nResizeWrapper
-			v-show="preview.isPreviewVisible.value"
-			:class="$style.canvasArea"
-			:width="previewPanelWidth"
-			:style="{ width: `${previewPanelWidth}px` }"
-			:min-width="400"
-			:max-width="previewMaxWidth"
-			:supported-directions="['left']"
-			:is-resizing-enabled="true"
-			:grid-size="8"
-			:outset="true"
-			@resize="handlePreviewResize"
-			@resizestart="isResizingPreview = true"
-			@resizeend="isResizingPreview = false"
+		<Transition
+			name="preview-panel-slide"
+			:css="isPreviewPanelTransitionEnabled"
+			@after-enter="handlePreviewPanelAfterEnter"
+			@after-leave="handlePreviewPanelAfterLeave"
 		>
-			<TabsRoot
-				v-model="preview.activeTabId.value"
-				orientation="horizontal"
-				:class="$style.previewPanel"
+			<div
+				v-show="preview.isPreviewVisible.value"
+				:class="[
+					$style.canvasArea,
+					{
+						[$style.canvasAreaExpanded]: isPreviewExpanded,
+						[$style.agentPreviewLayoutTransition]: shouldAnimatePreviewLayout,
+					},
+				]"
+				:style="agentPreviewPanelStyle"
+				:data-expanded="isPreviewExpanded"
+				data-test-id="instance-ai-preview-panel"
 			>
-				<InstanceAiPreviewTabBar
-					:tabs="preview.allArtifactTabs.value"
-					:active-tab-id="preview.activeTabId.value"
-					@close="preview.closePreview()"
-				/>
-				<!-- Hoisted above the tab v-for so the iframe survives tab switches; tabs swap
-				     workflows via openWorkflow postMessage instead of remounting. -->
-				<div :class="$style.previewContent">
-					<InstanceAiWorkflowPreview
-						ref="workflowPreview"
-						:class="[
-							$style.previewSlot,
-							{ [$style.previewSlotHidden]: !!preview.activeDataTableId.value },
-						]"
-						:workflow-id="preview.activeWorkflowId.value"
-						:refresh-key="preview.workflowRefreshKey.value"
-						@iframe-ready="eventRelay.handleIframeReady"
-						@workflow-loaded="eventRelay.handleWorkflowLoaded"
-					/>
-					<InstanceAiDataTablePreview
-						v-if="preview.activeDataTableId.value"
-						:class="$style.previewSlot"
-						:data-table-id="preview.activeDataTableId.value"
-						:project-id="preview.activeDataTableProjectId.value"
-						:refresh-key="preview.dataTableRefreshKey.value"
-					/>
-				</div>
-			</TabsRoot>
-		</N8nResizeWrapper>
+				<N8nResizeWrapper
+					:width="previewPanelWidth"
+					:min-width="previewMinWidth"
+					:max-width="previewMaxWidth"
+					:supported-directions="['left']"
+					:is-resizing-enabled="isPreviewResizeEnabled"
+					:grid-size="8"
+					@resize="handlePreviewResize"
+					@resizestart="isResizingPreview = true"
+					@resizeend="isResizingPreview = false"
+				>
+					<N8nTabsRoot
+						:model-value="preview.activeTabId.value"
+						orientation="horizontal"
+						:class="$style.previewPanel"
+						@update:model-value="preview.selectTab"
+					>
+						<InstanceAiPreviewTabBar
+							:tabs="preview.openTabs.value"
+							:active-tab-id="preview.activeTabId.value"
+							:is-expanded="isPreviewExpanded"
+							:preview-toggle-label="artifactsPreviewToggleLabel"
+							@toggle-preview="toggleArtifactsPreview"
+							@toggle-expanded="togglePreviewExpanded"
+							:project-id="thread.projectId"
+							@close-tab="preview.closeTab"
+							@open-tab="preview.openTab"
+							@reorder-tab="preview.reorderTab"
+						/>
+						<div :class="$style.previewContent">
+							<InstanceAiWorkflowPreview
+								v-if="preview.isPreviewVisible.value && preview.activeWorkflowId.value"
+								:key="preview.activeWorkflowId.value"
+								ref="workflowPreview"
+								:class="[
+									$style.previewSlot,
+									{ [$style.previewSlotHidden]: !!preview.activeDataTableId.value },
+								]"
+								:workflow-id="preview.activeWorkflowId.value"
+								:initial-node-id="
+									preview.activeWorkflowId.value === agentReturnWorkflowId
+										? agentReturnNodeId
+										: undefined
+								"
+								:refresh-key="preview.workflowRefreshKey.value"
+								:execution-result="preview.activeWorkflowExecutionResult.value"
+								@initial-node-id-consumed="consumeAgentReturnNodeId"
+								@workflow-failures="handleWorkflowFailures"
+								@workflow-loaded="handleSavedWorkflowLoaded"
+							/>
+							<InstanceAiWorkflowDraftPreview
+								v-if="preview.isPreviewVisible.value && preview.activeWorkflowDraft.value"
+								:key="preview.activeWorkflowDraft.value.filePath"
+								:class="$style.previewSlot"
+								:draft="preview.activeWorkflowDraft.value"
+								:building="isAgentWorking || isAwaitingUser()"
+							/>
+							<InstanceAiCanvasRunOverlay
+								v-if="canvasRunState"
+								:state="canvasRunState"
+								@focus-chat="conversationRef?.focusPendingConfirmation()"
+							/>
+							<InstanceAiDataTablePreview
+								v-if="preview.isPreviewVisible.value && preview.activeDataTableId.value"
+								:class="$style.previewSlot"
+								:data-table-id="preview.activeDataTableId.value"
+								:project-id="preview.activeDataTableProjectId.value"
+								:refresh-key="preview.dataTableRefreshKey.value"
+							/>
+							<InstanceAiAgentPreview
+								v-if="
+									preview.isPreviewVisible.value &&
+									preview.activeAgentId.value &&
+									preview.activeAgentProjectId.value
+								"
+								:class="$style.previewSlot"
+								:agent-id="preview.activeAgentId.value"
+								:project-id="preview.activeAgentProjectId.value"
+								:preview-session-id="activeAgentPreviewSessionId"
+								:preview-open="isAgentTestDockOpen"
+								:preview-chat-target="agentPreviewChatTarget"
+								:pending="preview.activeAgentPending.value"
+								@preview-open-change="handleAgentTestDockOpenChange"
+								@assistant-handoff="handleAgentPreviewAssistantHandoff"
+							/>
+							<!-- A viewed browser tab stays mounted, so its live view does not reload on each switch. -->
+							<InstanceAiBrowserPreview
+								v-for="browserTab in preview.viewedBrowserTabs.value"
+								v-show="
+									preview.isPreviewVisible.value &&
+									preview.activeBrowserTab.value?.id === browserTab.id
+								"
+								:key="browserTab.id"
+								:class="$style.previewSlot"
+								:task-id="browserTab.taskId"
+								:user-action="browserTab.userAction"
+							/>
+							<!-- Retain each open skill's draft while another artifact is visible. -->
+							<KeepAlive v-for="tab in openSkillTabs" :key="tab.id">
+								<InstanceAiSkillPreview
+									v-if="preview.isPreviewVisible.value && preview.activeSkillId.value === tab.id"
+									:class="$style.previewSlot"
+									:skill-id="tab.id"
+									:refresh-key="preview.skillRefreshKey.value"
+								/>
+							</KeepAlive>
+							<InstanceAiAppPreview
+								v-if="preview.isPreviewVisible.value && preview.activeApp.value"
+								:class="$style.previewSlot"
+								:project-id="preview.activeApp.value.projectId"
+								:app-id="preview.activeApp.value.id"
+								:refresh-key="preview.appRefreshKey.value"
+								:assistant-working="preview.isActiveAppInLiveTurn.value"
+								@deleted="preview.closeTab"
+							/>
+						</div>
+					</N8nTabsRoot>
+				</N8nResizeWrapper>
+			</div>
+		</Transition>
+		<!-- Experiment cleanup: remove with openWorkflowInAssistant. -->
+		<OpenWorkflowInAssistantNotification :thread-id="threadId" />
 	</div>
 </template>
 
 <style lang="scss" module>
+@use '@n8n/design-system/css/mixins/motion' as motion;
+
 .threadArea {
+	--instance-ai-artifacts-panel-width: 280px;
+	--instance-ai-panel-transition-duration: calc(var(--duration--snappy) + 80ms);
+	--instance-ai-panel-transition-easing: var(--easing--ease-in-out);
+
 	flex: 1;
 	display: flex;
 	min-width: 0;
 	overflow: hidden;
+}
+
+.agentPreviewLayoutTransition {
+	--animation--width-transition--duration: var(--duration--snappy);
+	--animation--width-transition--easing: var(--easing--ease-in-out);
+
+	@include motion.width-transition;
+}
+
+.builderChatHeader {
+	flex-shrink: 0;
+}
+
+.chromeHidden {
+	visibility: hidden;
 }
 
 .chatArea {
@@ -492,39 +1252,14 @@ function handleStop() {
 	flex-shrink: 0;
 	min-width: 0;
 	border-left: var(--border);
-
-	// Widen the resize handle hit area for easier grabbing
-	:global([data-test-id='resize-handle']) {
-		width: 12px !important;
-		left: -6px !important;
-
-		// Visible drag indicator line
-		&::after {
-			content: '';
-			position: absolute;
-			top: 50%;
-			left: 50%;
-			transform: translate(-50%, -50%);
-			width: 2px;
-			height: 32px;
-			border-radius: 1px;
-			background: var(--color--foreground);
-			opacity: 0;
-			transition: opacity 0.15s ease;
-		}
-
-		&:hover::after {
-			opacity: 1;
-		}
-	}
 }
 
-.headerTitle {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	min-width: 0;
-	color: var(--color--text);
+.canvasAreaExpanded {
+	position: absolute;
+	inset: 0;
+	z-index: 4;
+	border-left: none;
+	background-color: var(--color--background--light-2);
 }
 
 .activeButton {
@@ -536,82 +1271,47 @@ function handleStop() {
 }
 
 .contentArea {
+	--instance-ai-artifacts-layout-width: 0;
+
 	display: flex;
 	flex: 1;
 	min-height: 0;
 	position: relative;
+	transition: --instance-ai-artifacts-layout-width var(--instance-ai-panel-transition-duration)
+		var(--instance-ai-panel-transition-easing);
 }
 
-.chatContent {
-	flex: 1;
-	min-width: 0;
-	display: flex;
-	flex-direction: column;
-	position: relative;
-}
-
-.scrollArea {
-	flex: 1;
-	// Allow flex item to shrink below content size so reka-ui viewport scrolls
-	min-height: 0;
-}
-
-.messageList {
-	max-width: 800px;
-	margin: 0 auto;
-	padding: var(--spacing--sm) var(--spacing--lg);
-	display: flex;
-	flex-direction: column;
-	gap: var(--spacing--xs);
-}
-
-.builderAgents {
-	display: flex;
-	flex-direction: column;
-	gap: var(--spacing--2xs);
-	margin-top: var(--spacing--xs);
-}
-
-.scrollButtonContainer {
+.artifactsPanelSlot {
 	position: absolute;
-	left: 0;
+	top: 0;
 	right: 0;
-	display: flex;
-	justify-content: center;
-	pointer-events: none;
-	z-index: 3;
-}
-
-.scrollToBottomButton {
-	pointer-events: auto;
-	background: var(--color--background--light-2);
-	border: var(--border);
-	border-radius: var(--radius);
-	color: var(--color--text--tint-1);
-
-	&:hover {
-		background: var(--color--foreground--tint-2);
-	}
-}
-
-.inputContainer {
-	position: absolute;
 	bottom: 0;
-	left: 0;
-	right: 0;
-	padding: 0 var(--spacing--lg) var(--spacing--sm);
-	background: linear-gradient(transparent 0%, var(--color--background--light-2) 30%);
-	pointer-events: none;
-	z-index: 2;
-
-	& > * {
-		pointer-events: auto;
-	}
+	z-index: 4;
+	width: var(--instance-ai-artifacts-panel-width);
+	min-width: var(--instance-ai-artifacts-panel-width);
+	display: flex;
+	overflow: hidden;
+	// Keep the transparent right padding from intercepting the chat scrollbar.
+	clip-path: inset(0 var(--spacing--2xs) 0 0);
 }
 
-.inputConstraint {
-	max-width: 750px;
-	margin: 0 auto;
+.artifactsPanelSlotOverlay {
+	bottom: auto;
+	max-height: calc(100% - var(--spacing--sm));
+}
+
+.contentAreaWithPinnedArtifacts {
+	--instance-ai-artifacts-layout-width: var(--instance-ai-artifacts-panel-width);
+}
+
+.contentAreaWithoutLayoutTransitions {
+	transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.contentArea {
+		transition: none;
+	}
 }
 
 .previewPanel {
@@ -638,14 +1338,7 @@ function handleStop() {
 </style>
 
 <style lang="scss">
-.message-slide-enter-from {
-	opacity: 0;
-	transform: translateY(8px);
-}
-
-.message-slide-enter-active {
-	transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-}
+@use '@n8n/design-system/css/mixins/motion';
 
 .fade-enter-from,
 .fade-leave-to {
@@ -655,5 +1348,127 @@ function handleStop() {
 .fade-enter-active,
 .fade-leave-active {
 	transition: opacity 0.2s ease;
+}
+
+.preview-panel-slide-enter-active,
+.preview-panel-slide-leave-active {
+	--preview-panel-slide-easing: var(--easing--ease-in-out);
+
+	transition:
+		width var(--instance-ai-panel-transition-duration, var(--duration--snappy))
+			var(--preview-panel-slide-easing),
+		min-width var(--instance-ai-panel-transition-duration, var(--duration--snappy))
+			var(--preview-panel-slide-easing),
+		opacity var(--instance-ai-panel-transition-duration, var(--duration--snappy))
+			var(--preview-panel-slide-easing);
+	overflow: hidden;
+	will-change: width, min-width, opacity, transform;
+
+	@media (prefers-reduced-motion: reduce) {
+		transition: none;
+		will-change: auto;
+	}
+}
+
+.preview-panel-slide-enter-active {
+	--animation--fade-in-right--easing: var(--preview-panel-slide-easing);
+	--animation--fade-in-right--duration: var(
+		--instance-ai-panel-transition-duration,
+		var(--duration--snappy)
+	);
+	--animation--fade-in-right--translate: var(--spacing--sm);
+
+	@include motion.fade-in-right;
+}
+
+.preview-panel-slide-leave-active {
+	--animation--fade-out-right--easing: var(--preview-panel-slide-easing);
+	--animation--fade-out-right--duration: var(
+		--instance-ai-panel-transition-duration,
+		var(--duration--snappy)
+	);
+	--animation--fade-out-right--translate: var(--spacing--sm);
+
+	@include motion.fade-out-right;
+}
+
+.preview-panel-slide-enter-from,
+.preview-panel-slide-leave-to {
+	width: 0 !important;
+	min-width: 0 !important;
+	opacity: 0;
+}
+
+.preview-toggle-opacity-enter-active,
+.preview-toggle-opacity-leave-active {
+	transition: opacity var(--instance-ai-panel-transition-duration, var(--duration--snappy)) linear;
+	will-change: opacity;
+
+	@media (prefers-reduced-motion: reduce) {
+		transition: none;
+		will-change: auto;
+	}
+}
+
+.preview-toggle-opacity-enter-from,
+.preview-toggle-opacity-leave-to {
+	opacity: 0;
+}
+
+.preview-toggle-opacity-leave-active {
+	pointer-events: none;
+}
+
+.artifacts-panel-fade-enter-active,
+.artifacts-panel-fade-leave-active {
+	--artifacts-panel-slide-enter-easing: var(--easing--ease-out);
+	--artifacts-panel-slide-exit-easing: var(--easing--ease-in);
+	--animation--fade-in-right--duration: var(
+		--instance-ai-panel-transition-duration,
+		var(--duration--snappy)
+	);
+	--animation--fade-in-right--easing: var(--artifacts-panel-slide-enter-easing);
+	--animation--fade-in-right--translate: 100%;
+	--animation--fade-out-right--duration: var(
+		--instance-ai-panel-transition-duration,
+		var(--duration--snappy)
+	);
+	--animation--fade-out-right--easing: var(--artifacts-panel-slide-exit-easing);
+	--animation--fade-out-right--translate: 100%;
+
+	will-change: opacity, transform;
+
+	@media (prefers-reduced-motion: reduce) {
+		will-change: auto;
+	}
+}
+
+.artifacts-panel-preview-enter-active,
+.artifacts-panel-preview-leave-active {
+	transition: opacity var(--instance-ai-panel-transition-duration, var(--duration--snappy)) linear;
+
+	will-change: opacity;
+
+	@media (prefers-reduced-motion: reduce) {
+		will-change: auto;
+	}
+}
+
+.artifacts-panel-preview-enter-from,
+.artifacts-panel-preview-leave-to {
+	opacity: 0;
+}
+
+.artifacts-panel-fade-enter-active {
+	@include motion.fade-in-right;
+}
+
+.artifacts-panel-fade-leave-active {
+	@include motion.fade-out-right;
+	pointer-events: none;
+}
+
+.artifacts-panel-preview-leave-active {
+	pointer-events: none;
 }
 </style>

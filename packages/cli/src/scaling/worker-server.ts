@@ -9,22 +9,23 @@ import { strict as assert } from 'node:assert';
 import http from 'node:http';
 import type { Server } from 'node:http';
 
+import { inE2ETests } from '@/constants';
 import { CredentialsOverwrites } from '@/credentials-overwrites';
 import { CredentialsOverwritesAlreadySetError } from '@/errors/credentials-overwrites-already-set.error';
 import { NonJsonBodyError } from '@/errors/non-json-body.error';
 import { ExternalHooks } from '@/external-hooks';
 import type { ICredentialsOverwrite } from '@/interfaces';
-import { PrometheusMetricsService } from '@/metrics/prometheus-metrics.service';
+import { PrometheusMetricsService } from '@/metrics/prometheus';
 import { rawBodyReader, bodyParser } from '@/middlewares';
 import * as ResponseHelper from '@/response-helper';
-import { RedisClientService } from '@/services/redis-client.service';
+import { RedisClientService } from '@n8n/backend-services';
 import { resolveBackendHealthEndpointPath } from '@/utils/health-endpoint.util';
 
 export type WorkerServerEndpointsConfig = {
 	/** Whether the health check endpoint is enabled. */
 	health: boolean;
 
-	/** Whether the [credentials overwrites endpoint](https://docs.n8n.io/embed/configuration/#credential-overwrites) is enabled. */
+	/** Whether the [credentials overwrites endpoint](https://docs.n8n.io/administer/manage-credentials/credential-overwrites#using-the-rest-api) is enabled. */
 	overwrites: boolean;
 
 	/** Whether the `/metrics` endpoint is enabled. */
@@ -89,7 +90,7 @@ export class WorkerServer {
 	}
 
 	async init(endpointsConfig: WorkerServerEndpointsConfig) {
-		assert(Object.values(endpointsConfig).some((e) => e));
+		assert(inE2ETests || Object.values(endpointsConfig).some((e) => e));
 
 		this.endpointsConfig = endpointsConfig;
 
@@ -137,7 +138,13 @@ export class WorkerServer {
 		}
 
 		if (metrics) {
-			await this.prometheusMetricsService.init(this.app);
+			this.prometheusMetricsService.init(this.app);
+		}
+
+		// Workers have no REST server, so the test-only diagnostics routes live here.
+		if (inE2ETests) {
+			const { createE2EDiagnosticsRouter } = await import('@/services/e2e-diagnostics.router.js');
+			this.app.use(`/${this.globalConfig.endpoints.rest}/e2e`, createE2EDiagnosticsRouter());
 		}
 	}
 

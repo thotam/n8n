@@ -7,10 +7,16 @@ import { mockedStore } from '@/__tests__/utils';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import { useCredentialsStore } from '@/features/credentials/credentials.store';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
+import { useTypeAvailabilityPoliciesStore } from '@n8n/frontend-module-type-availability-policies';
 import type { INodeUi } from '@/Interface';
+import type { ITaskData } from 'n8n-workflow';
 
 import { useWorkflowSetupState } from '@/features/setupPanel/composables/useWorkflowSetupState';
-import type { useWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
+import {
+	createWorkflowDocumentId,
+	type useWorkflowDocumentStore,
+} from '@/app/stores/workflowDocument.store';
+import { useWorkflowExecutionStateStore } from '@/app/stores/workflowExecutionState.store';
 
 let mockOnCredentialDeleted: ((credentialId: string) => void) | undefined;
 const mockProjectsStore = {
@@ -114,10 +120,19 @@ const createNode = (overrides: Partial<INodeUi> = {}): INodeUi =>
 		...overrides,
 	}) as INodeUi;
 
+const executedRunData = [{ data: {} }] as ITaskData[];
+
 describe('useWorkflowSetupState', () => {
 	let workflowsStore: ReturnType<typeof mockedStore<typeof useWorkflowsStore>>;
 	let credentialsStore: ReturnType<typeof mockedStore<typeof useCredentialsStore>>;
 	let nodeTypesStore: ReturnType<typeof mockedStore<typeof useNodeTypesStore>>;
+	let workflowExecutionStateStore: ReturnType<typeof useWorkflowExecutionStateStore>;
+
+	const mockActiveExecutionRunDataByNodeName = (runData: ITaskData[] | null) => {
+		vi.mocked(workflowExecutionStateStore.getActiveExecutionRunDataByNodeName).mockReturnValue(
+			runData,
+		);
+	};
 
 	beforeEach(() => {
 		createTestingPinia();
@@ -128,14 +143,16 @@ describe('useWorkflowSetupState', () => {
 		workflowsStore.workflowId = 'test-workflow';
 		credentialsStore.getCredentialTypeByName = vi.fn().mockReturnValue(undefined);
 		credentialsStore.getCredentialById = vi.fn().mockReturnValue(undefined);
-		credentialsStore.getNodesWithAccess = vi.fn().mockReturnValue([]);
 		credentialsStore.isCredentialTestedOk = vi.fn().mockReturnValue(true);
 		credentialsStore.isCredentialTestPending = vi.fn().mockReturnValue(false);
 		credentialsStore.getCredentialData = vi.fn().mockResolvedValue(undefined);
 		credentialsStore.fetchAllCredentials = vi.fn().mockResolvedValue([]);
-		credentialsStore.fetchAllCredentialsForWorkflow = vi.fn().mockResolvedValue([]);
+		credentialsStore.fetchUsableCredentials = vi.fn().mockResolvedValue([]);
 		nodeTypesStore.isTriggerNode = vi.fn().mockReturnValue(false);
-		workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue(null);
+		workflowExecutionStateStore = useWorkflowExecutionStateStore(
+			createWorkflowDocumentId(workflowsStore.workflowId),
+		);
+		mockActiveExecutionRunDataByNodeName(null);
 
 		mockGetNodeTypeDisplayableCredentials.mockReturnValue([]);
 		mockWorkflowDocumentStore.allNodes = [];
@@ -462,7 +479,7 @@ describe('useWorkflowSetupState', () => {
 				displayName: 'Slack API',
 			});
 			mockWorkflowDocumentStore.getNodeByName = vi.fn().mockReturnValue(triggerNode);
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue(null);
+			mockActiveExecutionRunDataByNodeName(null);
 
 			const { credentialTypeStates } = useWorkflowSetupState();
 
@@ -486,7 +503,7 @@ describe('useWorkflowSetupState', () => {
 				displayName: 'Slack API',
 			});
 			mockWorkflowDocumentStore.getNodeByName = vi.fn().mockReturnValue(triggerNode);
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue([{ data: {} }]);
+			mockActiveExecutionRunDataByNodeName(executedRunData);
 
 			const { credentialTypeStates } = useWorkflowSetupState();
 
@@ -567,7 +584,7 @@ describe('useWorkflowSetupState', () => {
 			mockWorkflowDocumentStore.allNodes = [triggerNode];
 			nodeTypesStore.isTriggerNode = vi.fn().mockReturnValue(true);
 			nodeTypesStore.getNodeType = vi.fn().mockReturnValue({ webhooks: [{}] });
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue([{ data: {} }]);
+			mockActiveExecutionRunDataByNodeName(executedRunData);
 
 			const { triggerStates } = useWorkflowSetupState();
 
@@ -587,7 +604,7 @@ describe('useWorkflowSetupState', () => {
 				displayName: 'Slack API',
 			});
 			mockWorkflowDocumentStore.getNodeByName = vi.fn().mockReturnValue(triggerNode);
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue(null);
+			mockActiveExecutionRunDataByNodeName(null);
 
 			const { triggerStates } = useWorkflowSetupState();
 
@@ -602,7 +619,7 @@ describe('useWorkflowSetupState', () => {
 			mockWorkflowDocumentStore.allNodes = [triggerNode];
 			nodeTypesStore.isTriggerNode = vi.fn().mockReturnValue(true);
 			nodeTypesStore.getNodeType = vi.fn().mockReturnValue({ webhooks: [{}] });
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue(null);
+			mockActiveExecutionRunDataByNodeName(null);
 
 			const { triggerStates } = useWorkflowSetupState();
 
@@ -617,7 +634,7 @@ describe('useWorkflowSetupState', () => {
 			mockWorkflowDocumentStore.allNodes = [triggerNode];
 			nodeTypesStore.isTriggerNode = vi.fn().mockReturnValue(true);
 			nodeTypesStore.getNodeType = vi.fn().mockReturnValue({});
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue(null);
+			mockActiveExecutionRunDataByNodeName(null);
 
 			const { triggerStates } = useWorkflowSetupState();
 
@@ -632,7 +649,7 @@ describe('useWorkflowSetupState', () => {
 			mockWorkflowDocumentStore.allNodes = [triggerNode];
 			nodeTypesStore.isTriggerNode = vi.fn().mockReturnValue(true);
 			nodeTypesStore.getNodeType = vi.fn().mockReturnValue({ polling: true });
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue(null);
+			mockActiveExecutionRunDataByNodeName(null);
 
 			const { triggerStates } = useWorkflowSetupState();
 
@@ -649,7 +666,7 @@ describe('useWorkflowSetupState', () => {
 			nodeTypesStore.getNodeType = vi
 				.fn()
 				.mockReturnValue({ triggerPanel: { header: 'Listening' } });
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue(null);
+			mockActiveExecutionRunDataByNodeName(null);
 
 			const { triggerStates } = useWorkflowSetupState();
 
@@ -1067,7 +1084,7 @@ describe('useWorkflowSetupState', () => {
 			});
 			mockWorkflowDocumentStore.allNodes = [triggerNode];
 			nodeTypesStore.isTriggerNode = vi.fn().mockReturnValue(true);
-			workflowsStore.getWorkflowResultDataByNodeName = vi.fn().mockReturnValue(null);
+			mockActiveExecutionRunDataByNodeName(null);
 
 			const { isAllComplete } = useWorkflowSetupState();
 
@@ -1515,7 +1532,7 @@ describe('useWorkflowSetupState', () => {
 			credentialsStore.getCredentialTypeByName = vi.fn().mockReturnValue({
 				displayName: 'Header Auth',
 			});
-			credentialsStore.getNodesWithAccess = vi.fn().mockReturnValue([]);
+			credentialsStore.isCredentialTypeTestable = vi.fn().mockReturnValue(false);
 			mockWorkflowDocumentStore.getNodeByName = vi.fn().mockReturnValue(node);
 			credentialsStore.getCredentialById = vi.fn().mockReturnValue({
 				id: 'cred-1',
@@ -1893,6 +1910,140 @@ describe('useWorkflowSetupState', () => {
 			const nodeCredCard = state.setupCards.value.find((c) => c.state?.node === node1);
 			expect(nodeCredCard).toBeDefined();
 			expect(nodeCredCard?.state?.credentialType).toBe('httpHeaderAuth');
+		});
+	});
+
+	describe('restricted nodes', () => {
+		const GMAIL_TRIGGER = 'n8n-nodes-base.gmailTrigger';
+
+		const restrictNodeTypes = (...types: string[]) => {
+			mockedStore(useTypeAvailabilityPoliciesStore).getNodeTypeAvailability = vi.fn(
+				(name: string) =>
+					types.includes(name)
+						? { name, available: false, scope: 'instance' as const }
+						: { name, available: true },
+			);
+		};
+		const restrictGmailTrigger = () => restrictNodeTypes(GMAIL_TRIGGER);
+
+		it('treats a restricted node as a normal node unless the host opts in', () => {
+			restrictGmailTrigger();
+			mockWorkflowDocumentStore.allNodes = [createNode({ name: 'New email', type: GMAIL_TRIGGER })];
+			mockGetNodeTypeDisplayableCredentials.mockReturnValue([{ name: 'gmailOAuth2' }]);
+
+			const { setupCards } = useWorkflowSetupState();
+
+			expect(setupCards.value).toHaveLength(1);
+			expect(setupCards.value[0].state).toMatchObject({ credentialType: 'gmailOAuth2' });
+			expect(setupCards.value[0].state!.restriction).toBeUndefined();
+		});
+
+		it('follows the opt-in when it changes', () => {
+			restrictGmailTrigger();
+			mockWorkflowDocumentStore.allNodes = [createNode({ name: 'New email', type: GMAIL_TRIGGER })];
+			const includeRestricted = ref(false);
+
+			const { setupCards } = useWorkflowSetupState(undefined, { includeRestricted });
+			expect(setupCards.value.some(({ state }) => state?.restriction)).toBe(false);
+
+			includeRestricted.value = true;
+			expect(setupCards.value.some(({ state }) => state?.restriction)).toBe(true);
+		});
+
+		it('gives a restricted node a card even when it needs no setup', () => {
+			restrictGmailTrigger();
+			const node = createNode({ name: 'New email', type: GMAIL_TRIGGER });
+			mockWorkflowDocumentStore.allNodes = [node];
+
+			const { setupCards } = useWorkflowSetupState(undefined, { includeRestricted: true });
+
+			expect(setupCards.value).toHaveLength(1);
+			expect(setupCards.value[0].state).toMatchObject({
+				node: expect.objectContaining({ name: 'New email' }),
+				restriction: { scope: 'instance' },
+				isComplete: false,
+			});
+		});
+
+		it('does not ask a restricted node for its credential', () => {
+			restrictGmailTrigger();
+			const node = createNode({ name: 'New email', type: GMAIL_TRIGGER });
+			mockWorkflowDocumentStore.allNodes = [node];
+			mockGetNodeTypeDisplayableCredentials.mockReturnValue([{ name: 'gmailOAuth2' }]);
+			mockGetNodeParametersIssues.mockReturnValue({ pollTimes: ['Required'] });
+
+			const { setupCards, credentialTypeStates, nodeStates } = useWorkflowSetupState(undefined, {
+				includeRestricted: true,
+			});
+
+			expect(credentialTypeStates.value).toEqual([]);
+			expect(nodeStates.value).toEqual([]);
+			expect(setupCards.value).toHaveLength(1);
+			expect(setupCards.value[0].state!.credentialType).toBeUndefined();
+			expect(setupCards.value[0].state!.restriction).toBeDefined();
+		});
+
+		it('never reports the workflow as ready while a restricted node is in it', () => {
+			restrictGmailTrigger();
+			mockWorkflowDocumentStore.allNodes = [createNode({ name: 'New email', type: GMAIL_TRIGGER })];
+
+			const { isAllComplete } = useWorkflowSetupState(undefined, { includeRestricted: true });
+
+			expect(isAllComplete.value).toBe(false);
+		});
+
+		it('replaces the restricted card with a normal card for the new node', async () => {
+			restrictGmailTrigger();
+			const nodes = ref([createNode({ id: 'old', name: 'New email', type: GMAIL_TRIGGER })]);
+			nodeTypesStore.isTriggerNode = vi.fn().mockReturnValue(true);
+			nodeTypesStore.getNodeType = vi.fn().mockReturnValue({ polling: true, properties: [] });
+			mockGetNodeTypeDisplayableCredentials.mockImplementation((_store: unknown, node: INodeUi) =>
+				node.type === 'n8n-nodes-base.emailReadImap' ? [{ name: 'imap' }] : [],
+			);
+
+			const { setupCards } = useWorkflowSetupState(nodes, { includeRestricted: true });
+			expect(setupCards.value.map((card) => card.state?.node.name)).toEqual(['New email']);
+
+			nodes.value = [
+				createNode({
+					id: 'new',
+					name: 'Email Trigger (IMAP)',
+					type: 'n8n-nodes-base.emailReadImap',
+				}),
+			];
+			await nextTick();
+
+			expect(setupCards.value).toHaveLength(1);
+			expect(setupCards.value[0].state).toMatchObject({
+				node: expect.objectContaining({ name: 'Email Trigger (IMAP)' }),
+				credentialType: 'imap',
+			});
+			expect(setupCards.value[0].state!.restriction).toBeUndefined();
+		});
+
+		it('keeps a restricted sub-node out of its parent group', () => {
+			const MODEL = '@n8n/n8n-nodes-langchain.lmChatOpenAi';
+			restrictNodeTypes(MODEL);
+			const agent = createNode({ name: 'Agent', type: '@n8n/n8n-nodes-langchain.agent' });
+			const model = createNode({ name: 'Model', type: MODEL });
+			const memory = createNode({ name: 'Memory', type: '@n8n/n8n-nodes-langchain.memory' });
+			mockWorkflowDocumentStore.allNodes = [agent, model, memory];
+			mockWorkflowDocumentStore.connectionsByDestinationNode = {
+				Agent: {
+					ai_languageModel: [[{ node: 'Model', type: 'ai_languageModel', index: 0 }]],
+					ai_memory: [[{ node: 'Memory', type: 'ai_memory', index: 0 }]],
+				},
+			};
+			mockGetNodeParametersIssues.mockImplementation((_store: unknown, node: INodeUi) =>
+				node.name === 'Memory' ? { sessionKey: ['Required'] } : {},
+			);
+
+			const { setupCards } = useWorkflowSetupState(undefined, { includeRestricted: true });
+
+			const restrictedCard = setupCards.value.find((card) => card.state?.restriction);
+			const group = setupCards.value.find((card) => card.nodeGroup)?.nodeGroup;
+			expect(restrictedCard?.state?.node.name).toBe('Model');
+			expect(group?.subnodeCards.map((card) => card.node.name)).toEqual(['Memory']);
 		});
 	});
 });

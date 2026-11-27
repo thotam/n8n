@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { IWorkflowDb } from '@/Interface';
-import { useToast } from '@/app/composables/useToast';
+import { useToast } from '@n8n/composables/useToast';
 import { useI18n } from '@n8n/i18n';
 import { N8nText } from '@n8n/design-system';
 import { useWorkflowHistoryStore } from '../workflowHistory.store';
@@ -9,9 +9,10 @@ import { useWorkflowsListStore } from '@/app/stores/workflowsList.store';
 import WorkflowDiffView from '@/features/workflows/workflowDiff/WorkflowDiffView.vue';
 import omit from 'lodash/omit';
 import type { WorkflowHistory } from '@n8n/rest-api-client/api/workflowHistory';
-import { useUsersStore } from '@/features/settings/users/users.store';
+import { useUsersStore } from '@n8n/stores/users.store';
 import WorkflowHistoryVersionSelect from '../components/WorkflowHistoryVersionSelect.vue';
 import { useWorkflowHistoryVersionOptions } from '../useWorkflowHistoryVersionOptions';
+import { toVersionDiffWorkflow } from '../utils';
 import { telemetry } from '@/app/plugins/telemetry';
 import { useRootStore } from '@n8n/stores/useRootStore';
 
@@ -92,18 +93,8 @@ const loadComparedVersions = async (sourceVersionId: string, targetVersionId: st
 
 		const workflowWithoutPinData: IWorkflowDb = omit(workflow, 'pinData');
 
-		sourceWorkflow.value = {
-			...workflowWithoutPinData,
-			versionId: sourceWorkflowVersion.versionId,
-			nodes: sourceWorkflowVersion.nodes,
-			connections: sourceWorkflowVersion.connections,
-		};
-		targetWorkflow.value = {
-			...workflowWithoutPinData,
-			versionId: targetWorkflowVersion.versionId,
-			nodes: targetWorkflowVersion.nodes,
-			connections: targetWorkflowVersion.connections,
-		};
+		sourceWorkflow.value = toVersionDiffWorkflow(workflowWithoutPinData, sourceWorkflowVersion);
+		targetWorkflow.value = toVersionDiffWorkflow(workflowWithoutPinData, targetWorkflowVersion);
 
 		sourceLabel.value = getVersionLabelById(sourceWorkflowVersion.versionId);
 		targetLabel.value = getVersionLabelById(targetWorkflowVersion.versionId);

@@ -17,10 +17,8 @@ import * as resourceMapping from './resourceMapping';
 import { credentials, transportSelect } from '../shared/descriptions';
 import type { McpAuthenticationOption, McpServerTransport } from '../shared/types';
 import {
-	getAuthHeaders,
+	connectMcpClientForCredential,
 	isStructuredContent,
-	tryRefreshOAuth2Token,
-	connectMcpClient,
 	mapToNodeOperationError,
 } from '../shared/utils';
 
@@ -34,7 +32,8 @@ export class McpClient implements INodeType {
 			dark: 'file:../mcp.dark.svg',
 		},
 		group: ['transform'],
-		version: 1,
+		version: [1, 1.1],
+		defaultVersion: 1.1,
 		defaults: {
 			name: 'MCP Client',
 		},
@@ -64,6 +63,12 @@ export class McpClient implements INodeType {
 						value: 'bearerAuth',
 					},
 					{
+						name: 'Generic OAuth2 API',
+						value: 'oAuth2Api',
+						description:
+							'Use a generic OAuth2 API credential. It has no Resource URL field. If your server needs one, use MCP OAuth2.',
+					},
+					{
 						name: 'Header Auth',
 						value: 'headerAuth',
 					},
@@ -90,7 +95,13 @@ export class McpClient implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						authentication: ['headerAuth', 'bearerAuth', 'mcpOAuth2Api', 'multipleHeadersAuth'],
+						authentication: [
+							'headerAuth',
+							'bearerAuth',
+							'mcpOAuth2Api',
+							'oAuth2Api',
+							'multipleHeadersAuth',
+						],
 					},
 				},
 			},
@@ -226,14 +237,12 @@ export class McpClient implements INodeType {
 		const serverTransport = this.getNodeParameter('serverTransport', 0) as McpServerTransport;
 		const endpointUrl = this.getNodeParameter('endpointUrl', 0) as string;
 		const node = this.getNode();
-		const { headers } = await getAuthHeaders(this, authentication);
-		const client = await connectMcpClient({
+		const client = await connectMcpClientForCredential(this, {
+			authentication,
 			serverTransport,
 			endpointUrl,
-			headers,
-			name: node.type,
-			version: node.typeVersion,
-			onUnauthorized: async (headers) => await tryRefreshOAuth2Token(this, authentication, headers),
+			surface: 'MCP Client',
+			signal: this.getExecutionCancelSignal(),
 		});
 		if (!client.ok) {
 			throw mapToNodeOperationError(node, client.error);
@@ -264,6 +273,23 @@ export class McpClient implements INodeType {
 							timeout: options.timeout ? Number(options.timeout) : undefined,
 						},
 					)) as CallToolResult;
+
+					if (node.typeVersion >= 1.1 && result.isError) {
+						const textContent = result.content.find((item) => item.type === 'text');
+						const errorMessage =
+							textContent && 'text' in textContent
+								? textContent.text
+								: `Tool "${tool}" returned an error`;
+						const serverMessage = `MCP server returned an error for tool "${tool}"`;
+						const description = `${errorMessage}\n\nCheck the tool parameters and permissions on the MCP server. If you use OAuth2, check that the credential has the required scopes for this operation.`;
+						const continueOnFail = this.continueOnFail();
+						throw new NodeOperationError(node, errorMessage, {
+							itemIndex,
+							// Keep the message used by existing continue-on-fail expressions.
+							message: continueOnFail ? errorMessage : serverMessage,
+							description: continueOnFail ? `${serverMessage}\n\n${description}` : description,
+						});
+					}
 
 					let binaryIndex = 0;
 					const binary: IBinaryKeyData = {};
@@ -314,6 +340,7 @@ export class McpClient implements INodeType {
 							json: {
 								error: {
 									message: errorMessage,
+									description: e instanceof NodeOperationError ? e.description : undefined,
 									issues: e instanceof ZodError ? e.issues : undefined,
 								},
 							},
@@ -322,6 +349,10 @@ export class McpClient implements INodeType {
 							},
 						});
 						continue;
+					}
+
+					if (e instanceof NodeOperationError) {
+						throw e;
 					}
 
 					throw new NodeOperationError(node, errorMessage, {

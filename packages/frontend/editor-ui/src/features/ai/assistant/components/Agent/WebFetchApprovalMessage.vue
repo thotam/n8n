@@ -2,7 +2,7 @@
 import { ref } from 'vue';
 
 import { N8nActionDropdown, N8nButton, N8nIconButton, N8nText } from '@n8n/design-system';
-import type { ActionDropdownItem } from '@n8n/design-system/types';
+import type { ActionDropdownItem } from '@n8n/design-system';
 import { useI18n } from '@n8n/i18n';
 
 import type { WebFetchApproval } from '../../assistant.types';
@@ -92,7 +92,7 @@ function onDropdownSelect(action: 'allow_once' | 'allow_all') {
 							icon="chevron-down"
 							:class="$style.splitButtonCaret"
 							:disabled="disabled"
-							aria-label="More approval options"
+							:aria-label="i18n.baseText('aiAssistant.builder.webFetch.moreOptions')"
 						/>
 					</template>
 				</N8nActionDropdown>

@@ -1,15 +1,16 @@
 import get from 'lodash/get';
 import set from 'lodash/set';
-import { type Ref } from 'vue';
+import { computed, type Ref } from 'vue';
 import {
 	type INode,
 	type INodeParameters,
 	type INodeProperties,
 	type NodeParameterValue,
+	type DeploymentCondition,
 	NodeHelpers,
 	deepCopy,
 } from 'n8n-workflow';
-import { useTelemetry } from '@/app/composables/useTelemetry';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
 import { useNodeHelpers } from '@/app/composables/useNodeHelpers';
 import { useWorkflowHelpers } from '@/app/composables/useWorkflowHelpers';
 import { useCanvasOperations } from '@/app/composables/useCanvasOperations';
@@ -17,6 +18,7 @@ import { useExternalHooks } from '@/app/composables/useExternalHooks';
 import type { INodeUi, IUpdateInformation } from '@/Interface';
 import {
 	mustHideDuringCustomApiCall,
+	resetValuesOfChangedShape,
 	setValue,
 	updateDynamicConnections,
 	updateParameterByPath,
@@ -31,7 +33,9 @@ import {
 	isAuthRelatedParameter,
 } from '@/app/utils/nodeTypesUtils';
 import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
-import { useSettingsStore } from '@/app/stores/settings.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import { useEnvFeatureFlag } from '@/features/shared/envFeatureFlag/useEnvFeatureFlag';
+import { reconcileNodeFromAIKeys } from '@/features/ndv/parameters/utils/fromAIOverride.utils';
 
 const hasPublicDisplayCondition = (parameter: INodeProperties, value: boolean) =>
 	parameter.displayOptions?.show?.public?.includes(value) ?? false;
@@ -55,8 +59,10 @@ const stripPublicDisplayCondition = (parameter: INodeProperties): INodePropertie
 
 export function useNodeSettingsParameters() {
 	const workflowDocumentStore = injectWorkflowDocumentStore();
+	const ndvStore = computed(() => useNDVStore(workflowDocumentStore.value.documentId));
 	const nodeTypesStore = useNodeTypesStore();
 	const settingsStore = useSettingsStore();
+	const { check: envFeatureFlag } = useEnvFeatureFlag();
 	const telemetry = useTelemetry();
 	const nodeHelpers = useNodeHelpers();
 	const workflowHelpers = useWorkflowHelpers();
@@ -99,6 +105,12 @@ export function useNodeSettingsParameters() {
 			node.typeVersion,
 		);
 
+		if (nodeParameters) {
+			nodeParameters = resetValuesOfChangedShape(nodeTypeDescription, node, nodeParameters, [
+				parameterPath,
+			]);
+		}
+
 		// Get the parameters with the now new defaults according to the
 		// from the user actually defined parameters
 		nodeParameters = NodeHelpers.getNodeParameters(
@@ -119,6 +131,10 @@ export function useNodeSettingsParameters() {
 
 			if (updatedDescription && nodeParameters) {
 				nodeParameters.toolDescription = updatedDescription;
+			}
+
+			if (nodeParameters) {
+				reconcileNodeFromAIKeys(nodeTypeDescription.properties, nodeParameters);
 			}
 		}
 
@@ -162,13 +178,14 @@ export function useNodeSettingsParameters() {
 
 		nodeHelpers.updateNodeParameterIssuesByName(node.name);
 		nodeHelpers.updateNodeCredentialIssuesByName(node.name);
+		// A parameter can change which inputs the node exposes, e.g. `autoFix`.
+		nodeHelpers.updateNodeInputIssuesByName(node.name);
 		telemetry.trackNodeParametersValuesChange(nodeTypeDescription.name, parameterData);
 	}
 
 	function handleFocus(node: INodeUi | undefined, path: string, parameter: INodeProperties) {
 		if (!node) return;
 
-		const ndvStore = useNDVStore();
 		const focusPanelStore = useFocusPanelStore();
 
 		focusPanelStore.openWithFocusedNodeParameter({
@@ -177,9 +194,9 @@ export function useNodeSettingsParameters() {
 			parameter,
 		});
 
-		if (ndvStore.activeNode) {
-			ndvStore.unsetActiveNodeName();
-			ndvStore.resetNDVPushRef();
+		if (ndvStore.value.activeNode) {
+			ndvStore.value.unsetActiveNodeName();
+			ndvStore.value.resetNDVPushRef();
 		}
 	}
 
@@ -192,6 +209,14 @@ export function useNodeSettingsParameters() {
 	): Promise<boolean> {
 		// Fast path: hidden parameters are never displayed
 		if (parameter.type === 'hidden') {
+			return false;
+		}
+
+		if (
+			displayKey === 'displayOptions' &&
+			typeof parameter.envFeatureFlag === 'string' &&
+			!envFeatureFlag.value(parameter.envFeatureFlag)
+		) {
 			return false;
 		}
 
@@ -216,6 +241,16 @@ export function useNodeSettingsParameters() {
 			if (hasPublicDisplayCondition(effectiveParameter, false)) {
 				effectiveParameter = stripPublicDisplayCondition(effectiveParameter);
 			}
+		}
+
+		const deployment: DeploymentCondition = settingsStore.isCloudDeployment ? 'cloud' : 'hosted';
+
+		if (
+			displayKey === 'displayOptions' &&
+			effectiveParameter.displayOptions?.showOnDeployment &&
+			effectiveParameter.displayOptions.showOnDeployment !== deployment
+		) {
+			return false;
 		}
 
 		// Fast path: hide parameters explicitly marked as cloud-only on cloud deployments

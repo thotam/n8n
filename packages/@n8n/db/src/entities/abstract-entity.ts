@@ -9,7 +9,7 @@ import {
 	PrimaryColumn,
 	UpdateDateColumn,
 } from '@n8n/typeorm';
-import { generateNanoId } from '@n8n/utils';
+import { generateNanoId } from '@n8n/utils/generate-nano-id';
 import type { Class } from 'n8n-core';
 
 export const { type: dbType } = Container.get(GlobalConfig).database;
@@ -25,7 +25,7 @@ const binaryColumnTypeMap = {
 	sqlite: 'blob',
 	postgresdb: 'bytea',
 } as const;
-const binaryColumnType = binaryColumnTypeMap[dbType];
+export const binaryColumnType = binaryColumnTypeMap[dbType];
 
 export function JsonColumn(options?: Omit<ColumnOptions, 'type'>) {
 	return Column({

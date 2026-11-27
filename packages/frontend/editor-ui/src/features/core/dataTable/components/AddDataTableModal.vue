@@ -3,10 +3,10 @@ import { useI18n } from '@n8n/i18n';
 import { onMounted, ref, computed } from 'vue';
 import { useDataTableStore } from '@/features/core/dataTable/dataTable.store';
 import { useUIStore } from '@/app/stores/ui.store';
-import { useToast } from '@/app/composables/useToast';
+import { useToast } from '@n8n/composables/useToast';
 import { useRoute, useRouter } from 'vue-router';
 import { DATA_TABLE_DETAILS, PROJECT_DATA_TABLES } from '@/features/core/dataTable/constants';
-import { useTelemetry } from '@/app/composables/useTelemetry';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
 import { dataTableColumnNameSchema } from '@n8n/api-types';
 import { DATA_TABLE_SYSTEM_COLUMNS } from 'n8n-workflow';
 
@@ -18,10 +18,12 @@ import {
 	N8nInputLabel,
 	N8nSelect,
 	N8nOption,
+	N8nRadioGroup,
+	N8nRadioGroupItem,
 	N8nText,
 } from '@n8n/design-system';
 import Modal from '@/app/components/Modal.vue';
-import { ElUpload, ElRadio, ElRadioGroup } from 'element-plus';
+import { ElUpload } from 'element-plus';
 import type { UploadFile } from 'element-plus';
 
 type Props = {
@@ -86,7 +88,7 @@ const getColumnTypeOptions = (compatibleTypes: ColumnType[]) => {
 };
 
 const validateColumnName = (columnName: string): string | undefined => {
-	if (DATA_TABLE_SYSTEM_COLUMNS.includes(columnName)) {
+	if (DATA_TABLE_SYSTEM_COLUMNS.some((sc) => sc.toLowerCase() === columnName.toLowerCase())) {
 		return i18n.baseText('dataTable.import.systemColumnName', {
 			interpolate: { columnName },
 		});
@@ -199,9 +201,40 @@ const reset = (clearTableName = false) => {
 	creationMode.value = 'select';
 };
 
-const handleFileChange = (uploadFile: UploadFile) => {
-	if (uploadFile.raw) {
-		selectedFile.value = uploadFile.raw;
+function onSelectedOption(value: string | undefined) {
+	if (value === 'scratch' || value === 'import') {
+		selectedOption.value = value;
+	}
+}
+
+const deriveNameFromFileName = (fileName: string): string => {
+	return fileName
+		.replace(/\.csv$/i, '')
+		.replace(/[^a-zA-Z0-9]+/g, ' ')
+		.trim()
+		.slice(0, 128)
+		.trim();
+};
+
+const handleFileChange = async (uploadFile: UploadFile) => {
+	if (!uploadFile.raw) return;
+	const file = uploadFile.raw;
+	selectedFile.value = file;
+	if (dataTableName.value) return;
+
+	const baseName = deriveNameFromFileName(file.name);
+	if (!baseName) return;
+
+	const projectId = route.params.projectId as string;
+	try {
+		const suggested = await dataTableStore.findAvailableDataTableName(baseName, projectId);
+		if (selectedFile.value === file && !dataTableName.value) {
+			dataTableName.value = suggested;
+		}
+	} catch {
+		if (selectedFile.value === file && !dataTableName.value) {
+			dataTableName.value = baseName;
+		}
 	}
 };
 
@@ -231,11 +264,6 @@ const uploadFile = async () => {
 				csvColumnName: col.name,
 			};
 		});
-
-		if (!dataTableName.value) {
-			const fileName = selectedFile.value.name.replace(/\.csv$/i, '');
-			dataTableName.value = fileName;
-		}
 	} catch (error) {
 		toast.showError(error, i18n.baseText('dataTable.upload.error'));
 		reset();
@@ -333,14 +361,22 @@ const redirectToDataTables = () => {
 						@keydown.enter="proceedFromSelect"
 					/>
 				</N8nInputLabel>
-				<ElRadioGroup v-model="selectedOption" :class="$style.radioGroup">
-					<ElRadio label="scratch" data-test-id="create-from-scratch-option">
-						{{ i18n.baseText('dataTable.add.fromScratch') }}
-					</ElRadio>
-					<ElRadio label="import" data-test-id="import-csv-option">
-						{{ i18n.baseText('dataTable.add.importCsv') }}
-					</ElRadio>
-				</ElRadioGroup>
+				<N8nRadioGroup
+					:model-value="selectedOption"
+					:class="$style.radioGroup"
+					@update:model-value="onSelectedOption"
+				>
+					<N8nRadioGroupItem
+						value="scratch"
+						:label="i18n.baseText('dataTable.add.fromScratch')"
+						data-test-id="create-from-scratch-option"
+					/>
+					<N8nRadioGroupItem
+						value="import"
+						:label="i18n.baseText('dataTable.add.importCsv')"
+						data-test-id="import-csv-option"
+					/>
+				</N8nRadioGroup>
 
 				<div v-if="selectedOption === 'import'" :class="$style.uploadSection">
 					<ElUpload
@@ -354,7 +390,7 @@ const redirectToDataTables = () => {
 						@mouseleave="isUploadHovered = false"
 					>
 						<N8nIcon
-							icon="file"
+							icon="cloud-arrow-up"
 							:size="24"
 							:color="isUploadHovered ? 'text-dark' : 'text-light'"
 							:class="$style.uploadIcon"
@@ -453,7 +489,7 @@ const redirectToDataTables = () => {
 		<template #footer>
 			<div :class="$style.footer">
 				<N8nButton
-					variant="subtle"
+					variant="outline"
 					v-if="creationMode === 'select'"
 					size="large"
 					:label="i18n.baseText('generic.cancel')"
@@ -473,7 +509,7 @@ const redirectToDataTables = () => {
 				/>
 
 				<N8nButton
-					variant="subtle"
+					variant="outline"
 					v-if="creationMode === 'import'"
 					size="large"
 					:label="i18n.baseText('generic.back')"
@@ -514,39 +550,6 @@ const redirectToDataTables = () => {
 	display: flex;
 	flex-direction: column;
 	gap: var(--spacing--xs);
-
-	:global(.el-radio) {
-		height: auto;
-		margin-right: 0;
-	}
-
-	:global(.el-radio__input.is-checked .el-radio__inner) {
-		background-color: var(--color--primary);
-		border-color: var(--color--primary);
-	}
-
-	:global(.el-radio__inner) {
-		width: 16px;
-		height: 16px;
-	}
-
-	:global(.el-radio__input:hover .el-radio__inner) {
-		border-color: var(--color--foreground);
-	}
-
-	:global(.el-radio__input.is-checked:hover .el-radio__inner) {
-		border-color: var(--color--primary);
-	}
-
-	:global(.el-radio__label) {
-		font-size: var(--font-size--sm);
-		color: var(--color--text) !important;
-		padding-left: var(--spacing--xs);
-	}
-
-	:global(.el-radio.is-checked .el-radio__label) {
-		color: var(--color--text) !important;
-	}
 }
 
 .uploadSection {

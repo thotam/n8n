@@ -7,7 +7,10 @@ export type {
 	ContentCitation,
 	ContentText,
 	ContentReasoning,
+	ContentReasoningFile,
 	ContentFile,
+	ContentFileRef,
+	ContentCustom,
 	ContentToolCall,
 	ContentInvalidToolCall,
 	ContentProvider,
@@ -18,75 +21,170 @@ export type {
 	AgentDbMessage,
 } from './sdk/message';
 
+export { stripHydratedFileData } from './sdk/message';
+
+export type { BuiltFileStore } from './sdk/file-store';
+
 export type {
 	Provider,
+	AnthropicThinkingEffort,
 	AnthropicThinkingConfig,
+	OpenAIReasoningEffort,
 	OpenAIThinkingConfig,
 	GoogleThinkingConfig,
 	XaiThinkingConfig,
 	ThinkingConfigFor,
 	ThinkingConfig,
 } from './sdk/provider';
+export type { ReasoningLevel } from './sdk/reasoning';
 
 export type {
 	AgentResult,
 	StreamChunk,
 	FinishReason,
 	TokenUsage,
+	PromptSizeUsage,
 	ModelConfig,
 	RunOptions,
 	ExecutionOptions,
+	AgentInputBoundary,
+	SmoothStreamOptions,
+	AgentExecutionCounter,
+	SideCallTask,
+	SideCallUsageReport,
+	ThreadTitleUpdate,
 	PersistedExecutionOptions,
 	ResumeOptions,
 	GenerateResult,
 	StreamResult,
-	SubAgentUsage,
 	BuiltAgent,
 	AgentRunState,
 	AgentResumeData,
 	PendingToolCall,
 	SerializableAgentState,
+	AnthropicPromptCachingConfig,
+	OpenAIPromptCachingConfig,
+	PromptCachingConfig,
+	NativeToolDeferralConfig,
+	ToolDeferralConfig,
+	ToolDeferralMode,
 } from './sdk/agent';
+export { FINISH_REASONS, isFinishReason } from './sdk/agent';
 
 export type { SerializedMessageList } from './runtime/message-list';
 
 export type {
 	ToolContext,
+	ToolCallInterception,
+	ToolCallInterceptor,
+	ToolCancellationContext,
+	ToolExecutionContext,
+	ToolApprovalContext,
 	InterruptibleToolContext,
+	ToolSuspendOptions,
 	BuiltTool,
+	ToolDispatch,
+	LegacyCallConverter,
 	BuiltProviderTool,
 } from './sdk/tool';
 
 export type {
 	Thread,
 	BuiltMemory,
+	BuiltEpisodicMemoryCaptureStore,
+	BuiltEpisodicMemoryStore,
+	EpisodicMemoryConfig,
+	EpisodicMemoryCaptureCandidate,
+	EpisodicMemoryCaptureGuidance,
+	EpisodicMemoryCaptureKind,
+	EpisodicMemoryCaptureMethods,
+	EpisodicMemoryCaptureStatus,
+	EpisodicMemoryEmbeddingProviderOptions,
+	EpisodicMemoryEntry,
+	EpisodicMemoryEntrySource,
+	EpisodicMemoryMethods,
+	EpisodicMemoryPrompts,
+	EpisodicMemoryConsolidateFn,
+	EpisodicMemoryConsolidateResult,
+	EpisodicMemoryConsolidation,
+	EpisodicMemoryConsolidationFact,
+	EpisodicMemoryConsolidationNeighbour,
+	EpisodicMemoryConsolidatorInput,
+	EpisodicMemoryFactRelation,
+	EpisodicMemoryReflectionApply,
+	EpisodicMemoryReflectionApplyMerge,
+	EpisodicMemoryReflectionResult,
+	EpisodicMemoryScope,
+	EpisodicScopeDecision,
+	ResolvedEpisodicScope,
+	EpisodicMemorySearchOptions,
+	EpisodicMemoryStatus,
+	EpisodicMemoryTaskLockHandle,
+	EpisodicMemoryTaskLockMethods,
+	NewEpisodicMemoryEntry,
+	NewEpisodicMemoryEntrySource,
+	NewEpisodicMemoryEntrySourceForEntry,
+	RetrievedEpisodicMemoryEntry,
 	ObservationCapableMemory,
 	MemoryDescriptor,
-	SemanticRecallConfig,
 	MemoryConfig,
+	NewEpisodicMemoryCaptureCandidate,
+	ObservationLogMemoryConfig,
+	ObservationalMemoryConfig,
+	ObservationWindowShares,
+	ObservationLogPlacement,
+	ObservationFailurePolicy,
+	ObservationReflectionMode,
 	CheckpointStore,
 	TitleGenerationConfig,
 } from './sdk/memory';
 
 export type {
-	BuiltObservationStore,
-	CompactFn,
-	NewObservation,
-	Observation,
-	ObservationCategory,
+	VectorDocument,
+	VectorRecord,
+	VectorQueryResult,
+	BuiltVectorStoreBackend,
+	FilterOperator,
+	FilterValue,
+	FilterCondition,
+	VectorFilter,
+} from './sdk/vector-store';
+
+export type {
+	BuiltObservationResumeStore,
 	ObservationCursor,
-	ObservationGapContext,
-	ObservationLockHandle,
-	ObservationalMemoryConfig,
-	ObservationalMemoryTrigger,
-	ObserveFn,
-	ScopeKind,
+	ObservationResumeState,
 } from './sdk/observation';
+
+export type {
+	BuiltObservationLogStore,
+	BuiltObservationLogTaskLockStore,
+	NewObservationLogEntry,
+	ObservationLogBatch,
+	ObservationLogBatchEntry,
+	ObservationLogBatchCommitResult,
+	ObservationLogEntry,
+	ObservationLogMarker,
+	ObservationLogMerge,
+	MemoryTaskUsageReport,
+	ObservationLogObserveFn,
+	ObservationLogObserveResult,
+	ObservationLogObserverInput,
+	ObservationLogReadOptions,
+	ObservationLogReflectFn,
+	ObservationLogReflectResult,
+	ObservationLogReflectorInput,
+	ObservationLogReflection,
+	ObservationLogReflectionResult,
+	ObservationLogScope,
+	ObservationLogStatus,
+	ObservationLogTaskKind,
+	ObservationLogTaskLockHandle,
+} from './sdk/observation-log';
 export {
-	DEFAULT_OBSERVATION_GAP_THRESHOLD_MS,
-	OBSERVATION_CATEGORIES,
-	OBSERVATION_SCHEMA_VERSION,
-} from './sdk/observation';
+	OBSERVATION_LOG_MARKERS,
+	OBSERVATION_LOG_STATUSES,
+} from './sdk/observation-log';
 
 export type {
 	EvalInput,
@@ -119,9 +217,16 @@ export type {
 	AgentEventData,
 	AgentEventHandler,
 	AgentMiddleware,
+	ForwardedChildChunk,
+	SubAgentChunkPayload,
 } from './runtime/event';
 
-export type { McpServerConfig, McpVerifyResult } from './sdk/mcp';
+export type {
+	McpConnectionFailedEvent,
+	McpServerConfig,
+	McpToolCallSettledEvent,
+	McpVerifyResult,
+} from './sdk/mcp';
 
 export type { AgentBuilder } from './sdk/agent-builder';
 
@@ -130,3 +235,13 @@ export type {
 	ResolvedCredential,
 	CredentialListItem,
 } from './sdk/credential-provider';
+
+export type {
+	GuardrailsOptions,
+	ModelGuardrail,
+	GuardrailModelCallSource,
+	GuardrailModelCallContext,
+	GuardrailToolCallContext,
+	GuardrailDecision,
+	GuardrailStop,
+} from './sdk/guardrail';

@@ -1,8 +1,8 @@
 import type { Logger } from '@n8n/backend-common';
-import type { UserRepository } from '@n8n/db';
-import { mock } from 'jest-mock-extended';
+import { EventService } from '@n8n/backend-services';
+import type { PersonRepository } from '@n8n/db';
+import { mock } from 'vitest-mock-extended';
 
-import { EventService } from '@/events/event.service';
 import type { RelayEventMap } from '@/events/maps/relay.event-map';
 import { WorkflowFailureNotificationEventRelay } from '@/events/relays/workflow-failure-notification.event-relay';
 import type { UserManagementMailer } from '@/user-management/email';
@@ -11,15 +11,20 @@ const flushPromises = async () => await new Promise((resolve) => setImmediate(re
 
 describe('WorkflowFailureNotificationEventRelay', () => {
 	const mailer = mock<UserManagementMailer>({ isEmailSetUp: false });
-	const userRepository = mock<UserRepository>();
+	const personRepository = mock<PersonRepository>();
 	const logger = mock<Logger>();
 	const eventService = new EventService();
 
 	let relay: WorkflowFailureNotificationEventRelay;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
-		relay = new WorkflowFailureNotificationEventRelay(eventService, mailer, userRepository, logger);
+		vi.clearAllMocks();
+		relay = new WorkflowFailureNotificationEventRelay(
+			eventService,
+			mailer,
+			personRepository,
+			logger,
+		);
 		relay.init();
 	});
 
@@ -32,7 +37,7 @@ describe('WorkflowFailureNotificationEventRelay', () => {
 		};
 
 		it('should skip sending email when SMTP is not configured', async () => {
-			jest.replaceProperty(mailer, 'isEmailSetUp', false);
+			Object.assign(mailer, { isEmailSetUp: false });
 
 			eventService.emit('instance-first-production-workflow-failed', baseEvent);
 
@@ -45,19 +50,19 @@ describe('WorkflowFailureNotificationEventRelay', () => {
 					userId: 'user123',
 				},
 			);
-			expect(userRepository.findOneBy).not.toHaveBeenCalled();
+			expect(personRepository.findById).not.toHaveBeenCalled();
 			expect(mailer.workflowFailure).not.toHaveBeenCalled();
 		});
 
 		it('should warn and skip when user is not found', async () => {
-			jest.replaceProperty(mailer, 'isEmailSetUp', true);
-			userRepository.findOneBy.mockResolvedValue(null);
+			Object.assign(mailer, { isEmailSetUp: true });
+			personRepository.findById.mockResolvedValue(null);
 
 			eventService.emit('instance-first-production-workflow-failed', baseEvent);
 
 			await flushPromises();
 
-			expect(userRepository.findOneBy).toHaveBeenCalledWith({ id: 'user123' });
+			expect(personRepository.findById).toHaveBeenCalledWith('user123');
 			expect(logger.warn).toHaveBeenCalledWith(
 				'Cannot send first production failure email - user not found or no email',
 				{
@@ -69,8 +74,8 @@ describe('WorkflowFailureNotificationEventRelay', () => {
 		});
 
 		it('should warn and skip when user has no email', async () => {
-			jest.replaceProperty(mailer, 'isEmailSetUp', true);
-			userRepository.findOneBy.mockResolvedValue({
+			Object.assign(mailer, { isEmailSetUp: true });
+			personRepository.findById.mockResolvedValue({
 				id: 'user123',
 				email: '',
 				firstName: 'John',
@@ -91,8 +96,8 @@ describe('WorkflowFailureNotificationEventRelay', () => {
 		});
 
 		it('should send email successfully when user is found with valid email', async () => {
-			jest.replaceProperty(mailer, 'isEmailSetUp', true);
-			userRepository.findOneBy.mockResolvedValue({
+			Object.assign(mailer, { isEmailSetUp: true });
+			personRepository.findById.mockResolvedValue({
 				id: 'user123',
 				email: 'user@example.com',
 				firstName: 'John',
@@ -117,8 +122,8 @@ describe('WorkflowFailureNotificationEventRelay', () => {
 		});
 
 		it('should log error when email sending fails with Error instance', async () => {
-			jest.replaceProperty(mailer, 'isEmailSetUp', true);
-			userRepository.findOneBy.mockResolvedValue({
+			Object.assign(mailer, { isEmailSetUp: true });
+			personRepository.findById.mockResolvedValue({
 				id: 'user123',
 				email: 'user@example.com',
 				firstName: 'John',
@@ -138,8 +143,8 @@ describe('WorkflowFailureNotificationEventRelay', () => {
 		});
 
 		it('should log error when email sending fails with non-Error value', async () => {
-			jest.replaceProperty(mailer, 'isEmailSetUp', true);
-			userRepository.findOneBy.mockResolvedValue({
+			Object.assign(mailer, { isEmailSetUp: true });
+			personRepository.findById.mockResolvedValue({
 				id: 'user123',
 				email: 'user@example.com',
 				firstName: 'John',

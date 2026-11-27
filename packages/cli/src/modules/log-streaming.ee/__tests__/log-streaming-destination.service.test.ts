@@ -1,38 +1,45 @@
 import { Logger } from '@n8n/backend-common';
+import type { OutboundHttp } from '@n8n/backend-network';
 import { mockInstance } from '@n8n/backend-test-utils';
-import { mock } from 'jest-mock-extended';
+import { ForbiddenError } from '@n8n/errors';
+import { createDeferredPromise } from '@n8n/utils/promise/deferred-promise';
 import { MessageEventBusDestinationTypeNames } from 'n8n-workflow';
+import type { MessageEventBusDestinationOptions } from 'n8n-workflow';
+import type { Mock } from 'vitest';
+import { mock } from 'vitest-mock-extended';
 
 import { EventMessageGeneric } from '@/eventbus/event-message-classes/event-message-generic';
 import type { MessageEventBus } from '@/eventbus/message-event-bus/message-event-bus';
-import type { Publisher } from '@/scaling/pubsub/publisher.service';
+import type { Publisher } from '@n8n/backend-services';
 
 import type { EventDestinationsRepository } from '../database/repositories/event-destination.repository';
 import { messageEventBusDestinationFromDb } from '../destinations/message-event-bus-destination-from-db';
-import type { MessageEventBusDestinationWebhook } from '../destinations/message-event-bus-destination-webhook.ee';
+import { MessageEventBusDestinationWebhook } from '../destinations/message-event-bus-destination-webhook.ee';
 import { LogStreamingDestinationService } from '../log-streaming-destination.service';
 
-jest.mock('../destinations/message-event-bus-destination-from-db');
+vi.mock('../destinations/message-event-bus-destination-from-db');
 
 describe('LogStreamingDestinationService', () => {
 	const logger = mockInstance(Logger);
 	const eventDestinationsRepository = mock<EventDestinationsRepository>();
 	const eventBus = {
-		on: jest.fn(),
-		removeListener: jest.fn(),
-		confirmMessageDelivered: jest.fn(),
+		on: vi.fn(),
+		removeListener: vi.fn(),
+		confirmMessageDelivered: vi.fn(),
 	} as unknown as MessageEventBus;
 	const publisher = mock<Publisher>();
+	const outboundHttp = mock<OutboundHttp>();
 
 	let service: LogStreamingDestinationService;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		service = new LogStreamingDestinationService(
 			logger,
 			eventDestinationsRepository,
 			eventBus,
 			publisher,
+			outboundHttp,
 		);
 	});
 
@@ -41,8 +48,8 @@ describe('LogStreamingDestinationService', () => {
 		id: string;
 		type?: MessageEventBusDestinationTypeNames;
 		hasSubscribedToEvent?: boolean;
-		receiveFromEventBus?: jest.Mock;
-		close?: jest.Mock;
+		receiveFromEventBus?: Mock;
+		close?: Mock;
 	}): MessageEventBusDestinationWebhook => {
 		const {
 			id,
@@ -56,7 +63,7 @@ describe('LogStreamingDestinationService', () => {
 			getId: () => id,
 			serialize: () => ({ id, __type: type }) as any,
 			...(hasSubscribedToEvent !== undefined && {
-				hasSubscribedToEvent: jest.fn().mockReturnValue(hasSubscribedToEvent),
+				hasSubscribedToEvent: vi.fn().mockReturnValue(hasSubscribedToEvent),
 			}),
 			...(receiveFromEventBus && { receiveFromEventBus }),
 			...(close && { close }),
@@ -83,7 +90,7 @@ describe('LogStreamingDestinationService', () => {
 			eventDestinationsRepository.find.mockResolvedValue([createDbEntity('webhook-1')] as any);
 
 			// Mock the messageEventBusDestinationFromDb function to return our mock destination
-			const mockedFromDb = jest.mocked(messageEventBusDestinationFromDb);
+			const mockedFromDb = vi.mocked(messageEventBusDestinationFromDb);
 			mockedFromDb.mockReturnValue(mockDestination);
 
 			// Actually call loadDestinationsFromDb
@@ -97,6 +104,7 @@ describe('LogStreamingDestinationService', () => {
 			expect(messageEventBusDestinationFromDb).toHaveBeenCalledWith(
 				eventBus,
 				createDbEntity('webhook-1'),
+				outboundHttp,
 			);
 		});
 
@@ -118,7 +126,7 @@ describe('LogStreamingDestinationService', () => {
 			]);
 
 			// Mock the messageEventBusDestinationFromDb to return null for invalid data
-			const mockedFromDb = jest.mocked(messageEventBusDestinationFromDb);
+			const mockedFromDb = vi.mocked(messageEventBusDestinationFromDb);
 			mockedFromDb.mockReturnValue(null);
 
 			await service.loadDestinationsFromDb();
@@ -126,6 +134,128 @@ describe('LogStreamingDestinationService', () => {
 			const destinations = await service.findDestination();
 			expect(destinations).toHaveLength(0);
 		});
+	});
+
+	describe('createDestination', () => {
+		it('activates a new destination after it is stored', async () => {
+			const destination = createMockDestination({ id: 'webhook-1' });
+			eventDestinationsRepository.createIfNew.mockResolvedValue(true);
+
+			await expect(service.createDestination(destination)).resolves.toBe(destination);
+
+			expect(eventDestinationsRepository.createIfNew).toHaveBeenCalledWith(
+				'webhook-1',
+				destination.serialize(),
+			);
+			expect(eventDestinationsRepository.upsert).not.toHaveBeenCalled();
+			expect(await service.findDestination('webhook-1')).toEqual([destination.serialize()]);
+			expect(publisher.publishCommand).toHaveBeenCalledWith({ command: 'restart-event-bus' });
+		});
+
+		it('keeps the active destination when its id is already stored', async () => {
+			const original = createMockDestination({ id: 'webhook-1' });
+			await service.addDestination(original);
+			vi.clearAllMocks();
+			eventDestinationsRepository.createIfNew.mockResolvedValue(false);
+			const replacement = createMockDestination({
+				id: 'webhook-1',
+				type: MessageEventBusDestinationTypeNames.syslog,
+			});
+
+			await expect(service.createDestination(replacement)).rejects.toThrow(ForbiddenError);
+
+			expect(original.close).not.toHaveBeenCalled();
+			expect(replacement.close).toHaveBeenCalledOnce();
+			expect(await service.findDestination('webhook-1')).toEqual([original.serialize()]);
+			expect(eventDestinationsRepository.upsert).not.toHaveBeenCalled();
+			expect(publisher.publishCommand).not.toHaveBeenCalled();
+		});
+
+		it('does not activate a destination when the database write fails', async () => {
+			const destination = createMockDestination({ id: 'webhook-1' });
+			const error = new Error('Database unavailable');
+			eventDestinationsRepository.createIfNew.mockRejectedValueOnce(error);
+
+			await expect(service.createDestination(destination)).rejects.toThrow(error);
+
+			expect(destination.close).toHaveBeenCalledOnce();
+			expect(await service.findDestination('webhook-1')).toEqual([]);
+			expect(publisher.publishCommand).not.toHaveBeenCalled();
+		});
+
+		it('closes the new destination when activation fails', async () => {
+			const original = createMockDestination({ id: 'webhook-1' });
+			await service.addDestination(original);
+			vi.clearAllMocks();
+			const error = new Error('Could not close the active destination');
+			vi.mocked(original.close).mockRejectedValueOnce(error);
+			const destination = createMockDestination({
+				id: 'webhook-1',
+				type: MessageEventBusDestinationTypeNames.syslog,
+			});
+			eventDestinationsRepository.createIfNew.mockResolvedValueOnce(true);
+
+			await expect(service.createDestination(destination)).rejects.toThrow(error);
+
+			expect(destination.close).toHaveBeenCalledOnce();
+			expect(await service.findDestination('webhook-1')).toEqual([original.serialize()]);
+			expect(publisher.publishCommand).not.toHaveBeenCalled();
+		});
+
+		it('keeps a concurrent update after a create-only save finishes', async () => {
+			const destination = createMockDestination({ id: 'webhook-1' });
+			const replacement = createMockDestination({
+				id: 'webhook-1',
+				type: MessageEventBusDestinationTypeNames.syslog,
+			});
+			const insertStarted = createDeferredPromise();
+			const insertFinished = createDeferredPromise<boolean>();
+			eventDestinationsRepository.createIfNew.mockImplementationOnce(async () => {
+				insertStarted.resolve();
+				return await insertFinished.promise;
+			});
+
+			const creating = service.createDestination(destination);
+			await insertStarted.promise;
+			const updating = service.addDestination(replacement);
+			await new Promise(setImmediate);
+			const updatedBeforeCreationFinished =
+				eventDestinationsRepository.upsert.mock.calls.length > 0;
+			insertFinished.resolve(true);
+			await Promise.all([creating, updating]);
+
+			expect(updatedBeforeCreationFinished).toBe(false);
+			expect(await service.findDestination('webhook-1')).toEqual([replacement.serialize()]);
+			expect(destination.close).toHaveBeenCalledOnce();
+			expect(replacement.close).not.toHaveBeenCalled();
+		});
+
+		it.each(['remove', 'restart'] as const)(
+			'finishes creation before a concurrent %s',
+			async (operation) => {
+				const destination = createMockDestination({ id: 'webhook-1' });
+				const insertStarted = createDeferredPromise();
+				const insertFinished = createDeferredPromise<boolean>();
+				eventDestinationsRepository.createIfNew.mockImplementationOnce(async () => {
+					insertStarted.resolve();
+					return await insertFinished.promise;
+				});
+				if (operation === 'restart') {
+					eventDestinationsRepository.find.mockResolvedValueOnce([]);
+				}
+
+				const creating = service.createDestination(destination);
+				await insertStarted.promise;
+				const removing =
+					operation === 'remove' ? service.removeDestination('webhook-1') : service.restart();
+				await new Promise(setImmediate);
+				insertFinished.resolve(true);
+				await Promise.all([creating, removing]);
+
+				expect(await service.findDestination('webhook-1')).toEqual([]);
+				expect(destination.close).toHaveBeenCalledOnce();
+			},
+		);
 	});
 
 	describe('addDestination', () => {
@@ -153,11 +283,100 @@ describe('LogStreamingDestinationService', () => {
 
 			expect(publisher.publishCommand).not.toHaveBeenCalled();
 		});
+
+		it('keeps the active destination when the database write fails', async () => {
+			const original = createMockDestination({ id: 'webhook-1' });
+			await service.addDestination(original);
+			vi.clearAllMocks();
+			const replacement = createMockDestination({
+				id: 'webhook-1',
+				type: MessageEventBusDestinationTypeNames.syslog,
+			});
+			const error = new Error('Database unavailable');
+			eventDestinationsRepository.upsert.mockRejectedValueOnce(error);
+
+			await expect(service.addDestination(replacement)).rejects.toThrow(error);
+
+			expect(original.close).not.toHaveBeenCalled();
+			expect(replacement.close).toHaveBeenCalledOnce();
+			expect(await service.findDestination('webhook-1')).toEqual([original.serialize()]);
+			expect(publisher.publishCommand).not.toHaveBeenCalled();
+		});
+
+		it('keeps the database error if closing the new destination also fails', async () => {
+			const destination = createMockDestination({ id: 'webhook-1' });
+			const error = new Error('Database unavailable');
+			const closeError = new Error('Could not close the new destination');
+			eventDestinationsRepository.upsert.mockRejectedValueOnce(error);
+			vi.mocked(destination.close).mockRejectedValueOnce(closeError);
+
+			await expect(service.addDestination(destination)).rejects.toThrow(error);
+
+			expect(destination.close).toHaveBeenCalledOnce();
+			expect(await service.findDestination('webhook-1')).toEqual([]);
+			expect(logger.warn).toHaveBeenCalledWith('Failed to close destination after save failed', {
+				error: closeError,
+			});
+		});
+
+		// Uses a real destination (not a mock) so the actual serialize() output is what
+		// reaches the repository — this is the payload persisted to the DB.
+		it('should persist the configured circuit breaker options to the database', async () => {
+			const id = '12345678-1234-1234-1234-123456789abc';
+			const circuitBreaker = { maxFailures: 7, failureWindow: 30000 };
+			const destination = new MessageEventBusDestinationWebhook(
+				eventBus,
+				{
+					__type: MessageEventBusDestinationTypeNames.webhook,
+					id,
+					label: 'Test',
+					url: 'http://example.com',
+					circuitBreaker,
+				},
+				outboundHttp,
+			);
+
+			eventDestinationsRepository.upsert.mockResolvedValue({} as any);
+
+			await service.addDestination(destination, false);
+
+			const data = eventDestinationsRepository.upsert.mock.calls[0][0] as {
+				id: string;
+				destination: MessageEventBusDestinationOptions;
+			};
+			expect(data.id).toBe(id);
+			// Stored verbatim: exactly the configured subset, no defaults injected, no `timeout` key
+			expect(data.destination.circuitBreaker).toEqual(circuitBreaker);
+		});
+
+		it('should not persist circuit breaker options when none configured', async () => {
+			const id = '12345678-1234-1234-1234-123456789abc';
+			const destination = new MessageEventBusDestinationWebhook(
+				eventBus,
+				{
+					__type: MessageEventBusDestinationTypeNames.webhook,
+					id,
+					label: 'Test',
+					url: 'http://example.com',
+				},
+				outboundHttp,
+			);
+
+			eventDestinationsRepository.upsert.mockResolvedValue({} as any);
+
+			await service.addDestination(destination, false);
+
+			const data = eventDestinationsRepository.upsert.mock.calls[0][0] as {
+				id: string;
+				destination: MessageEventBusDestinationOptions;
+			};
+			expect(data.destination.circuitBreaker).toBeUndefined();
+		});
 	});
 
 	describe('removeDestination', () => {
 		it('should remove a destination and delete from database', async () => {
-			const destination = createMockDestination({ id: 'webhook-1', close: jest.fn() });
+			const destination = createMockDestination({ id: 'webhook-1', close: vi.fn() });
 
 			eventDestinationsRepository.upsert.mockResolvedValue({} as any);
 			eventDestinationsRepository.delete.mockResolvedValue({} as any);
@@ -229,7 +448,7 @@ describe('LogStreamingDestinationService', () => {
 		it('should test a destination successfully', async () => {
 			const destination = createMockDestination({
 				id: 'webhook-1',
-				receiveFromEventBus: jest.fn().mockResolvedValue(true),
+				receiveFromEventBus: vi.fn().mockResolvedValue(true),
 			});
 
 			eventDestinationsRepository.upsert.mockResolvedValue({} as any);
@@ -290,7 +509,7 @@ describe('LogStreamingDestinationService', () => {
 
 	describe('close', () => {
 		it('should close all destinations', async () => {
-			const destination = createMockDestination({ id: 'webhook-1', close: jest.fn() });
+			const destination = createMockDestination({ id: 'webhook-1', close: vi.fn() });
 
 			eventDestinationsRepository.upsert.mockResolvedValue({} as any);
 			await service.addDestination(destination);
@@ -304,7 +523,7 @@ describe('LogStreamingDestinationService', () => {
 	describe('restart', () => {
 		it('should close, reload, and reinitialize', async () => {
 			// Add a destination that we can verify gets closed
-			const existingDestination = createMockDestination({ id: 'webhook-1', close: jest.fn() });
+			const existingDestination = createMockDestination({ id: 'webhook-1', close: vi.fn() });
 
 			eventDestinationsRepository.upsert.mockResolvedValue({} as any);
 			await service.addDestination(existingDestination);
@@ -318,7 +537,7 @@ describe('LogStreamingDestinationService', () => {
 
 			eventDestinationsRepository.find.mockResolvedValue([createDbEntity('webhook-2')] as any);
 
-			const mockedFromDb = jest.mocked(messageEventBusDestinationFromDb);
+			const mockedFromDb = vi.mocked(messageEventBusDestinationFromDb);
 			mockedFromDb.mockReturnValue(reloadedDestination);
 
 			// Restart the service

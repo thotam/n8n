@@ -1,8 +1,9 @@
 import { Logger } from '@n8n/backend-common';
-import { ExecutionRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
 import { ErrorReporter } from 'n8n-core';
 import type { IRunExecutionData, ITaskData } from 'n8n-workflow';
+
+import { ExecutionPersistence } from '@/executions/execution-persistence';
 
 export async function saveExecutionProgress(
 	workflowId: string,
@@ -10,9 +11,10 @@ export async function saveExecutionProgress(
 	nodeName: string,
 	_data: ITaskData,
 	executionData: IRunExecutionData,
+	requireRunning = false,
 ) {
 	const logger = Container.get(Logger);
-	const executionRepository = Container.get(ExecutionRepository);
+	const executionPersistence = Container.get(ExecutionPersistence);
 	const errorReporter = Container.get(ErrorReporter);
 
 	try {
@@ -23,10 +25,16 @@ export async function saveExecutionProgress(
 
 		executionData.resultData.lastNodeExecuted = nodeName;
 
-		const updated = await executionRepository.updateExistingExecution(
+		const updated = await executionPersistence.updateExistingExecution(
 			executionId,
 			{ data: executionData, status: 'running' },
-			{ requireNotFinished: true, requireNotCanceled: true },
+			// If the memory guard stops the execution while this save runs, n8n saves the
+			// execution as failed, with no run data. This save must not then write the run
+			// data back. `requireNotCanceled` cannot catch this, because the status is
+			// `error`, so require `running` instead.
+			requireRunning
+				? { requireNotFinished: true, requireStatus: 'running' }
+				: { requireNotFinished: true, requireNotCanceled: true },
 		);
 
 		if (!updated) {

@@ -6,12 +6,12 @@ import type {
 	IWorkflowDb,
 } from '@n8n/db';
 import type { AssignableGlobalRole } from '@n8n/permissions';
+import type { IDeferredPromise } from '@n8n/utils/promise/deferred-promise';
 import type { Application, Response } from 'express';
 import type {
 	ExecutionError,
 	ICredentialDataDecryptedObject,
 	ICredentialsDecrypted,
-	IDeferredPromise,
 	IExecuteResponsePromiseData,
 	IRun,
 	ITelemetryTrackProperties,
@@ -22,6 +22,8 @@ import type {
 	ExecutionSummary,
 	IWorkflowExecutionDataProcess,
 	IExecutionContext,
+	WorkflowExecutionSource,
+	ExecutionStorageLocation,
 } from 'n8n-workflow';
 import type PCancelable from 'p-cancelable';
 
@@ -34,6 +36,27 @@ export interface ICredentialsTypeData {
 
 export interface ICredentialsOverwrite {
 	[key: string]: ICredentialDataDecryptedObject;
+}
+
+/** Client fields of one managed OAuth app, with the version that identifies it. */
+export type ManagedVersionEntry = ICredentialDataDecryptedObject & { version: number };
+
+/**
+ * How a credential relates to the managed app of its type.
+ * - `managed`: the overwrite supplies the client of the credential.
+ * - `missing-app`: the credential is bound to a version that no app has any more. It needs a reconnect.
+ * - `not-managed`: no overwrite applies, because there is none or the credential has its own client.
+ */
+export type ManagedAuthState = 'managed' | 'missing-app' | 'not-managed';
+
+/** An overwrite payload after parsing: the base entries and the newer app of each type in a rollout. */
+export interface ParsedCredentialsOverwrites {
+	entries: ICredentialsOverwrite;
+	/** Version of the base entry, for types that state one. A missing type means version 1. */
+	entryVersions: Record<string, number>;
+	versions: Record<string, ManagedVersionEntry>;
+	/** Parts of the payload that the parser skipped, each with the reason. */
+	problems: string[];
 }
 
 // ----------------------------------
@@ -69,7 +92,8 @@ export interface IWorkflowToImport
 	owner?:
 		| {
 				type: 'personal';
-				personalEmail: string;
+				/** Null when the owner has no email, for example a service account. */
+				personalEmail: string | null;
 		  }
 		| {
 				type: 'team';
@@ -104,6 +128,8 @@ export interface IExecutionFlatted extends IExecutionBase {
 export interface IExecutionFlattedResponse extends IExecutionFlatted {
 	id: string;
 	retryOf?: string;
+	/** See {@link IExecutionResponse.dataTooLargeToDisplay}. When true, `data` is empty. */
+	dataTooLargeToDisplay?: boolean;
 }
 
 export interface IExecutionsListResponse {
@@ -129,16 +155,45 @@ export interface IExecutionsCurrentSummary {
 	status: ExecutionStatus;
 }
 
+/**
+ * An already-persisted execution a process wants to take over, plus the status it must
+ * still be in for the claim to succeed. The status travels with the id so the takeover
+ * is a compare-and-swap: if the row moved on, another process already claimed it.
+ */
+export interface ResumableExecution {
+	executionId: string;
+	/** `waiting` for a row being resumed, `new` for one enqueued before a restart. */
+	expectedStatus: Extract<ExecutionStatus, 'new' | 'waiting'>;
+	/** Store recorded on the row. A resume keeps writing there, whatever the configured mode. */
+	storedAt?: ExecutionStorageLocation;
+	/** Set for an engine v2 execution, which has no row to take over. */
+	engineResume?: EngineV2ResumeRequest;
+}
+
+/** What the control plane forwards to the data plane to end a wait. */
+export interface EngineV2ResumeRequest {
+	/** The waiting step that `locateResume` named. */
+	stepId: string;
+	/**
+	 * The resume token from the request. The control plane does not read it
+	 * (ADR-20260904-a-derived-token-authorizes-a-resume-request, decision 7).
+	 */
+	token: string;
+}
+
 export interface IExecutingWorkflowData {
 	executionData: IWorkflowExecutionDataProcess;
 	startedAt: Date;
 	/** This promise rejects when the execution is stopped. When the execution finishes (successfully or not), the promise resolves. */
 	postExecutePromise: IDeferredPromise<IRun | undefined>;
+	/** True once `postExecutePromise` has settled, so the run has stopped writing execution data. */
+	postExecuteSettled?: boolean;
 	/** HTTPResponse needed for streaming responses */
 	httpResponse?: Response;
 	responsePromise?: IDeferredPromise<IExecuteResponsePromiseData>;
 	workflowExecution?: PCancelable<IRun>;
 	status: ExecutionStatus;
+	isQueueJob?: boolean;
 }
 
 export interface IActiveDirectorySettings {
@@ -156,7 +211,8 @@ export interface IWorkflowErrorData {
 		url?: string;
 		retryOf?: string;
 		error: ExecutionError;
-		lastNodeExecuted: string;
+		/** Absent when the failed run has no failed node. */
+		lastNodeExecuted?: string;
 		mode: WorkflowExecuteMode;
 		executionContext?: IExecutionContext;
 	};
@@ -184,7 +240,17 @@ export interface IExecutionTrackProperties extends ITelemetryTrackProperties {
 	error_node_type?: string;
 	is_manual: boolean;
 	crashed?: boolean;
-	used_dynamic_credentials?: boolean;
+	used_end_user_credentials?: boolean;
+	/** Number of nodes that attempted to resolve an end-user credential (regardless of success). */
+	end_user_credentials_attempted_count?: number;
+	/** Number of nodes that successfully resolved an end-user credential. */
+	end_user_credentials_resolved_count?: number;
+	/** Effective resolver id the execution ran with (workflow override or seeded system resolver). */
+	credential_resolver_id?: string;
+	execution_source?: WorkflowExecutionSource;
+	mock_data_sources?: string;
+	/** Number of credentials the run uses only through the acting user's own access. */
+	personal_credentials_count?: number;
 }
 
 // ----------------------------------

@@ -7,16 +7,18 @@ import type {
 	INodeExecutionData,
 	IPairedItemData,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import * as GenericFunctions from '../shared/GenericFunctions';
 import { NotionV2 } from '../v2/NotionV2.node';
+import type { Mock } from 'vitest';
 
-jest.mock('../shared/GenericFunctions', () => ({
-	...jest.requireActual<typeof GenericFunctions>('../shared/GenericFunctions'),
-	notionApiRequestAllItems: jest.fn(),
+vi.mock('../shared/GenericFunctions', async () => ({
+	...(await vi.importActual<typeof GenericFunctions>('../shared/GenericFunctions')),
+	notionApiRequestAllItems: vi.fn(),
 }));
 
-const mockNotionApiRequestAllItems = GenericFunctions.notionApiRequestAllItems as jest.Mock;
+const mockNotionApiRequestAllItems = GenericFunctions.notionApiRequestAllItems as Mock;
 
 function createMockExecuteFunction(nodeParameters: IDataObject): IExecuteFunctions {
 	return {
@@ -60,7 +62,7 @@ const node = new NotionV2({
 
 describe('NotionV2 getAll pagination (coverage)', () => {
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 	});
 
 	it('block getAll: should paginate with limit and slice results', async () => {
@@ -85,11 +87,35 @@ describe('NotionV2 getAll pagination (coverage)', () => {
 		expect(mockNotionApiRequestAllItems).toHaveBeenCalledWith(
 			'results',
 			'GET',
-			'/blocks/test-block-id/children',
+			requestPath`/blocks/test-block-id/children`,
 			{},
 			{ page_size: 100, limit: 150 },
 		);
 		expect(result[0]).toHaveLength(150);
+	});
+
+	it('encodes a block ID as one URL path segment', async () => {
+		mockNotionApiRequestAllItems.mockResolvedValueOnce([]);
+
+		const context = createMockExecuteFunction({
+			resource: 'block',
+			operation: 'getAll',
+			'blockId.value': 'parent/child',
+			blockId: { __rl: true, mode: 'id', value: 'parent/child' },
+			returnAll: false,
+			limit: 1,
+			fetchNestedBlocks: false,
+		});
+
+		await node.execute.call(context);
+
+		expect(mockNotionApiRequestAllItems).toHaveBeenCalledWith(
+			'results',
+			'GET',
+			requestPath`/blocks/parent%2Fchild/children`,
+			{},
+			{ page_size: 1, limit: 1 },
+		);
 	});
 
 	it('database getAll: should paginate with limit and slice results', async () => {
@@ -112,7 +138,7 @@ describe('NotionV2 getAll pagination (coverage)', () => {
 		expect(mockNotionApiRequestAllItems).toHaveBeenCalledWith(
 			'results',
 			'POST',
-			'/search',
+			requestPath`/search`,
 			expect.objectContaining({
 				filter: { property: 'object', value: 'database' },
 				page_size: 100,
@@ -149,7 +175,7 @@ describe('NotionV2 getAll pagination (coverage)', () => {
 		expect(mockNotionApiRequestAllItems).toHaveBeenCalledWith(
 			'results',
 			'POST',
-			'/databases/test-db-id/query',
+			requestPath`/databases/test-db-id/query`,
 			expect.objectContaining({ page_size: 100 }),
 			{ limit: 150 },
 		);

@@ -1,21 +1,24 @@
 import { Logger } from '@n8n/backend-common';
 import { mockInstance } from '@n8n/backend-test-utils';
+import { DynamicTool } from '@langchain/core/tools';
+import { CredentialAccessRepository, CredentialsRepository, type CredentialsEntity } from '@n8n/db';
+import { Container } from '@n8n/di';
+import { BinaryDataService, StructuredToolkit } from 'n8n-core';
 import {
-	CredentialsRepository,
-	SharedCredentialsRepository,
-	type CredentialsEntity,
-	type SharedCredentials,
-} from '@n8n/db';
-import { mock } from 'jest-mock-extended';
-import { StructuredToolkit } from 'n8n-core';
-import {
+	Expression,
 	NodeConnectionTypes,
+	type IExecuteFunctions,
 	type INodeCredentialsDetails,
 	type INodeType,
 	type INodeTypeDescription,
+	type ISupplyDataFunctions,
+	type IWorkflowExecuteAdditionalData,
 } from 'n8n-workflow';
+import { mock } from 'vitest-mock-extended';
 
 import { NodeTypes } from '@/node-types';
+import { PolicyEnforcementService } from '@/policy/policy-enforcement.service';
+import { PolicyViolationError } from '@/policy/policy-violation.error';
 
 import {
 	AGENT_PROVIDER_NODE_WHITELIST,
@@ -24,9 +27,24 @@ import {
 	isUsableAsAgentTool,
 } from '../ephemeral-node-executor';
 
-const mockGetBase = jest.fn();
+// Assign overrides onto an empty mock instead of passing them to mock():
+// mock(overrides) deep-wraps nested objects in proxies and mutates shared
+// fixtures (e.g. `toolDescription`) in place, stacking a proxy layer per call.
+// Assigning also sidesteps DeepPartial narrowing of nested objects like `defaults`.
+const mockNodeType = (overrides: object = {}) => Object.assign(mock<INodeType>(), overrides);
 
-jest.mock('@/workflow-execute-additional-data', () => ({
+// Listed explicitly so removing an entry from the denylist fails these tests.
+const DENYLISTED_NODE_TYPES = [
+	'n8n-nodes-base.executeCommand',
+	'n8n-nodes-base.ssh',
+	'n8n-nodes-base.readWriteFile',
+	'n8n-nodes-base.readBinaryFile',
+	'n8n-nodes-base.readBinaryFiles',
+];
+
+const mockGetBase = vi.fn();
+
+vi.mock('@/workflow-execute-additional-data', () => ({
 	getBase: (...args: unknown[]) => mockGetBase(...args),
 }));
 
@@ -83,14 +101,21 @@ describe('isAgentProviderNode', () => {
 describe('EphemeralNodeExecutor', () => {
 	const nodeTypes = mockInstance(NodeTypes);
 	const credentialsRepository = mockInstance(CredentialsRepository);
-	const sharedCredentialsRepository = mockInstance(SharedCredentialsRepository);
+	const credentialAccessRepository = mockInstance(CredentialAccessRepository);
 	const logger = mockInstance(Logger);
+	const policyEnforcementService = mockInstance(PolicyEnforcementService);
+	// Node execution constructs `SSHClientsManager` via DI, whose constructor does
+	// `logger.scoped(...)` and registers a `process.on('exit')` shutdown handler. Without a real
+	// return here, `scoped()` is undefined and the handler throws at worker teardown — an uncaught
+	// exception that fails the run even though every test passes.
+	logger.scoped.mockReturnValue(logger);
 
 	const executor = new EphemeralNodeExecutor(
 		nodeTypes,
 		credentialsRepository,
-		sharedCredentialsRepository,
 		logger,
+		policyEnforcementService,
+		credentialAccessRepository,
 	);
 
 	const toolDescription: INodeTypeDescription = {
@@ -107,8 +132,9 @@ describe('EphemeralNodeExecutor', () => {
 	};
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		mockGetBase.mockResolvedValue({});
+		credentialAccessRepository.findCredentialNames.mockResolvedValue([]);
 	});
 
 	describe('validateNodeForExecution (via executeInline)', () => {
@@ -119,7 +145,7 @@ describe('EphemeralNodeExecutor', () => {
 				outputs: ['main'],
 			};
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({ description: nonToolDescription }),
+				mockNodeType({ description: nonToolDescription }),
 			);
 
 			const result = await executor.executeInline({
@@ -136,9 +162,33 @@ describe('EphemeralNodeExecutor', () => {
 			expect(result.data).toEqual([]);
 		});
 
+		it('formats a non-Error validation failure', async () => {
+			nodeTypes.getByNameAndVersion.mockImplementation(() => {
+				throw 'unknown node';
+			});
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.missing',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				inputData: [],
+				projectId: 'p-1',
+			});
+
+			expect(result).toEqual({
+				status: 'error',
+				data: [],
+				error: 'Cannot execute node "n8n-nodes-base.missing": unknown node',
+			});
+			expect(logger.debug).toHaveBeenCalledWith('Node execution validation failed', {
+				nodeType: 'n8n-nodes-base.missing',
+				error: 'unknown node',
+			});
+		});
+
 		it('returns a structured error when the node is a trigger', async () => {
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({ description: { ...toolDescription, group: ['trigger'] } }),
+				mockNodeType({ description: { ...toolDescription, group: ['trigger'] } }),
 			);
 
 			const result = await executor.executeInline({
@@ -160,7 +210,7 @@ describe('EphemeralNodeExecutor', () => {
 				outputs: ['main'],
 			};
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({ description: providerDescription }),
+				mockNodeType({ description: providerDescription }),
 			);
 
 			const result = await executor.executeInline({
@@ -174,32 +224,95 @@ describe('EphemeralNodeExecutor', () => {
 			expect(result.error).not.toMatch(/not usable as a tool/);
 		});
 
-		it('returns a structured error when the operation is on the blacklist (sendAndWait)', async () => {
-			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({ description: toolDescription }),
-			);
+		it.each(DENYLISTED_NODE_TYPES)(
+			'rejects the denylisted node type "%s" even when it looks like a usable tool',
+			async (nodeType) => {
+				nodeTypes.getByNameAndVersion.mockReturnValue(
+					mockNodeType({ description: toolDescription }),
+				);
 
+				const result = await executor.executeInline({
+					nodeType,
+					nodeTypeVersion: 1,
+					nodeParameters: {},
+					inputData: [],
+					projectId: 'p-1',
+				});
+
+				expect(result.status).toBe('error');
+				expect(result.error).toContain('not permitted for agent tool execution');
+				// The denylist check must run before the node-types lookup for the
+				// base type, otherwise resolveToolNodeType's `*Tool` remapping in
+				// the caller could dodge it via a type that doesn't exist yet.
+				expect(nodeTypes.getByNameAndVersion).not.toHaveBeenCalled();
+			},
+		);
+
+		it.each(
+			DENYLISTED_NODE_TYPES.flatMap((nodeType) => [
+				[nodeType, 'Tool'],
+				[nodeType, 'HitlTool'],
+			]),
+		)('rejects the denylisted node type "%s" with the `%s` suffix', async (nodeType, suffix) => {
 			const result = await executor.executeInline({
-				nodeType: 'n8n-nodes-base.slack',
+				nodeType: `${nodeType}${suffix}`,
 				nodeTypeVersion: 1,
-				nodeParameters: { operation: 'sendAndWait' },
+				nodeParameters: {},
 				inputData: [],
 				projectId: 'p-1',
 			});
 
 			expect(result.status).toBe('error');
-			expect(result.error).toMatch(/not supported for agent tool execution/);
+			expect(result.error).toContain('not permitted for agent tool execution');
 		});
+
+		it('still executes a normal tool node that is not on the denylist', async () => {
+			const execute = vi.fn().mockResolvedValue([[{ json: { ok: true } }]]);
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+				execute,
+			} as unknown as INodeType);
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.slack',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				inputData: [],
+				projectId: 'p-1',
+			});
+
+			expect(result.status).toBe('success');
+		});
+
+		it.each(['sendAndWait', 'dispatchAndWait'])(
+			'returns a structured error when operation %s is unsupported',
+			async (operation) => {
+				nodeTypes.getByNameAndVersion.mockReturnValue(
+					mockNodeType({ description: toolDescription }),
+				);
+
+				const result = await executor.executeInline({
+					nodeType: 'n8n-nodes-base.slack',
+					nodeTypeVersion: 1,
+					nodeParameters: { operation },
+					inputData: [],
+					projectId: 'p-1',
+				});
+
+				expect(result.status).toBe('error');
+				expect(result.error).toMatch(/not supported for agent tool execution/);
+			},
+		);
 	});
 
 	describe('resolveInlineCredentials (via executeInline)', () => {
 		function mockToolNodeWithSupplyData() {
 			// Short-circuit past the execute path — we only want to assert credential resolution.
-			const supplyData = jest.fn().mockResolvedValue({
-				response: { invoke: jest.fn().mockResolvedValue('ok') },
+			const supplyData = vi.fn().mockResolvedValue({
+				response: { invoke: vi.fn().mockResolvedValue('ok') },
 			});
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({
 					description: toolDescription,
 					supplyData,
 				}),
@@ -209,7 +322,7 @@ describe('EphemeralNodeExecutor', () => {
 
 		it('throws when no matching credential is found for the project', async () => {
 			mockToolNodeWithSupplyData();
-			credentialsRepository.findAllCredentialsForProject.mockResolvedValue([]);
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([]);
 
 			await expect(
 				executor.executeInline({
@@ -225,7 +338,7 @@ describe('EphemeralNodeExecutor', () => {
 
 		it('throws when multiple credentials match the same type + name (case-insensitive)', async () => {
 			mockToolNodeWithSupplyData();
-			credentialsRepository.findAllCredentialsForProject.mockResolvedValue([
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([
 				mock<CredentialsEntity>({ id: 'c1', name: 'Prod Slack', type: 'slackApi' }),
 				mock<CredentialsEntity>({ id: 'c2', name: 'prod slack', type: 'slackApi' }),
 			]);
@@ -242,6 +355,33 @@ describe('EphemeralNodeExecutor', () => {
 			).rejects.toThrow(/Multiple credentials match/);
 		});
 
+		it('resolves a usable credential by type and name', async () => {
+			let observedCredentials: Record<string, INodeCredentialsDetails> | undefined;
+			const supplyData = vi.fn(function (this: ISupplyDataFunctions) {
+				observedCredentials = this.getNode().credentials;
+				return { response: { invoke: vi.fn().mockResolvedValue('ok') } };
+			});
+			nodeTypes.getByNameAndVersion.mockReturnValue(
+				mockNodeType({ description: toolDescription, supplyData }),
+			);
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([
+				{ id: 'c1', name: 'Global Slack', type: 'slackApi' },
+			]);
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.slack',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				credentials: { slackApi: 'global slack' },
+				inputData: [],
+				projectId: 'p-1',
+			});
+
+			expect(result.status).toBe('success');
+			expect(credentialsRepository.findCredentialsUsableInProject).toHaveBeenCalledWith('p-1');
+			expect(observedCredentials).toEqual({ slackApi: { id: 'c1', name: 'Global Slack' } });
+		});
+
 		it('skips resolution when no credentials are requested', async () => {
 			mockToolNodeWithSupplyData();
 
@@ -253,21 +393,51 @@ describe('EphemeralNodeExecutor', () => {
 				projectId: 'p-1',
 			});
 
-			expect(credentialsRepository.findAllCredentialsForProject).not.toHaveBeenCalled();
+			expect(credentialsRepository.findCredentialsUsableInProject).not.toHaveBeenCalled();
 		});
 	});
 
 	describe('verifyCredentialDetailsForProject (via executeInline)', () => {
 		function mockToolNodeWithSupplyData() {
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({
 					description: toolDescription,
-					supplyData: jest.fn().mockResolvedValue({
-						response: { invoke: jest.fn().mockResolvedValue('ok') },
+					supplyData: vi.fn().mockResolvedValue({
+						response: { invoke: vi.fn().mockResolvedValue('ok') },
 					}),
 				}),
 			);
 		}
+
+		it('executes an accessible credential by ID and uses its current name', async () => {
+			let observedCredentials: Record<string, INodeCredentialsDetails> | undefined;
+			const supplyData = vi.fn(function (this: ISupplyDataFunctions) {
+				observedCredentials = this.getNode().credentials;
+				return { response: { invoke: vi.fn().mockResolvedValue('ok') } };
+			});
+			nodeTypes.getByNameAndVersion.mockReturnValue(
+				mockNodeType({ description: toolDescription, supplyData }),
+			);
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([
+				{ id: 'c1', name: 'Current Slack', type: 'slackApi' },
+			]);
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.slack',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				credentialDetails: { slackApi: { id: 'c1', name: 'Old Slack' } },
+				inputData: [],
+				projectId: 'p-1',
+			});
+
+			expect(result.status).toBe('success');
+			expect(credentialsRepository.findCredentialsUsableInProject).toHaveBeenCalledWith('p-1', [
+				'c1',
+			]);
+			expect(observedCredentials).toEqual({ slackApi: { id: 'c1', name: 'Current Slack' } });
+			expect(credentialAccessRepository.findCredentialNames).not.toHaveBeenCalled();
+		});
 
 		it('throws when credentialDetails are missing an id', async () => {
 			mockToolNodeWithSupplyData();
@@ -285,33 +455,53 @@ describe('EphemeralNodeExecutor', () => {
 			).rejects.toThrow(/missing an id/);
 		});
 
-		it('throws when the credential is not shared with the project', async () => {
+		it('reports only the credential ID when the credential no longer exists', async () => {
 			mockToolNodeWithSupplyData();
-			sharedCredentialsRepository.findOne.mockResolvedValue(null);
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([]);
 
 			await expect(
 				executor.executeInline({
 					nodeType: 'n8n-nodes-base.slack',
 					nodeTypeVersion: 1,
 					nodeParameters: {},
-					credentialDetails: { slackApi: { id: 'c1', name: 'Prod Slack' } },
+					credentialDetails: { slackApi: { id: 'c1', name: 'Old Slack' } },
 					inputData: [],
 					projectId: 'p-1',
 				}),
-			).rejects.toThrow(/not accessible or does not exist/);
+			).rejects.toThrow('Credential with ID "c1" is not accessible or does not exist.');
+		});
+
+		it('reports the current name and ID when a renamed credential is not accessible', async () => {
+			mockToolNodeWithSupplyData();
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([]);
+			credentialAccessRepository.findCredentialNames.mockResolvedValue([
+				{ id: 'c1', name: 'Current Slack' },
+			]);
+
+			await expect(
+				executor.executeInline({
+					nodeType: 'n8n-nodes-base.slack',
+					nodeTypeVersion: 1,
+					nodeParameters: {},
+					credentialDetails: { slackApi: { id: 'c1', name: 'Old Slack' } },
+					inputData: [],
+					projectId: 'p-1',
+				}),
+			).rejects.toThrow(
+				'Credential "Current Slack" with ID "c1" is not accessible or does not exist.',
+			);
+			expect(credentialAccessRepository.findCredentialNames).toHaveBeenCalledWith(['c1']);
 		});
 
 		it('throws when the resolved credential has a different type than the slot', async () => {
 			mockToolNodeWithSupplyData();
-			sharedCredentialsRepository.findOne.mockResolvedValue(
-				mock<SharedCredentials>({
-					credentials: mock<CredentialsEntity>({
-						id: 'c1',
-						name: 'Prod Slack',
-						type: 'gmailOAuth2', // wrong type for slackApi slot
-					}),
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([
+				mock<CredentialsEntity>({
+					id: 'c1',
+					name: 'Prod Slack',
+					type: 'gmailOAuth2', // wrong type for slackApi slot
 				}),
-			);
+			]);
 
 			await expect(
 				executor.executeInline({
@@ -324,15 +514,35 @@ describe('EphemeralNodeExecutor', () => {
 				}),
 			).rejects.toThrow(/has type .* but the node expects credential slot/);
 		});
+
+		it('passes an n8n Connect managed credential through without a project lookup', async () => {
+			mockToolNodeWithSupplyData();
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.slack',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				credentialDetails: {
+					slackApi: { id: null, name: 'n8n credits', __aiGatewayManaged: true },
+				},
+				inputData: [],
+				projectId: 'p-1',
+			});
+
+			expect(result.status).toBe('success');
+			// Managed credentials are minted per execution (CredentialsHelper.getDecrypted),
+			// so there is no stored row to resolve — the project lookup must be skipped.
+			expect(credentialsRepository.findCredentialsUsableInProject).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('executeInline routing', () => {
 		it('invokes the LangChain tool when the node implements supplyData', async () => {
-			const invoke = jest.fn().mockResolvedValue('wiki-result');
+			const invoke = vi.fn().mockResolvedValue('wiki-result');
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({
 					description: toolDescription,
-					supplyData: jest.fn().mockResolvedValue({ response: { invoke } }),
+					supplyData: vi.fn().mockResolvedValue({ response: { invoke } }),
 				}),
 			);
 
@@ -351,32 +561,36 @@ describe('EphemeralNodeExecutor', () => {
 			});
 		});
 
-		it('returns an error result when the supplyData tool invocation throws', async () => {
-			const invoke = jest.fn().mockRejectedValue(new Error('upstream 500'));
-			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
-					description: toolDescription,
-					supplyData: jest.fn().mockResolvedValue({ response: { invoke } }),
-				}),
-			);
+		it.each([new Error('upstream 500'), 'upstream 500'])(
+			'returns an error result when the supplyData tool invocation throws %s',
+			async (error) => {
+				const invoke = vi.fn().mockRejectedValue(error);
+				nodeTypes.getByNameAndVersion.mockReturnValue(
+					mockNodeType({
+						description: toolDescription,
+						supplyData: vi.fn().mockResolvedValue({ response: { invoke } }),
+					}),
+				);
 
-			const result = await executor.executeInline({
-				nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
-				nodeTypeVersion: 1,
-				nodeParameters: {},
-				inputData: [{ json: {} }],
-				projectId: 'p-1',
-			});
+				const result = await executor.executeInline({
+					nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
+					nodeTypeVersion: 1,
+					nodeParameters: {},
+					inputData: [{ json: {} }],
+					projectId: 'p-1',
+				});
 
-			expect(result.status).toBe('error');
-			expect(result.error).toBe('upstream 500');
-		});
+				expect(result.status).toBe('error');
+				expect(result.error).toBe('upstream 500');
+				expect(result).not.toHaveProperty('violations');
+			},
+		);
 
 		it('returns an error result when the node does not expose a valid LangChain tool', async () => {
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({
 					description: toolDescription,
-					supplyData: jest.fn().mockResolvedValue({ response: undefined }),
+					supplyData: vi.fn().mockResolvedValue({ response: undefined }),
 				}),
 			);
 
@@ -393,7 +607,7 @@ describe('EphemeralNodeExecutor', () => {
 		});
 
 		it('returns an error result when a direct-execute node has no execute method', async () => {
-			// Plain object (not mock<>) — jest-mock-extended auto-proxies *every*
+			// Plain object (not mock<>) — vitest-mock-extended auto-proxies *every*
 			// property access as a callable, which would make the supplyData
 			// routing check match and send us down the wrong path.
 			nodeTypes.getByNameAndVersion.mockReturnValue({
@@ -422,9 +636,9 @@ describe('EphemeralNodeExecutor', () => {
 				mock<StructuredToolkit['tools'][number]>({ name: 'read-doc' }),
 			]);
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({
 					description: toolDescription,
-					supplyData: jest.fn().mockResolvedValue({ response: toolkit }),
+					supplyData: vi.fn().mockResolvedValue({ response: toolkit }),
 				}),
 			);
 
@@ -443,11 +657,60 @@ describe('EphemeralNodeExecutor', () => {
 
 	describe('executeInline → executeNodeDirectly (nodes without supplyData)', () => {
 		// Use plain objects so `typeof nodeType.supplyData === 'function'`
-		// reliably returns false — jest-mock-extended auto-proxies every
+		// reliably returns false — vitest-mock-extended auto-proxies every
 		// property as callable, which would route us to the supplyData path.
 
+		it('passes the project ID to data table helpers', async () => {
+			const getDataTableProxy = vi.fn().mockResolvedValue({});
+			mockGetBase.mockResolvedValue({
+				'data-table': { dataTableProxyProvider: { getDataTableProxy } },
+			});
+			const execute = vi.fn(async function (this: IExecuteFunctions) {
+				await this.helpers.getDataTableProxy?.('table-id');
+				return [[{ json: { ok: true } }]];
+			});
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+				execute,
+			} as unknown as INodeType);
+
+			await executor.executeInline({
+				nodeType: 'n8n-nodes-base.dataTableTool',
+				nodeTypeVersion: 1.1,
+				nodeParameters: {},
+				inputData: [{ json: {} }],
+				projectId: 'p-1',
+			});
+
+			expect(getDataTableProxy).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.anything(),
+				'table-id',
+				'p-1',
+			);
+		});
+
+		it('does not add data table project context for other node types', async () => {
+			const additionalData = {};
+			mockGetBase.mockResolvedValue(additionalData);
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+				execute: vi.fn().mockResolvedValue([[{ json: { ok: true } }]]),
+			} as unknown as INodeType);
+
+			await executor.executeInline({
+				nodeType: 'n8n-nodes-base.slack',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				inputData: [{ json: {} }],
+				projectId: 'p-1',
+			});
+
+			expect(additionalData).not.toHaveProperty('dataTableProjectId');
+		});
+
 		it('runs nodeType.execute and returns its first output batch on success', async () => {
-			const execute = jest.fn().mockResolvedValue([[{ json: { ok: true, count: 3 } }]]);
+			const execute = vi.fn().mockResolvedValue([[{ json: { ok: true, count: 3 } }]]);
 			nodeTypes.getByNameAndVersion.mockReturnValue({
 				description: toolDescription,
 				execute,
@@ -465,30 +728,132 @@ describe('EphemeralNodeExecutor', () => {
 			expect(result).toEqual({ status: 'success', data: [{ json: { ok: true, count: 3 } }] });
 		});
 
-		it('returns an error result when nodeType.execute throws', async () => {
-			const execute = jest.fn().mockRejectedValue(new Error('upstream 500'));
+		it('lets a node read an explicitly granted input file', async () => {
+			const binaryDataService = mock<BinaryDataService>();
+			binaryDataService.getAsBuffer.mockResolvedValue(Buffer.from('file contents'));
+			Container.set(BinaryDataService, binaryDataService);
+			mockGetBase.mockResolvedValue({
+				binaryDataAccess: {
+					grant: vi.fn(),
+					isGranted: vi.fn().mockReturnValue(false),
+					isAllowed: vi.fn(
+						async (id: string, _workflowId: string, grantedIds?: string[]) =>
+							grantedIds?.includes(id) === true,
+					),
+				},
+			});
 			nodeTypes.getByNameAndVersion.mockReturnValue({
 				description: toolDescription,
-				execute,
+				execute: vi.fn(async function (this: IExecuteFunctions) {
+					const contents = await this.helpers.getBinaryDataBuffer(0, 'data');
+					return [[{ json: { contents: contents.toString() } }]];
+				}),
 			} as unknown as INodeType);
 
 			const result = await executor.executeInline({
-				nodeType: 'n8n-nodes-base.slack',
+				nodeType: 'n8n-nodes-base.fileTool',
 				nodeTypeVersion: 1,
 				nodeParameters: {},
-				inputData: [],
+				binaryDataAccess: ['filesystem-v2:file-1'],
+				inputData: [
+					{
+						json: {},
+						binary: {
+							data: {
+								id: 'filesystem-v2:file-1',
+								data: 'filesystem-v2',
+								mimeType: 'text/plain',
+							},
+						},
+					},
+				],
 				projectId: 'p-1',
 			});
 
-			expect(result.status).toBe('error');
-			expect(result.error).toBe('upstream 500');
+			expect(result).toEqual({
+				status: 'success',
+				data: [{ json: { contents: 'file contents' } }],
+				binaryDataAccess: ['filesystem-v2:file-1'],
+			});
 		});
+
+		it('rejects reading an input file that was not granted', async () => {
+			const binaryDataService = mock<BinaryDataService>();
+			Container.set(BinaryDataService, binaryDataService);
+			mockGetBase.mockResolvedValue({
+				binaryDataAccess: {
+					grant: vi.fn(),
+					isGranted: vi.fn().mockReturnValue(false),
+					isAllowed: vi.fn(
+						async (id: string, _workflowId: string, grantedIds?: string[]) =>
+							grantedIds?.includes(id) === true,
+					),
+				},
+			});
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+				execute: vi.fn(async function (this: IExecuteFunctions) {
+					await this.helpers.getBinaryDataBuffer(0, 'data');
+					return [[{ json: { ok: true } }]];
+				}),
+			} as unknown as INodeType);
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.fileTool',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				binaryDataAccess: [],
+				inputData: [
+					{
+						json: {},
+						binary: {
+							data: {
+								id: 'filesystem-v2:file-1',
+								data: 'filesystem-v2',
+								mimeType: 'text/plain',
+							},
+						},
+					},
+				],
+				projectId: 'p-1',
+			});
+
+			expect(result).toEqual({
+				status: 'error',
+				data: [],
+				error: 'This binary data is not available to the current workflow.',
+			});
+			expect(binaryDataService.getAsBuffer).not.toHaveBeenCalled();
+		});
+
+		it.each([new Error('upstream 500'), 'upstream 500'])(
+			'returns an error result when nodeType.execute throws %s',
+			async (error) => {
+				const execute = vi.fn().mockRejectedValue(error);
+				nodeTypes.getByNameAndVersion.mockReturnValue({
+					description: toolDescription,
+					execute,
+				} as unknown as INodeType);
+
+				const result = await executor.executeInline({
+					nodeType: 'n8n-nodes-base.slack',
+					nodeTypeVersion: 1,
+					nodeParameters: {},
+					inputData: [],
+					projectId: 'p-1',
+				});
+
+				expect(result.status).toBe('error');
+				expect(result.error).toBe('upstream 500');
+				expect(result).not.toHaveProperty('violations');
+			},
+		);
 
 		it('returns an error when execute resolves without an output array', async () => {
 			// Downstream consumers expect NodeExecutionData[] — resolving with
 			// `null` or a truthy-but-not-array value must not leak through as
 			// `status: 'success'`.
-			const execute = jest.fn().mockResolvedValue(null);
+			const execute = vi.fn().mockResolvedValue(null);
 			nodeTypes.getByNameAndVersion.mockReturnValue({
 				description: toolDescription,
 				execute,
@@ -507,7 +872,7 @@ describe('EphemeralNodeExecutor', () => {
 		});
 
 		it('returns an error when execute resolves with an empty output array', async () => {
-			const execute = jest.fn().mockResolvedValue([]);
+			const execute = vi.fn().mockResolvedValue([]);
 			nodeTypes.getByNameAndVersion.mockReturnValue({
 				description: toolDescription,
 				execute,
@@ -526,14 +891,144 @@ describe('EphemeralNodeExecutor', () => {
 		});
 	});
 
+	describe('node type policy', () => {
+		const blocked = () =>
+			new PolicyViolationError([
+				{
+					kind: 'node-type-unavailable',
+					checkId: 'node-type-availability',
+					message: 'Node type "n8n-nodes-base.dateTimeTool" is blocked by an instance policy',
+					subject: 'n8n-nodes-base.dateTimeTool',
+					subjectType: 'nodeType',
+					scope: 'instance',
+				},
+			]);
+
+		// The workflow it calls is policed when it starts; the stand-in node never runs.
+		it('does not police an expression evaluation, which runs no node', async () => {
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+			} as unknown as INodeType);
+
+			await expect(
+				executor.evaluateExpressions(
+					{
+						nodeType: '@n8n/n8n-nodes-langchain.toolWorkflow',
+						nodeTypeVersion: 2.2,
+						nodeParameters: {},
+						projectId: 'p-1',
+					},
+					{},
+					[],
+				),
+			).resolves.toEqual({});
+			expect(policyEnforcementService.enforceWorkflowStart).not.toHaveBeenCalled();
+		});
+
+		it('polices the node as a one-node workflow in the tool project', async () => {
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+				execute: vi.fn().mockResolvedValue([[{ json: { ok: true } }]]),
+			} as unknown as INodeType);
+
+			await executor.executeInline({
+				nodeType: 'n8n-nodes-base.dateTimeTool',
+				nodeTypeVersion: 2,
+				nodeParameters: {},
+				inputData: [{ json: {} }],
+				projectId: 'p-1',
+			});
+
+			expect(policyEnforcementService.enforceWorkflowStart).toHaveBeenCalledWith(
+				{
+					workflow: {
+						id: null,
+						name: 'Target Node',
+						nodes: [
+							expect.objectContaining({ type: 'n8n-nodes-base.dateTimeTool', typeVersion: 2 }),
+						],
+						artifactKind: 'agent',
+					},
+					projectId: 'p-1',
+				},
+				{ kind: 'system', reason: 'execution' },
+			);
+		});
+
+		it("returns a tool error carrying the refusal's violations, and never runs a blocked node", async () => {
+			const execute = vi.fn();
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+				execute,
+			} as unknown as INodeType);
+			const refusal = blocked();
+			policyEnforcementService.enforceWorkflowStart.mockRejectedValueOnce(refusal);
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.dateTimeTool',
+				nodeTypeVersion: 2,
+				nodeParameters: {},
+				inputData: [{ json: {} }],
+				projectId: 'p-1',
+			});
+
+			expect(result).toEqual({
+				status: 'error',
+				data: [],
+				error: expect.stringContaining('is blocked by an instance policy'),
+				violations: refusal.violations,
+			});
+			expect(execute).not.toHaveBeenCalled();
+		});
+
+		it("never runs supplyData for a blocked native tool node, and carries the refusal's violations", async () => {
+			const supplyData = vi.fn();
+			nodeTypes.getByNameAndVersion.mockReturnValue(
+				mockNodeType({ description: toolDescription, supplyData }),
+			);
+			const refusal = blocked();
+			policyEnforcementService.enforceWorkflowStart.mockRejectedValueOnce(refusal);
+
+			const result = await executor.executeInline({
+				nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				inputData: [{ json: { input: 'n8n' } }],
+				projectId: 'p-1',
+			});
+
+			expect(result.status).toBe('error');
+			expect(result.violations).toEqual(refusal.violations);
+			expect(supplyData).not.toHaveBeenCalled();
+		});
+
+		it('skips schema introspection for a blocked node instead of failing the agent build', async () => {
+			const supplyData = vi.fn();
+			nodeTypes.getByNameAndVersion.mockReturnValue(
+				mockNodeType({ description: toolDescription, supplyData }),
+			);
+			policyEnforcementService.enforceWorkflowStart.mockRejectedValueOnce(blocked());
+
+			const result = await executor.introspectSupplyDataToolSchema({
+				projectId: 'p-1',
+				nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+			});
+
+			expect(result).toBeNull();
+			expect(supplyData).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('introspectSupplyDataToolSchema', () => {
 		it('returns the schema a structured tool exposes', async () => {
 			const schema = { type: 'object', properties: { query: { type: 'string' } } };
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({
 					description: toolDescription,
-					supplyData: jest.fn().mockResolvedValue({
-						response: { invoke: jest.fn(), schema },
+					supplyData: vi.fn().mockResolvedValue({
+						response: { invoke: vi.fn(), schema },
 					}),
 				}),
 			);
@@ -548,12 +1043,96 @@ describe('EphemeralNodeExecutor', () => {
 			expect(result).toBe(schema);
 		});
 
-		it('returns null when the tool has no structured schema (base Tool/DynamicTool)', async () => {
+		it('returns null without running supplyData when the credential is not shared with the project', async () => {
+			const supplyData = vi.fn();
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({ description: toolDescription, supplyData }),
+			);
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([]);
+			credentialAccessRepository.findCredentialNames.mockResolvedValue([
+				{ id: 'c1', name: 'Current Slack' },
+			]);
+
+			const result = await executor.introspectSupplyDataToolSchema({
+				projectId: 'p-1',
+				nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				credentials: { slackApi: { id: 'c1', name: 'Old Slack' } },
+			});
+
+			expect(result).toBeNull();
+			expect(supplyData).not.toHaveBeenCalled();
+			expect(logger.warn).toHaveBeenCalledWith('supplyData tool introspection failed', {
+				nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
+				error: 'Credential "Current Slack" with ID "c1" is not accessible or does not exist.',
+			});
+		});
+
+		it('logs a non-Error credential lookup failure during introspection', async () => {
+			credentialsRepository.findCredentialsUsableInProject.mockRejectedValue('lookup failed');
+
+			const result = await executor.introspectSupplyDataToolSchema({
+				projectId: 'p-1',
+				nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				credentials: { slackApi: { id: 'c1', name: 'Prod Slack' } },
+			});
+
+			expect(result).toBeNull();
+			expect(logger.warn).toHaveBeenCalledWith('supplyData tool introspection failed', {
+				nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
+				error: 'lookup failed',
+			});
+		});
+
+		it('uses verified credentials when running supplyData', async () => {
+			const schema = { type: 'object', properties: { query: { type: 'string' } } };
+			let observedCredentials: Record<string, INodeCredentialsDetails> | undefined;
+			const supplyData = vi.fn(function (this: ISupplyDataFunctions) {
+				observedCredentials = this.getNode().credentials;
+				return { response: { invoke: vi.fn(), schema } };
+			});
+			nodeTypes.getByNameAndVersion.mockReturnValue(
+				mockNodeType({ description: toolDescription, supplyData }),
+			);
+			credentialsRepository.findCredentialsUsableInProject.mockResolvedValue([
+				mock<CredentialsEntity>({
+					id: 'c1',
+					name: 'Prod Slack',
+					type: 'slackApi',
+				}),
+			]);
+
+			const result = await executor.introspectSupplyDataToolSchema({
+				projectId: 'p-1',
+				nodeType: '@n8n/n8n-nodes-langchain.toolWikipedia',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				credentials: {
+					slackApi: { id: 'c1', name: 'Prod Slack', __aiGatewayManaged: false },
+				},
+			});
+
+			expect(supplyData).toHaveBeenCalledTimes(1);
+			expect(observedCredentials).toEqual({
+				slackApi: { id: 'c1', name: 'Prod Slack' },
+			});
+			expect(result).toBe(schema);
+		});
+
+		it('returns null when the tool has no structured schema (base Tool/DynamicTool)', async () => {
+			const dynamicTool = new DynamicTool({
+				name: 'thinking_tool',
+				description: 'Think about something',
+				func: async (input) => input,
+			});
+			nodeTypes.getByNameAndVersion.mockReturnValue(
+				mockNodeType({
 					description: toolDescription,
-					supplyData: jest.fn().mockResolvedValue({
-						response: { invoke: jest.fn() },
+					supplyData: vi.fn().mockResolvedValue({
+						response: dynamicTool,
 					}),
 				}),
 			);
@@ -576,9 +1155,9 @@ describe('EphemeralNodeExecutor', () => {
 				mock<StructuredToolkit['tools'][number]>({ name: 'list-docs' }),
 			]);
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({
 					description: toolDescription,
-					supplyData: jest.fn().mockResolvedValue({ response: toolkit }),
+					supplyData: vi.fn().mockResolvedValue({ response: toolkit }),
 				}),
 			);
 
@@ -594,9 +1173,9 @@ describe('EphemeralNodeExecutor', () => {
 
 		it('swallows introspection errors and returns null (keeps tool registration robust)', async () => {
 			nodeTypes.getByNameAndVersion.mockReturnValue(
-				mock<INodeType>({
+				mockNodeType({
 					description: toolDescription,
-					supplyData: jest.fn().mockRejectedValue(new Error('MCP server unreachable')),
+					supplyData: vi.fn().mockRejectedValue(new Error('MCP server unreachable')),
 				}),
 			);
 
@@ -616,5 +1195,157 @@ describe('EphemeralNodeExecutor', () => {
 				expect.objectContaining({ error: 'MCP server unreachable' }),
 			);
 		});
+	});
+
+	describe('executeInline → eval instrumentation', () => {
+		it('applies the additionalData decoration and node name override when set', async () => {
+			let executedNodeName: string | undefined;
+			const execute = vi.fn().mockImplementation(async function (this: {
+				getNode(): { name: string };
+			}) {
+				executedNodeName = this.getNode().name;
+				return [[{ json: { ok: true } }]];
+			});
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+				execute,
+			} as unknown as INodeType);
+
+			const base: Record<string, unknown> = { credentialsHelper: {} };
+			mockGetBase.mockResolvedValue(base);
+			const configureAdditionalData = vi.fn((additionalData: Record<string, unknown>) => {
+				additionalData.evalLlmMockHandler = vi.fn();
+			});
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.slack',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				inputData: [],
+				projectId: 'p-1',
+				nodeName: 'Slack_Tool',
+				configureAdditionalData: configureAdditionalData as unknown as (
+					additionalData: IWorkflowExecuteAdditionalData,
+				) => void,
+			});
+
+			expect(result.status).toBe('success');
+			expect(configureAdditionalData).toHaveBeenCalledTimes(1);
+			expect(configureAdditionalData).toHaveBeenCalledWith(base);
+			expect(base.evalLlmMockHandler).toBeDefined();
+			expect(executedNodeName).toBe('Slack_Tool');
+		});
+
+		it('keeps the default node name and untouched additionalData when unset', async () => {
+			let executedNodeName: string | undefined;
+			const execute = vi.fn().mockImplementation(async function (this: {
+				getNode(): { name: string };
+			}) {
+				executedNodeName = this.getNode().name;
+				return [[{ json: {} }]];
+			});
+			nodeTypes.getByNameAndVersion.mockReturnValue({
+				description: toolDescription,
+				execute,
+			} as unknown as INodeType);
+
+			const base: Record<string, unknown> = {};
+			mockGetBase.mockResolvedValue(base);
+
+			const result = await executor.executeInline({
+				nodeType: 'n8n-nodes-base.slack',
+				nodeTypeVersion: 1,
+				nodeParameters: {},
+				inputData: [],
+				projectId: 'p-1',
+			});
+
+			expect(result.status).toBe('success');
+			expect(executedNodeName).toBe('Target Node');
+			expect(base.evalLlmMockHandler).toBeUndefined();
+		});
+	});
+
+	it('resolves expressions in standalone tool contexts with the VM engine', async () => {
+		await Expression.initExpressionEngine({
+			engine: 'vm',
+			bridgeTimeout: 1000,
+			bridgeMemoryLimit: 128,
+			poolSize: 1,
+			maxCodeCacheSize: 10,
+		});
+
+		try {
+			nodeTypes.getByNameAndVersion.mockReturnValue(
+				mockNodeType({
+					description: {
+						...toolDescription,
+						properties: [
+							{
+								displayName: 'Value',
+								name: 'value',
+								type: 'string',
+								default: '',
+							},
+						],
+					},
+					async supplyData(this: ISupplyDataFunctions) {
+						const resolvedValue = this.getNodeParameter('value', 0);
+						return {
+							response: {
+								invoke: async () => resolvedValue,
+							},
+						};
+					},
+				}),
+			);
+
+			const result = await executor.executeInline({
+				nodeType: '@n8n/n8n-nodes-langchain.toolHttpRequest',
+				nodeTypeVersion: 1,
+				nodeParameters: { value: '={{ 1 + 1 }}' },
+				inputData: [{ json: {} }],
+				projectId: 'p-1',
+			});
+
+			expect(result).toEqual({
+				status: 'success',
+				data: [{ json: { response: 2 } }],
+			});
+
+			mockGetBase.mockResolvedValue({ variables: { increment: '3' } });
+			const tool = {
+				nodeType: '@n8n/n8n-nodes-langchain.toolWorkflow',
+				nodeTypeVersion: 2.2,
+				nodeParameters: {},
+				projectId: 'p-1',
+			};
+			await expect(
+				executor.evaluateExpressions(
+					tool,
+					{
+						count: '={{ $json.count + Number($vars.increment) }}',
+						options: '={{ { enabled: true, items: [1, 2] } }}',
+						date: '={{ $now.toISODate() }}',
+					},
+					[{ json: { count: 4 } }],
+				),
+			).resolves.toEqual({
+				count: 7,
+				options: { enabled: true, items: [1, 2] },
+				date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+			});
+			await expect(
+				executor.evaluateExpressions(tool, { broken: '={{ 1 + }}' }, []),
+			).rejects.toThrow('Cannot resolve input "broken"');
+			// A failed expression must release the single isolate for the next call.
+			await expect(
+				executor.evaluateExpressions(tool, { count: '={{ $json.count }}' }, [
+					{ json: { count: 9 } },
+				]),
+			).resolves.toEqual({ count: 9 });
+		} finally {
+			await Expression.disposeExpressionEngine();
+		}
 	});
 });

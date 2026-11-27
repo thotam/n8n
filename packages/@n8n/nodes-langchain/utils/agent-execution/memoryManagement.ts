@@ -55,7 +55,11 @@ export function extractToolCallId(
 
 /**
  * Converts ToolCallData array into LangChain message sequence.
- * Creates alternating AIMessage (with tool_calls) and ToolMessage pairs.
+ * For sequential tool calls this produces alternating AIMessage (with tool_calls)
+ * and ToolMessage pairs. For parallel tool calls, the shared AIMessage is emitted
+ * once for the batch followed by one ToolMessage per call
+ * (e.g. [AIMessage, ToolMessage, ToolMessage, …]), to avoid splitting a single
+ * model turn into several consecutive AI messages.
  *
  * @param steps - Array of tool call data with actions and observations
  * @returns Array of BaseMessage objects (AIMessage and ToolMessage pairs)
@@ -88,31 +92,37 @@ export function buildMessagesFromSteps(steps: ToolCallData[]): BaseMessage[] {
 		const toolCallId =
 			existingToolCallId ?? extractToolCallId(step.action.toolCallId, step.action.tool);
 
-		// Use existing AIMessage or create a synthetic one
-		const aiMessage =
-			existingAIMessage ??
-			new AIMessage({
-				content: `Calling ${step.action.tool} with input: ${JSON.stringify(step.action.toolInput)}`,
-				tool_calls: [
-					{
-						id: toolCallId,
-						name: step.action.tool,
-						args: step.action.toolInput,
-						type: 'tool_call',
-					},
-				],
-			});
+		// Parallel tool calls share one AIMessage on the first step (with all tool_calls)
+		// and leave an empty messageLog on the rest. Emit the AIMessage when present;
+		// continuation steps (empty messageLog, i > 0) get only a ToolMessage to avoid
+		// splitting one model turn into several consecutive AI messages. Synthesize an
+		// AIMessage only for a first step lacking one, so its ToolMessage isn't orphaned.
+		if (existingAIMessage) {
+			messages.push(existingAIMessage);
+		} else if (i === 0) {
+			messages.push(
+				new AIMessage({
+					content: `Calling ${step.action.tool} with input: ${JSON.stringify(step.action.toolInput)}`,
+					tool_calls: [
+						{
+							id: toolCallId,
+							name: step.action.tool,
+							args: step.action.toolInput,
+							type: 'tool_call',
+						},
+					],
+				}),
+			);
+		}
 
 		// Create ToolMessage with the observation result
-		const toolMessage = new ToolMessage({
-			content: step.observation,
-			tool_call_id: toolCallId,
-			name: step.action.tool,
-		});
-
-		// Add both messages
-		messages.push(aiMessage);
-		messages.push(toolMessage);
+		messages.push(
+			new ToolMessage({
+				content: step.observation,
+				tool_call_id: toolCallId,
+				name: step.action.tool,
+			}),
+		);
 	}
 
 	return messages;
@@ -145,39 +155,119 @@ export function buildToolContext(steps: ToolCallData[]): string {
 }
 
 /**
- * Removes orphaned ToolMessages and AIMessages with tool_calls from the start of chat history.
+ * Removes orphaned ToolMessages and AIMessages with tool_calls from the start and end of chat history.
  * This happens when memory trimming cuts messages mid-turn, leaving incomplete tool call sequences.
  *
  * @param chatHistory - Array of messages to clean up
- * @returns Cleaned array with orphaned messages removed from the start
+ * @returns Cleaned array with orphaned messages removed from both ends
  */
-function cleanupOrphanedMessages(chatHistory: BaseMessage[]): BaseMessage[] {
+export function cleanupOrphanedMessages(chatHistory: BaseMessage[]): BaseMessage[] {
+	const result = [...chatHistory];
+
+	// Clean up orphaned messages from the start
 	let changed = true;
-	while (changed && chatHistory.length > 0) {
+	while (changed && result.length > 0) {
 		changed = false;
 
 		// Remove orphaned ToolMessages at the start
-		while (chatHistory.length > 0 && chatHistory[0] instanceof ToolMessage) {
-			chatHistory.shift();
+		while (result.length > 0 && result[0] instanceof ToolMessage) {
+			result.shift();
 			changed = true;
 		}
 
 		// Remove AIMessages with tool_calls if they don't have following ToolMessages
-		if (chatHistory.length > 0) {
-			const firstMessage = chatHistory[0];
+		if (result.length > 0) {
+			const firstMessage = result[0];
 			const hasOrphanedAIMessage =
 				firstMessage instanceof AIMessage &&
 				(firstMessage.tool_calls?.length ?? 0) > 0 &&
-				!(chatHistory[1] instanceof ToolMessage);
+				!(result[1] instanceof ToolMessage);
 
 			if (hasOrphanedAIMessage) {
-				chatHistory.shift();
+				result.shift();
 				changed = true;
 			}
 		}
 	}
 
-	return chatHistory;
+	// Clean up orphaned messages from the end
+	changed = true;
+	while (changed && result.length > 0) {
+		changed = false;
+		const lastIdx = result.length - 1;
+		const lastMessage = result[lastIdx];
+
+		if (lastMessage instanceof ToolMessage) {
+			// Scan backwards past all consecutive trailing ToolMessages
+			let precedingIdx = lastIdx - 1;
+			while (precedingIdx >= 0 && result[precedingIdx] instanceof ToolMessage) {
+				precedingIdx--;
+			}
+			// The ToolMessage group is orphaned if not preceded by an AIMessage with tool_calls
+			const precedingMessage = precedingIdx >= 0 ? result[precedingIdx] : undefined;
+			const isPaired =
+				precedingMessage instanceof AIMessage && (precedingMessage.tool_calls?.length ?? 0) > 0;
+			if (!isPaired) {
+				result.pop();
+				changed = true;
+			}
+		} else if (lastMessage instanceof AIMessage && (lastMessage.tool_calls?.length ?? 0) > 0) {
+			// An AIMessage with tool_calls at the end is orphaned (no ToolMessage follows)
+			result.pop();
+			changed = true;
+		}
+	}
+
+	return result;
+}
+
+// A custom memory can return items that are not BaseMessage. Items without getType() stay as they are.
+function messageType(message: BaseMessage): string | undefined {
+	return typeof message?.getType === 'function' ? message.getType() : undefined;
+}
+
+function hasEmptyContent(message: BaseMessage): boolean {
+	const type = messageType(message);
+	if (type !== 'human' && type !== 'ai') return false;
+	// An AI message that only carries tool calls has no text by design
+	if ('tool_calls' in message && Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+		return false;
+
+	const { content } = message;
+	if (typeof content === 'string') return content.trim() === '';
+	if (!Array.isArray(content)) return true;
+	return !content.some(
+		(block) =>
+			block?.type !== 'text' || (typeof block.text === 'string' && block.text.trim() !== ''),
+	);
+}
+
+/**
+ * Removes every turn (a human message and all messages up to the next human message)
+ * that has a human or AI message without content. Providers such as Anthropic reject
+ * empty messages. A stored message has empty content when its row has a shape that the
+ * memory store does not expect, for example `{ type, data: { content } }` from another writer.
+ * Removing the full turn keeps the role order and the tool call pairs valid.
+ * System messages are not part of a turn and are always kept.
+ */
+export function removeEmptyTurns(chatHistory: BaseMessage[]): BaseMessage[] {
+	if (!chatHistory.some(hasEmptyContent)) return chatHistory;
+
+	const result: BaseMessage[] = [];
+	let turn: BaseMessage[] = [];
+	const flush = () => {
+		const keep = turn.some(hasEmptyContent)
+			? turn.filter((message) => messageType(message) === 'system')
+			: turn;
+		result.push(...keep);
+		turn = [];
+	};
+	for (const message of chatHistory) {
+		if (messageType(message) === 'human') flush();
+		turn.push(message);
+	}
+	flush();
+	return result;
 }
 
 /**
@@ -209,6 +299,8 @@ export async function loadMemory(
 	const memoryVariables = await memory.loadMemoryVariables({});
 	let chatHistory = (memoryVariables['chat_history'] as BaseMessage[]) || [];
 
+	chatHistory = removeEmptyTurns(chatHistory);
+
 	// Clean up any orphaned messages from previous trimming operations
 	chatHistory = cleanupOrphanedMessages(chatHistory);
 
@@ -238,8 +330,8 @@ export async function loadMemory(
  * @param input - The user input/prompt
  * @param output - The agent's output/response
  * @param memory - The memory instance to save to
- * @param steps - Optional tool call data to save as proper message sequence
- * @param previousStepsCount - Number of steps from previous turns (to filter out duplicates)
+ * @param steps - Optional tool call data of every round of the turn. Memory is written once,
+ *   at the end of the turn, so all steps are new and saved.
  *
  * @example
  * ```typescript
@@ -247,7 +339,7 @@ export async function loadMemory(
  * await saveToMemory('What is 2+2?', 'The answer is 4', memory);
  *
  * // With tool calls (saves full message sequence)
- * await saveToMemory('Calculate 2+2', 'The answer is 4', memory, steps, 0);
+ * await saveToMemory('Calculate 2+2', 'The answer is 4', memory, steps);
  * ```
  */
 export async function saveToMemory(
@@ -255,7 +347,6 @@ export async function saveToMemory(
 	output: string,
 	memory?: BaseChatMemory,
 	steps?: ToolCallData[],
-	previousStepsCount?: number,
 ): Promise<void> {
 	if (!output || !memory) {
 		return;
@@ -267,21 +358,13 @@ export async function saveToMemory(
 		return;
 	}
 
-	// Filter out previous steps to avoid duplicates (they're already in memory)
-	const newSteps = previousStepsCount ? steps.slice(previousStepsCount) : steps;
-
-	if (newSteps.length === 0) {
-		await memory.saveContext({ input }, { output });
-		return;
-	}
-
 	// Check if memory supports addMessages (feature detection)
 	if (
 		!('addMessages' in memory.chatHistory) ||
 		typeof memory.chatHistory.addMessages !== 'function'
 	) {
-		// Fallback: use old string format (only with new steps to avoid duplicates)
-		const toolContext = buildToolContext(newSteps);
+		// Fallback: use old string format
+		const toolContext = buildToolContext(steps);
 		const fullOutput = `[Used tools: ${toolContext}] ${output}`;
 		await memory.saveContext({ input }, { output: fullOutput });
 		return;
@@ -294,7 +377,7 @@ export async function saveToMemory(
 	messages.push(new HumanMessage(input));
 
 	// 2. Tool call sequence (AIMessage with tool_calls → ToolMessage for each)
-	const toolMessages = buildMessagesFromSteps(newSteps);
+	const toolMessages = buildMessagesFromSteps(steps);
 	messages.push.apply(messages, toolMessages);
 
 	// 3. Final AI response (no tool_calls)

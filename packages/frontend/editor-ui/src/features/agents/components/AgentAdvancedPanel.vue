@@ -1,246 +1,473 @@
 <script setup lang="ts">
-/**
- * Behavior panel — execution-behavior knobs that used to live in the old
- * AgentOverviewPanel: reasoning depth (provider-gated) and tool-call
- * concurrency.
- *
- * Thinking is always visible as a toggle but disabled (with a tooltip) when
- * the selected provider doesn't support it. The sub-control differs by
- * provider: Anthropic takes a `budgetTokens` number, OpenAI takes a
- * `reasoningEffort` low/medium/high select.
- */
+/** Advanced settings for memory and execution behavior. */
 import { ref, computed, watch } from 'vue';
 import { useDebounceFn } from '@vueuse/core';
 import {
-	N8nCollapsiblePanel,
-	N8nInput,
-	N8nSelect,
-	N8nSwitch2,
-	N8nText,
-	N8nTooltip,
-} from '@n8n/design-system';
-import N8nOption from '@n8n/design-system/components/N8nOption';
+	AGENT_REASONING_LEVELS,
+	getModelPromptCachingCapability,
+	resolveAgentSandboxEgressEnabled,
+	type AgentReasoningLevel,
+} from '@n8n/api-types';
+import { N8nInputNumber, N8nOption, N8nSelect, N8nSwitch2, N8nText } from '@n8n/design-system';
 import { useI18n } from '@n8n/i18n';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import AgentMemoryModelSetting from './AgentMemoryModelSetting.vue';
+import AgentPanel from './AgentPanel.vue';
 
+import { useModelCatalog } from '../composables/useModelCatalog';
 import type { AgentJsonConfig } from '../types';
-import {
-	PROVIDER_CAPABILITIES,
-	REASONING_EFFORT_OPTIONS,
-	type ReasoningEffort,
-} from '../provider-capabilities';
-import { parseProvider } from '../utils/model-string';
+import { ANTHROPIC_CACHE_TTL_OPTIONS, type AnthropicCacheTtl } from '../provider-capabilities';
+import { modelToString, parseModelString } from '../utils/model-string';
+import shared from '../styles/agent-panel.module.scss';
 
 const i18n = useI18n();
+const settingsStore = useSettingsStore();
+const { catalog, ensureLoaded } = useModelCatalog();
+
+function normalizeReasoningLevel(value: unknown): AgentReasoningLevel {
+	return AGENT_REASONING_LEVELS.find((level) => level === value) ?? 'medium';
+}
 
 const props = withDefaults(
-	defineProps<{ config: AgentJsonConfig | null; disabled?: boolean; collapsible?: boolean }>(),
+	defineProps<{
+		config: AgentJsonConfig | null;
+		disabled?: boolean;
+		projectId?: string;
+	}>(),
 	{
 		disabled: false,
-		collapsible: false,
 	},
 );
 const emit = defineEmits<{ 'update:config': [changes: Partial<AgentJsonConfig>] }>();
 
-const isExpanded = ref(!props.collapsible);
-
-const provider = computed(() => parseProvider(props.config?.model));
-const capabilities = computed(
-	() => PROVIDER_CAPABILITIES[provider.value] ?? { thinking: false as const },
+const selectedModel = computed(() => parseModelString(modelToString(props.config?.model)));
+const selectedCatalogModel = computed(() => {
+	if (!selectedModel.value) return undefined;
+	return catalog.value[selectedModel.value.provider]?.models[selectedModel.value.name];
+});
+const isReasoningUnavailable = computed(
+	() => !selectedModel.value || selectedCatalogModel.value?.reasoning === false,
+);
+const reasoningHintKey = computed(() => {
+	if (!selectedModel.value) return 'agents.builder.advanced.reasoning.noModelHint';
+	if (selectedCatalogModel.value?.reasoning === false) {
+		return 'agents.builder.advanced.reasoning.unsupportedHint';
+	}
+	return 'agents.builder.advanced.reasoning.hint';
+});
+const promptCachingCapability = computed(() =>
+	getModelPromptCachingCapability(modelToString(props.config?.model)),
 );
 
-const thinkingCfg = computed(() => props.config?.config?.thinking ?? null);
-const thinkingEnabled = ref(thinkingCfg.value !== null);
-const budgetTokens = ref(thinkingCfg.value?.budgetTokens ?? 1024);
-const reasoningEffort = ref<ReasoningEffort>(
-	(thinkingCfg.value?.reasoningEffort as ReasoningEffort) ?? 'medium',
+watch(
+	() => props.projectId,
+	(projectId) => {
+		if (projectId) void ensureLoaded(projectId);
+	},
+	{ immediate: true },
 );
-const toolCallConcurrency = ref(props.config?.config?.toolCallConcurrency ?? 1);
+
+// ---------------------------------------------------------------------------
+// Generic helper for numeric config fields
+// ---------------------------------------------------------------------------
+
+type ConfigObj = NonNullable<AgentJsonConfig['config']>;
+
+/** Keys of the config object whose value type is `number | undefined`. */
+type NumberConfigKey = keyof {
+	[K in keyof ConfigObj as ConfigObj[K] extends number | undefined ? K : never]: unknown;
+};
+
+type NumberFieldOptions =
+	| number
+	| {
+			displayDefault: number;
+	  };
+
+/**
+ * Creates a ref, debounced config-emit, change handler, and watch-sync
+ * function for one numeric field inside `config`. Designed for N8nInputNumber
+ * which emits numbers directly (NaN when the field is cleared).
+ *
+ * Pass a number for fields that always persist their fallback (e.g. concurrency).
+ * Pass `{ displayDefault }` for optional fields that show a runtime default in
+ * the UI but omit the key from saved config when cleared.
+ */
+function makeNumberField(key: NumberConfigKey, options: NumberFieldOptions) {
+	const displayDefault = typeof options === 'number' ? options : options.displayDefault;
+	const persistFallback = typeof options === 'number';
+
+	const resolveDisplay = (cfg: AgentJsonConfig | null) => cfg?.config?.[key] ?? displayDefault;
+
+	const value = ref(resolveDisplay(props.config));
+
+	const debouncedEmit = useDebounceFn(() => {
+		const cfg = { ...(props.config?.config ?? {}) };
+		if (value.value === undefined) {
+			delete (cfg as Partial<ConfigObj>)[key];
+		} else {
+			(cfg as ConfigObj)[key] = value.value;
+		}
+		emit('update:config', { config: cfg });
+	}, 500);
+
+	const emitConfig = (nextValue: number | undefined) => {
+		const cfg = { ...(props.config?.config ?? {}) };
+		if (nextValue === undefined) {
+			delete (cfg as Partial<ConfigObj>)[key];
+		} else {
+			(cfg as ConfigObj)[key] = nextValue;
+		}
+		emit('update:config', { config: cfg });
+	};
+
+	return {
+		modelValue: value,
+		onChange(n: number) {
+			if (persistFallback) {
+				value.value = isNaN(n) ? displayDefault : n;
+				void debouncedEmit();
+				return;
+			}
+
+			if (isNaN(n)) {
+				value.value = displayDefault;
+				emitConfig(undefined);
+				return;
+			}
+
+			value.value = n;
+			emitConfig(n);
+		},
+		sync(cfg: AgentJsonConfig | null) {
+			value.value = resolveDisplay(cfg);
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Numeric config fields — add new ones here
+// ---------------------------------------------------------------------------
+
+const CONCURRENCY_MIN = 1;
+const CONCURRENCY_MAX = 100;
+const CONCURRENCY_DEFAULT = 1;
+const MAX_ITERATIONS_MIN = 1;
+const MAX_ITERATIONS_MAX = 200;
+const MAX_ITERATIONS_DEFAULT = 100;
+const PROMPT_CACHING_TTL_DEFAULT: AnthropicCacheTtl = '1h';
+
+const {
+	modelValue: concurrencyModelValue,
+	onChange: onConcurrencyChange,
+	sync: syncConcurrency,
+} = makeNumberField('toolCallConcurrency', CONCURRENCY_DEFAULT);
+
+const {
+	modelValue: maxIterationsModelValue,
+	onChange: onMaxIterationsChange,
+	sync: syncMaxIterations,
+} = makeNumberField('maxIterations', { displayDefault: MAX_ITERATIONS_DEFAULT });
+
+// ---------------------------------------------------------------------------
+// Reasoning
+// ---------------------------------------------------------------------------
+
+const reasoningEnabled = ref(props.config?.config?.reasoning !== undefined);
+const reasoningLevel = ref<AgentReasoningLevel>(
+	normalizeReasoningLevel(props.config?.config?.reasoning),
+);
+
+function anthropicTtlFrom(cfg: AgentJsonConfig | null): AnthropicCacheTtl {
+	return cfg?.config?.promptCaching?.anthropic?.ttl ?? PROMPT_CACHING_TTL_DEFAULT;
+}
+
+const anthropicTtl = ref<AnthropicCacheTtl>(anthropicTtlFrom(props.config));
+// Caching is on by default for supported models; only an explicit `enabled: false` turns it off.
+const promptCachingEnabled = computed(() => props.config?.config?.promptCaching?.enabled !== false);
 
 watch(
 	() => props.config,
-	(cfg) => {
-		if (!cfg) return;
-		const t = cfg.config?.thinking ?? null;
-		thinkingEnabled.value = t !== null;
-		budgetTokens.value = t?.budgetTokens ?? 1024;
-		reasoningEffort.value = (t?.reasoningEffort as ReasoningEffort) ?? 'medium';
-		toolCallConcurrency.value = cfg.config?.toolCallConcurrency ?? 1;
+	(config) => {
+		if (!config) return;
+		reasoningEnabled.value = config.config?.reasoning !== undefined;
+		reasoningLevel.value = normalizeReasoningLevel(config.config?.reasoning);
+		anthropicTtl.value = anthropicTtlFrom(config);
+		syncConcurrency(config);
+		syncMaxIterations(config);
 	},
 	{ deep: true },
 );
 
-function emitThinking() {
-	const cap = capabilities.value.thinking;
-	if (!cap) return;
-	const thinking =
-		cap === 'budgetTokens'
-			? { provider: 'anthropic' as const, budgetTokens: budgetTokens.value }
-			: { provider: 'openai' as const, reasoningEffort: reasoningEffort.value };
-	emit('update:config', { config: { ...props.config?.config, thinking } });
+function emitReasoning() {
+	emit('update:config', {
+		config: { ...props.config?.config, reasoning: reasoningLevel.value },
+	});
 }
 
-function onThinkingToggle(value: boolean) {
-	if (!capabilities.value.thinking) return;
-	thinkingEnabled.value = value;
+function onReasoningToggle(value: boolean) {
+	reasoningEnabled.value = value;
 	if (!value) {
 		const rest = { ...(props.config?.config ?? {}) };
-		delete rest.thinking;
+		delete rest.reasoning;
 		emit('update:config', { config: rest });
 		return;
 	}
-	emitThinking();
+	emitReasoning();
 }
 
-const emitBudget = useDebounceFn(emitThinking, 500);
-function onBudgetInput(value: string) {
-	const n = Number(value);
-	if (!Number.isFinite(n) || n < 1) return;
-	budgetTokens.value = n;
-	void emitBudget();
+function onReasoningLevelChange(value: AgentReasoningLevel) {
+	reasoningLevel.value = value;
+	emitReasoning();
 }
 
-function onReasoningEffortChange(value: ReasoningEffort) {
-	reasoningEffort.value = value;
-	emitThinking();
-}
-
-const emitConcurrency = useDebounceFn(() => {
+function emitPromptCaching(enabled: boolean) {
+	const ttl = props.config?.config?.promptCaching?.anthropic?.ttl;
 	emit('update:config', {
-		config: { ...props.config?.config, toolCallConcurrency: toolCallConcurrency.value },
+		config: {
+			...props.config?.config,
+			promptCaching: { enabled, ...(ttl ? { anthropic: { ttl } } : {}) },
+		},
 	});
-}, 500);
-function onConcurrencyInput(value: string) {
-	const n = Number(value);
-	if (!Number.isFinite(n) || n < 1) return;
-	toolCallConcurrency.value = n;
-	void emitConcurrency();
 }
 
-const thinkingDisabledReason = computed(() =>
-	capabilities.value.thinking
-		? ''
-		: i18n.baseText('agents.builder.advanced.thinking.unsupportedTooltip', {
-				interpolate: {
-					provider:
-						provider.value ||
-						i18n.baseText('agents.builder.advanced.thinking.unsupportedProviderFallback'),
-				},
-			}),
+function onAnthropicTtlChange(value: AnthropicCacheTtl) {
+	anthropicTtl.value = value;
+	emit('update:config', {
+		config: {
+			...props.config?.config,
+			promptCaching: { enabled: true, anthropic: { ttl: value } },
+		},
+	});
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox internet access
+// ---------------------------------------------------------------------------
+
+const isSandboxEnabled = computed(
+	() => settingsStore.moduleSettings.agents?.sandboxEnabled === true,
 );
+const sandboxEgressPolicy = computed(
+	() => settingsStore.moduleSettings.agents?.sandboxEgressPolicy ?? 'opt-in',
+);
+const isSandboxEgressLockedByInstance = computed(() => sandboxEgressPolicy.value === 'disabled');
+const sandboxEgressEnabled = computed(() =>
+	resolveAgentSandboxEgressEnabled(sandboxEgressPolicy.value, props.config?.config?.sandboxEgress),
+);
+const sandboxEgressHintKey = computed(() =>
+	isSandboxEgressLockedByInstance.value
+		? 'agents.builder.advanced.sandboxEgress.disabledHint'
+		: 'agents.builder.advanced.sandboxEgress.hint',
+);
+
+function onSandboxEgressToggle(enabled: boolean) {
+	if (isSandboxEgressLockedByInstance.value) return;
+	emit('update:config', {
+		config: {
+			...props.config?.config,
+			sandboxEgress: enabled,
+		},
+	});
+}
 </script>
 
 <template>
-	<N8nCollapsiblePanel
-		v-model="isExpanded"
-		:class="$style.panel"
-		:disabled="!props.collapsible"
-		data-testid="agent-behavior-panel"
-	>
-		<template #title>
-			<N8nText tag="h3" :bold="true">{{ i18n.baseText('agents.builder.advanced.title') }}</N8nText>
-		</template>
-		<div :class="$style.content">
-			<div :class="$style.row">
-				<div :class="$style.rowLabel">
-					<N8nText size="small" :bold="true">{{
-						i18n.baseText('agents.builder.advanced.thinking.label')
-					}}</N8nText>
-					<N8nText size="xsmall" color="text-light">
-						{{ i18n.baseText('agents.builder.advanced.thinking.hint') }}
-					</N8nText>
+	<div :class="$style.panels" data-testid="agent-behavior-panel">
+		<AgentPanel
+			:header="i18n.baseText('agents.builder.advanced.title')"
+			:description="i18n.baseText('agents.builder.advanced.description')"
+		>
+			<div :class="$style.content">
+				<AgentMemoryModelSetting
+					:config="props.config"
+					:disabled="props.disabled"
+					:project-id="props.projectId"
+					@update:config="emit('update:config', $event)"
+				/>
+
+				<div :class="$style.settingGroup">
+					<div :class="shared.settingRow">
+						<div :class="shared.settingLabel">
+							<N8nText step="sm" bold :class="shared.dataEntryLabel">{{
+								i18n.baseText('agents.builder.advanced.reasoning.label')
+							}}</N8nText>
+							<N8nText
+								size="small"
+								:class="shared.dataEntrySubLabel"
+								data-testid="agent-reasoning-hint"
+							>
+								{{ i18n.baseText(reasoningHintKey) }}
+							</N8nText>
+						</div>
+						<N8nSwitch2
+							:model-value="reasoningEnabled"
+							:disabled="props.disabled || isReasoningUnavailable"
+							:class="[$style.switchControl, shared.settingControl]"
+							data-testid="agent-reasoning-toggle"
+							@update:model-value="(v) => onReasoningToggle(Boolean(v))"
+						/>
+					</div>
+
+					<div
+						v-if="reasoningEnabled"
+						:class="$style.subSettings"
+						data-testid="agent-reasoning-settings"
+					>
+						<div :class="shared.settingRow">
+							<div :class="shared.settingLabel">
+								<N8nText step="sm" bold :class="shared.dataEntryLabel">{{
+									i18n.baseText('agents.builder.advanced.reasoningEffort.label')
+								}}</N8nText>
+							</div>
+							<N8nSelect
+								:model-value="reasoningLevel"
+								size="small"
+								:disabled="props.disabled || isReasoningUnavailable"
+								:class="shared.settingControlShort"
+								data-testid="agent-reasoning-effort-select"
+								@update:model-value="onReasoningLevelChange"
+							>
+								<N8nOption
+									v-for="opt in AGENT_REASONING_LEVELS"
+									:key="opt"
+									:value="opt"
+									:label="opt"
+								/>
+							</N8nSelect>
+						</div>
+					</div>
 				</div>
-				<N8nTooltip
-					:content="thinkingDisabledReason"
-					:disabled="!!capabilities.thinking"
-					placement="top"
-				>
-					<N8nSwitch2
-						:model-value="thinkingEnabled"
-						:disabled="!capabilities.thinking || props.disabled"
-						data-testid="agent-thinking-toggle"
-						@update:model-value="(v) => onThinkingToggle(Boolean(v))"
+
+				<div v-if="promptCachingCapability" :class="$style.settingGroup">
+					<div :class="shared.settingRow">
+						<div :class="shared.settingLabel">
+							<N8nText step="sm" bold :class="shared.dataEntryLabel">{{
+								i18n.baseText('agents.builder.advanced.promptCaching.label')
+							}}</N8nText>
+							<N8nText size="small" :class="shared.dataEntrySubLabel">
+								{{ i18n.baseText('agents.builder.advanced.promptCaching.hint') }}
+							</N8nText>
+						</div>
+						<N8nSwitch2
+							:model-value="promptCachingEnabled"
+							:disabled="props.disabled"
+							:class="[$style.switchControl, shared.settingControl]"
+							data-testid="agent-prompt-caching-toggle"
+							data-attr="agent-prompt-caching-toggle"
+							@update:model-value="(v) => emitPromptCaching(Boolean(v))"
+						/>
+					</div>
+
+					<div
+						v-if="promptCachingEnabled && promptCachingCapability === 'ttl'"
+						:class="$style.subSettings"
+					>
+						<div :class="shared.settingRow">
+							<div :class="shared.settingLabel">
+								<N8nText step="sm" bold :class="shared.dataEntryLabel">{{
+									i18n.baseText('agents.builder.advanced.promptCachingTtl.label')
+								}}</N8nText>
+							</div>
+							<N8nSelect
+								:model-value="anthropicTtl"
+								size="small"
+								:disabled="props.disabled"
+								:class="shared.settingControlShort"
+								data-testid="agent-prompt-caching-ttl-select"
+								@update:model-value="(v) => onAnthropicTtlChange(v as AnthropicCacheTtl)"
+							>
+								<N8nOption
+									v-for="opt in ANTHROPIC_CACHE_TTL_OPTIONS"
+									:key="opt"
+									:value="opt"
+									:label="opt"
+								/>
+							</N8nSelect>
+						</div>
+					</div>
+				</div>
+
+				<div :class="shared.settingRow">
+					<div :class="shared.settingLabel">
+						<N8nText step="sm" bold :class="shared.dataEntryLabel">{{
+							i18n.baseText('agents.builder.advanced.concurrency.label')
+						}}</N8nText>
+						<N8nText size="small" :class="shared.dataEntrySubLabel">
+							{{ i18n.baseText('agents.builder.advanced.concurrency.hint') }}
+						</N8nText>
+					</div>
+					<N8nInputNumber
+						:model-value="concurrencyModelValue"
+						:min="CONCURRENCY_MIN"
+						:max="CONCURRENCY_MAX"
+						:precision="0"
+						:controls="false"
+						:disabled="props.disabled"
+						:class="shared.settingControlShort"
+						data-testid="agent-concurrency-input"
+						@update:model-value="onConcurrencyChange"
 					/>
-				</N8nTooltip>
-			</div>
-
-			<div v-if="thinkingEnabled && capabilities.thinking === 'budgetTokens'" :class="$style.row">
-				<N8nText size="small" :bold="true">{{
-					i18n.baseText('agents.builder.advanced.budgetTokens.label')
-				}}</N8nText>
-				<N8nInput
-					type="number"
-					:model-value="String(budgetTokens)"
-					:disabled="props.disabled"
-					:class="$style.shortInput"
-					data-testid="agent-budget-tokens-input"
-					@update:model-value="onBudgetInput"
-				/>
-			</div>
-
-			<div
-				v-if="thinkingEnabled && capabilities.thinking === 'reasoningEffort'"
-				:class="$style.row"
-			>
-				<N8nText size="small" :bold="true">{{
-					i18n.baseText('agents.builder.advanced.reasoningEffort.label')
-				}}</N8nText>
-				<N8nSelect
-					:model-value="reasoningEffort"
-					size="small"
-					:disabled="props.disabled"
-					:class="$style.shortInput"
-					data-testid="agent-reasoning-effort-select"
-					@update:model-value="onReasoningEffortChange"
-				>
-					<N8nOption v-for="opt in REASONING_EFFORT_OPTIONS" :key="opt" :value="opt" :label="opt" />
-				</N8nSelect>
-			</div>
-
-			<div :class="$style.row">
-				<div :class="$style.rowLabel">
-					<N8nText size="small" :bold="true">{{
-						i18n.baseText('agents.builder.advanced.concurrency.label')
-					}}</N8nText>
-					<N8nText size="xsmall" color="text-light">
-						{{ i18n.baseText('agents.builder.advanced.concurrency.hint') }}
-					</N8nText>
 				</div>
-				<N8nInput
-					type="number"
-					:model-value="String(toolCallConcurrency)"
-					:disabled="props.disabled"
-					:class="$style.shortInput"
-					data-testid="agent-concurrency-input"
-					@update:model-value="onConcurrencyInput"
-				/>
+
+				<div :class="shared.settingRow">
+					<div :class="shared.settingLabel">
+						<N8nText step="sm" bold :class="shared.dataEntryLabel">{{
+							i18n.baseText('agents.builder.advanced.maxIterations.label')
+						}}</N8nText>
+						<N8nText size="small" :class="shared.dataEntrySubLabel">
+							{{ i18n.baseText('agents.builder.advanced.maxIterations.hint') }}
+						</N8nText>
+					</div>
+					<N8nInputNumber
+						:model-value="maxIterationsModelValue"
+						:min="MAX_ITERATIONS_MIN"
+						:max="MAX_ITERATIONS_MAX"
+						:precision="0"
+						:controls="false"
+						:disabled="props.disabled"
+						:class="shared.settingControlShort"
+						data-testid="agent-max-iterations-input"
+						@update:model-value="onMaxIterationsChange"
+					/>
+				</div>
+
+				<div
+					v-if="isSandboxEnabled"
+					:class="shared.settingRow"
+					data-testid="agent-sandbox-egress-row"
+				>
+					<div :class="shared.settingLabel">
+						<N8nText step="sm" bold :class="shared.dataEntryLabel">{{
+							i18n.baseText('agents.builder.advanced.sandboxEgress.label')
+						}}</N8nText>
+						<N8nText
+							size="small"
+							:class="shared.dataEntrySubLabel"
+							data-testid="agent-sandbox-egress-hint"
+						>
+							{{ i18n.baseText(sandboxEgressHintKey) }}
+						</N8nText>
+					</div>
+					<N8nSwitch2
+						:model-value="sandboxEgressEnabled"
+						:disabled="props.disabled || isSandboxEgressLockedByInstance"
+						:class="[$style.switchControl, shared.settingControl]"
+						data-testid="agent-sandbox-egress-toggle"
+						data-attr="agent-sandbox-egress-toggle"
+						@update:model-value="(v) => onSandboxEgressToggle(Boolean(v))"
+					/>
+				</div>
 			</div>
-		</div>
-	</N8nCollapsiblePanel>
+		</AgentPanel>
+	</div>
 </template>
 
 <style module>
-.panel {
-	width: 100%;
-}
-
-.panel.panel {
-	border: 0;
-	border-radius: 0;
-	background-color: transparent;
-	scroll-margin-bottom: 0;
-}
-
-.panel.panel > :first-child {
-	padding: 0;
-	min-height: auto;
-}
-
-.panel.panel > :first-child h3 {
-	margin: 0;
-}
-
-.panel.panel > [data-state] > :first-child {
-	padding: var(--spacing--sm) 0 0;
+.panels {
+	display: flex;
+	flex-direction: column;
+	gap: var(--spacing--lg);
 }
 
 .content {
@@ -250,24 +477,21 @@ const thinkingDisabledReason = computed(() =>
 	width: 100%;
 }
 
-.row {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: var(--spacing--sm);
-	min-height: var(--spacing--xl);
-}
-
-.rowLabel {
+.settingGroup {
 	display: flex;
 	flex-direction: column;
-	gap: var(--spacing--5xs);
-	flex: 1;
-	min-width: 0;
+	gap: var(--spacing--2xs);
 }
 
-.shortInput {
-	width: 140px;
-	flex-shrink: 0;
+.subSettings {
+	display: flex;
+	flex-direction: column;
+	gap: var(--spacing--xs);
+	padding-left: var(--spacing--sm);
+	border-left: var(--border);
+}
+
+.switchControl:not([data-disabled]) {
+	cursor: pointer;
 }
 </style>

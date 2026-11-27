@@ -1,18 +1,20 @@
+import { requestPath } from 'n8n-workflow';
 import type { ILoadOptionsFunctions } from 'n8n-workflow';
 
 import { getWorkspaces, getBases, getRelatedTableFields } from '../../../v2/methods/listSearch';
 import * as transport from '../../../v2/transport';
+import type { Mock, MockInstance } from 'vitest';
 
 describe('NocoDB List Search Methods', () => {
 	// Import listSearch functions here to avoid formatter issues
 	let mockThis: ILoadOptionsFunctions;
-	let apiRequestSpy: jest.SpyInstance;
+	let apiRequestSpy: MockInstance;
 
 	beforeEach(() => {
 		mockThis = {
-			getNodeParameter: jest.fn(),
-			getCredentials: jest.fn(),
-			getNode: jest.fn(() => ({
+			getNodeParameter: vi.fn(),
+			getCredentials: vi.fn(),
+			getNode: vi.fn(() => ({
 				parameters: {},
 				id: 'node1',
 				name: 'NocoDB',
@@ -23,16 +25,16 @@ describe('NocoDB List Search Methods', () => {
 			})),
 		} as unknown as ILoadOptionsFunctions;
 
-		apiRequestSpy = jest.spyOn(transport, 'apiRequest');
+		apiRequestSpy = vi.spyOn(transport, 'apiRequest');
 	});
 
 	afterEach(() => {
-		jest.restoreAllMocks();
+		vi.restoreAllMocks();
 	});
 
 	describe('getWorkspaces', () => {
 		it('should return a list of workspaces', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
 			apiRequestSpy.mockResolvedValue({
 				list: [
 					{ id: 'ws1', title: 'Workspace 1' },
@@ -42,7 +44,12 @@ describe('NocoDB List Search Methods', () => {
 
 			const result = await getWorkspaces.call(mockThis);
 
-			expect(apiRequestSpy).toHaveBeenCalledWith('GET', '/api/v2/meta/workspaces', {}, {});
+			expect(apiRequestSpy).toHaveBeenCalledWith(
+				'GET',
+				requestPath`/api/v2/meta/workspaces`,
+				{},
+				{},
+			);
 			expect(result).toEqual({
 				results: [
 					{ name: 'Workspace 1', value: 'ws1', url: 'http://localhost:8080/#/ws1' },
@@ -52,7 +59,7 @@ describe('NocoDB List Search Methods', () => {
 		});
 
 		it('should filter workspaces based on the provided filter', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
 			apiRequestSpy.mockResolvedValue({
 				list: [
 					{ id: 'ws1', title: 'Workspace Alpha' },
@@ -63,14 +70,19 @@ describe('NocoDB List Search Methods', () => {
 
 			const result = await getWorkspaces.call(mockThis, 'Alpha');
 
-			expect(apiRequestSpy).toHaveBeenCalledWith('GET', '/api/v2/meta/workspaces', {}, {});
+			expect(apiRequestSpy).toHaveBeenCalledWith(
+				'GET',
+				requestPath`/api/v2/meta/workspaces`,
+				{},
+				{},
+			);
 			expect(result).toEqual({
 				results: [{ name: 'Workspace Alpha', value: 'ws1', url: 'http://localhost:8080/#/ws1' }],
 			});
 		});
 
 		it('should handle API errors gracefully', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
 			apiRequestSpy.mockRejectedValue(new Error('API Error'));
 
 			const result = await getWorkspaces.call(mockThis);
@@ -81,8 +93,8 @@ describe('NocoDB List Search Methods', () => {
 
 	describe('getBases', () => {
 		it('should return a list of bases for a given workspace', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
-			(mockThis.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'workspaceId') return 'ws1';
 				return undefined;
 			});
@@ -100,7 +112,7 @@ describe('NocoDB List Search Methods', () => {
 			});
 			expect(apiRequestSpy).toHaveBeenCalledWith(
 				'GET',
-				'/api/v3/meta/workspaces/ws1/bases',
+				requestPath`/api/v3/meta/workspaces/ws1/bases`,
 				{},
 				{},
 			);
@@ -113,8 +125,8 @@ describe('NocoDB List Search Methods', () => {
 		});
 
 		it('should filter bases based on the provided filter', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
-			(mockThis.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'workspaceId') return 'ws1';
 				return undefined;
 			});
@@ -130,7 +142,7 @@ describe('NocoDB List Search Methods', () => {
 
 			expect(apiRequestSpy).toHaveBeenCalledWith(
 				'GET',
-				'/api/v3/meta/workspaces/ws1/bases',
+				requestPath`/api/v3/meta/workspaces/ws1/bases`,
 				{},
 				{},
 			);
@@ -140,8 +152,8 @@ describe('NocoDB List Search Methods', () => {
 		});
 
 		it('should throw NodeOperationError on API error', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
-			(mockThis.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'version') return 4;
 				if (name === 'workspaceId') return 'ws1';
 				return undefined;
@@ -154,7 +166,7 @@ describe('NocoDB List Search Methods', () => {
 
 	describe('getRelatedTableFields', () => {
 		it('should throw an error if no link field is selected', async () => {
-			(mockThis.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockThis.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'version') return 4;
 				if (name === 'linkFieldName') return ''; // No link field selected
 				return undefined;
@@ -164,8 +176,8 @@ describe('NocoDB List Search Methods', () => {
 		});
 
 		it('should return related table fields successfully (version 4)', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
-			(mockThis.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'version') return 4;
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
@@ -186,13 +198,13 @@ describe('NocoDB List Search Methods', () => {
 			expect(apiRequestSpy).toHaveBeenCalledTimes(2);
 			expect(apiRequestSpy).toHaveBeenCalledWith(
 				'GET',
-				'/api/v3/meta/bases/base1/tables/table1/fields/linkField1',
+				requestPath`/api/v3/meta/bases/base1/tables/table1/fields/linkField1`,
 				{},
 				{},
 			);
 			expect(apiRequestSpy).toHaveBeenCalledWith(
 				'GET',
-				'/api/v3/meta/bases/base1/tables/relatedTable1',
+				requestPath`/api/v3/meta/bases/base1/tables/relatedTable1`,
 				{},
 				{},
 			);
@@ -205,8 +217,8 @@ describe('NocoDB List Search Methods', () => {
 		});
 
 		it('should return empty results if no related_table_id is found', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
-			(mockThis.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'version') return 4;
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
@@ -220,7 +232,7 @@ describe('NocoDB List Search Methods', () => {
 			expect(apiRequestSpy).toHaveBeenCalledTimes(1);
 			expect(apiRequestSpy).toHaveBeenCalledWith(
 				'GET',
-				'/api/v3/meta/bases/base1/tables/table1/fields/linkField1',
+				requestPath`/api/v3/meta/bases/base1/tables/table1/fields/linkField1`,
 				{},
 				{},
 			);
@@ -228,8 +240,8 @@ describe('NocoDB List Search Methods', () => {
 		});
 
 		it('should throw NodeOperationError on first API error', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
-			(mockThis.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'version') return 4;
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
@@ -246,8 +258,8 @@ describe('NocoDB List Search Methods', () => {
 		});
 
 		it('should throw NodeOperationError on second API error', async () => {
-			(mockThis.getCredentials as jest.Mock).mockResolvedValue({ host: 'http://localhost:8080' });
-			(mockThis.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockThis.getCredentials as Mock).mockResolvedValue({ host: 'http://localhost:8080' });
+			(mockThis.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'version') return 4;
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';

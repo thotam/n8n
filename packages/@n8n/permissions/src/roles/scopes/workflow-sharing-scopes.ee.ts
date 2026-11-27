@@ -2,6 +2,7 @@ import type { Scope } from '../../types.ee';
 
 export const WORKFLOW_SHARING_OWNER_SCOPES: Scope[] = [
 	'workflow:read',
+	'workflow:export',
 	'workflow:update',
 	'workflow:publish',
 	'workflow:unpublish',
@@ -11,13 +12,23 @@ export const WORKFLOW_SHARING_OWNER_SCOPES: Scope[] = [
 	'workflow:unshare',
 	'workflow:move',
 	'workflow:execute-chat',
+	'workflow:enableRedaction',
+	'workflow:disableRedaction',
+	'execution:read',
+	'execution:list',
+	'execution:reveal',
+	'execution:delete',
 ];
 
 export const WORKFLOW_SHARING_EDITOR_SCOPES: Scope[] = [
 	'workflow:read',
+	'workflow:export',
 	'workflow:update',
 	'workflow:publish',
 	'workflow:unpublish',
 	'workflow:execute',
 	'workflow:execute-chat',
+	'execution:read',
+	'execution:list',
+	'execution:delete',
 ];

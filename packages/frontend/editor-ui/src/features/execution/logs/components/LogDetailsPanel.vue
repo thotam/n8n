@@ -2,23 +2,29 @@
 import LogsViewExecutionSummary from '@/features/execution/logs/components/LogsViewExecutionSummary.vue';
 import LogsPanelHeader from '@/features/execution/logs/components/LogsPanelHeader.vue';
 import LogsViewRunData from '@/features/execution/logs/components/LogsViewRunData.vue';
-import { useResizablePanel } from '@/app/composables/useResizablePanel';
+import { useResizablePanel } from '@n8n/design-system';
 import {
 	type LatestNodeInfo,
 	type LogEntry,
 	type LogDetailsPanelState,
+	isGroupLog,
+	isNodeLog,
 } from '@/features/execution/logs/logs.types';
 import NodeIcon from '@/app/components/NodeIcon.vue';
 import { useI18n } from '@n8n/i18n';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import LogsViewNodeName from '@/features/execution/logs/components/LogsViewNodeName.vue';
-import { computed, useTemplateRef } from 'vue';
+import { computed, ref, useTemplateRef, watch } from 'vue';
 import KeyboardShortcutTooltip from '@/app/components/KeyboardShortcutTooltip.vue';
 import {
 	getSubtreeTotalConsumedTokens,
 	isPlaceholderLog,
 } from '@/features/execution/logs/logs.utils';
-import { LOG_DETAILS_PANEL_STATE } from '@/features/execution/logs/logs.constants';
+import {
+	LOG_DETAILS_PANEL_STATE,
+	MIN_IO_PANEL_WIDTH,
+} from '@/features/execution/logs/logs.constants';
+import { getRespondingModelName } from '@/features/ndv/runData/components/ai/utils';
 import { injectNDVStore } from '@/features/ndv/shared/ndv.store';
 import { useExperimentalNdvStore } from '@/features/workflows/canvas/experimental/experimentalNdv.store';
 
@@ -26,9 +32,15 @@ import { useExecutionRedaction } from '@/features/execution/executions/composabl
 import { useUIStore } from '@/app/stores/ui.store';
 import { WORKFLOW_SETTINGS_MODAL_KEY } from '@/app/constants/modals';
 import RedactedDataState from '@/features/ndv/panel/components/RedactedDataState.vue';
-import { N8nButton, N8nIcon, N8nResizeWrapper, N8nText } from '@n8n/design-system';
+import {
+	N8nButton,
+	N8nIcon,
+	N8nOption,
+	N8nResizeWrapper,
+	N8nSelect,
+	N8nText,
+} from '@n8n/design-system';
 import { useMessageAgentSessionLink } from '@/features/agents/composables/useMessageAgentSessionLink';
-const MIN_IO_PANEL_WIDTH = 200;
 
 const {
 	isOpen,
@@ -65,24 +77,62 @@ const nodeTypeStore = useNodeTypesStore();
 const ndvStore = injectNDVStore();
 const experimentalNdvStore = useExperimentalNdvStore();
 const uiStore = useUIStore();
-const { isRedacted, canReveal, isDynamicCredentials, revealData } = useExecutionRedaction();
+const { isRedacted, canReveal, reason, revealData, credentialToShare, openCredentialSharing } =
+	useExecutionRedaction();
 
-const type = computed(() => nodeTypeStore.getNodeType(logEntry.node.type));
+const nodeEntry = computed(() => (isNodeLog(logEntry) ? logEntry : undefined));
+const groupEntry = computed(() => (isGroupLog(logEntry) ? logEntry : undefined));
+const displayName = computed(() =>
+	groupEntry.value
+		? groupEntry.value.group.name
+		: (latestInfo?.name ?? nodeEntry.value?.node.name ?? ''),
+);
+const type = computed(() =>
+	nodeEntry.value ? nodeTypeStore.getNodeType(nodeEntry.value.node.type) : null,
+);
+
+// Group IO delegates to a chosen boundary member entry, defaulting to execution order
+const selectedInputIndex = ref(0);
+const selectedOutputIndex = ref(0);
+watch(
+	() => logEntry.id,
+	() => {
+		selectedInputIndex.value = 0;
+		selectedOutputIndex.value = 0;
+	},
+);
+const groupInput = computed(() => groupEntry.value?.boundaries.inputs[selectedInputIndex.value]);
+const groupOutput = computed(() => groupEntry.value?.boundaries.outputs[selectedOutputIndex.value]);
 const consumedTokens = computed(() => getSubtreeTotalConsumedTokens(logEntry, false));
+const respondingModel = computed(() =>
+	getRespondingModelName(
+		Object.values(nodeEntry.value?.runData?.data ?? {})
+			.flat()
+			.flat(),
+	),
+);
 const isTriggerNode = computed(() => type.value?.group.includes('trigger'));
 const { link: messageAgentSessionLink } = useMessageAgentSessionLink(computed(() => logEntry));
 const container = useTemplateRef<HTMLElement>('container');
-const resizer = useResizablePanel('N8N_LOGS_INPUT_PANEL_WIDTH', {
+const resizer = useResizablePanel({
 	container,
-	defaultSize: (size) => size / 2,
-	minSize: MIN_IO_PANEL_WIDTH,
-	maxSize: (size) => size - MIN_IO_PANEL_WIDTH,
-	allowCollapse: true,
-	allowFullSize: true,
+	width: {
+		localStorageKey: 'N8N_LOGS_INPUT_PANEL_WIDTH',
+		defaultSize: function getDefaultWidth(size) {
+			return size / 2;
+		},
+		minSize: MIN_IO_PANEL_WIDTH,
+		maxSize: function getMaxWidth(size) {
+			return size - MIN_IO_PANEL_WIDTH;
+		},
+		allowCollapse: true,
+		allowFullSize: true,
+		snap: true,
+	},
 });
 const shouldResize = computed(() => panels === LOG_DETAILS_PANEL_STATE.BOTH);
 const searchShortcutPriorityPanel = computed(() =>
-	ndvStore.isNDVOpen || experimentalNdvStore.isMapperOpen
+	ndvStore.value.isNDVOpen || experimentalNdvStore.isMapperOpen
 		? undefined
 		: panels === LOG_DETAILS_PANEL_STATE.INPUT
 			? 'input'
@@ -97,8 +147,6 @@ function handleResizeEnd() {
 	if (resizer.isFullSize.value) {
 		emit('toggleOutputOpen', false);
 	}
-
-	resizer.onResizeEnd();
 }
 </script>
 
@@ -106,24 +154,21 @@ function handleResizeEnd() {
 	<div ref="container" :class="$style.container" data-test-id="log-details">
 		<LogsPanelHeader
 			data-test-id="log-details-header"
-			:class="$style.header"
 			:is-clickable="isHeaderClickable"
 			@click="emit('clickHeader')"
 		>
 			<template #title>
 				<div :class="$style.title">
-					<NodeIcon :node-type="type" :size="16" :class="$style.icon" />
-					<LogsViewNodeName
-						:name="latestInfo?.name ?? logEntry.node.name"
-						:is-deleted="latestInfo?.deleted ?? false"
-					/>
+					<NodeIcon v-if="!groupEntry" :node-type="type" :size="16" :class="$style.icon" />
+					<LogsViewNodeName :name="displayName" :is-deleted="latestInfo?.deleted ?? false" />
 					<LogsViewExecutionSummary
-						v-if="isOpen && logEntry.runData !== undefined"
+						v-if="isOpen && nodeEntry?.runData !== undefined"
 						:class="$style.executionSummary"
-						:status="logEntry.runData.executionStatus ?? 'unknown'"
+						:status="nodeEntry.runData.executionStatus ?? 'unknown'"
 						:consumed-tokens="consumedTokens"
-						:start-time="logEntry.runData.startTime"
-						:time-took="logEntry.runData.executionTime"
+						:start-time="nodeEntry.runData.startTime"
+						:time-took="nodeEntry.runData.executionTime"
+						:responding-model="respondingModel"
 					/>
 				</div>
 			</template>
@@ -131,7 +176,7 @@ function handleResizeEnd() {
 				<div v-if="isOpen && !isTriggerNode && !isPlaceholderLog(logEntry)" :class="$style.actions">
 					<N8nButton
 						v-if="messageAgentSessionLink"
-						variant="subtle"
+						variant="outline"
 						size="xsmall"
 						data-test-id="log-details-view-agent-session"
 						@click.stop="messageAgentSessionLink.open()"
@@ -144,7 +189,7 @@ function handleResizeEnd() {
 						:shortcut="{ keys: ['i'] }"
 					>
 						<N8nButton
-							variant="subtle"
+							variant="outline"
 							size="xsmall"
 							:class="panels === LOG_DETAILS_PANEL_STATE.OUTPUT ? '' : $style.pressed"
 							@click.stop="emit('toggleInputOpen')"
@@ -157,7 +202,7 @@ function handleResizeEnd() {
 						:shortcut="{ keys: ['o'] }"
 					>
 						<N8nButton
-							variant="subtle"
+							variant="outline"
 							size="xsmall"
 							:class="panels === LOG_DETAILS_PANEL_STATE.INPUT ? '' : $style.pressed"
 							@click.stop="emit('toggleOutputOpen')"
@@ -175,7 +220,7 @@ function handleResizeEnd() {
 					{{ locale.baseText('ndv.output.runNodeHint') }}
 				</N8nText>
 			</div>
-			<template v-else>
+			<template v-else-if="nodeEntry">
 				<N8nResizeWrapper
 					v-if="!isTriggerNode && panels !== LOG_DETAILS_PANEL_STATE.OUTPUT"
 					:class="{
@@ -183,19 +228,18 @@ function handleResizeEnd() {
 						[$style.collapsed]: resizer.isCollapsed.value,
 						[$style.full]: resizer.isFullSize.value,
 					}"
-					:width="resizer.size.value"
-					:style="shouldResize ? { width: `${resizer.size.value ?? 0}px` } : undefined"
+					:resizer="resizer"
+					:style="shouldResize ? { width: `${resizer.width.value ?? 0}px` } : undefined"
 					:supported-directions="['right']"
 					:is-resizing-enabled="shouldResize"
 					:window="window"
-					@resize="resizer.onResize"
 					@resizeend="handleResizeEnd"
 				>
 					<LogsViewRunData
 						data-test-id="log-details-input"
 						pane-type="input"
 						:title="locale.baseText('logs.details.header.actions.input')"
-						:log-entry="logEntry"
+						:log-entry="nodeEntry"
 						:collapsing-table-column-name="collapsingInputTableColumnName"
 						:search-shortcut="searchShortcutPriorityPanel === 'input' ? 'ctrl+f' : undefined"
 						:show-redacted-overlay="panels !== LOG_DETAILS_PANEL_STATE.BOTH"
@@ -208,7 +252,7 @@ function handleResizeEnd() {
 					pane-type="output"
 					:class="$style.outputPanel"
 					:title="locale.baseText('logs.details.header.actions.output')"
-					:log-entry="logEntry"
+					:log-entry="nodeEntry"
 					:collapsing-table-column-name="collapsingOutputTableColumnName"
 					:search-shortcut="searchShortcutPriorityPanel === 'output' ? 'ctrl+f' : undefined"
 					:show-redacted-overlay="panels !== LOG_DETAILS_PANEL_STATE.BOTH"
@@ -220,8 +264,99 @@ function handleResizeEnd() {
 				>
 					<RedactedDataState
 						:title="locale.baseText('ndv.output.redacted.title')"
-						:is-dynamic-credentials="isDynamicCredentials"
+						:reason="reason"
 						:can-reveal="canReveal"
+						:credential-to-share="credentialToShare"
+						@share-credential="openCredentialSharing"
+						wide
+						@open-settings="uiStore.openModal(WORKFLOW_SETTINGS_MODAL_KEY)"
+						@reveal="revealData"
+					/>
+				</div>
+			</template>
+			<template v-else-if="groupEntry">
+				<N8nResizeWrapper
+					v-if="groupInput && panels !== LOG_DETAILS_PANEL_STATE.OUTPUT"
+					:class="{
+						[$style.inputResizer]: true,
+						[$style.collapsed]: resizer.isCollapsed.value,
+						[$style.full]: resizer.isFullSize.value,
+					}"
+					:resizer="resizer"
+					:style="shouldResize ? { width: `${resizer.width.value ?? 0}px` } : undefined"
+					:supported-directions="['right']"
+					:is-resizing-enabled="shouldResize"
+					:window="window"
+					@resizeend="handleResizeEnd"
+				>
+					<div :class="$style.groupPane">
+						<N8nSelect
+							v-if="groupEntry.boundaries.inputs.length > 1"
+							v-model="selectedInputIndex"
+							:class="$style.boundarySelect"
+							size="small"
+							data-test-id="log-details-group-input-select"
+						>
+							<N8nOption
+								v-for="(boundary, index) in groupEntry.boundaries.inputs"
+								:key="boundary.id"
+								:value="index"
+								:label="boundary.label"
+							/>
+						</N8nSelect>
+						<LogsViewRunData
+							data-test-id="log-details-input"
+							pane-type="input"
+							:class="$style.groupRunData"
+							:title="locale.baseText('logs.details.header.actions.input')"
+							:log-entry="groupInput.entry"
+							:source-index="groupInput.sourceIndex"
+							:collapsing-table-column-name="null"
+							:search-shortcut="searchShortcutPriorityPanel === 'input' ? 'ctrl+f' : undefined"
+							:show-redacted-overlay="panels !== LOG_DETAILS_PANEL_STATE.BOTH"
+						/>
+					</div>
+				</N8nResizeWrapper>
+				<div
+					v-if="groupOutput && panels !== LOG_DETAILS_PANEL_STATE.INPUT"
+					:class="[$style.outputPanel, $style.groupPane]"
+				>
+					<N8nSelect
+						v-if="groupEntry.boundaries.outputs.length > 1"
+						v-model="selectedOutputIndex"
+						:class="$style.boundarySelect"
+						size="small"
+						data-test-id="log-details-group-output-select"
+					>
+						<N8nOption
+							v-for="(boundary, index) in groupEntry.boundaries.outputs"
+							:key="boundary.id"
+							:value="index"
+							:label="boundary.label"
+						/>
+					</N8nSelect>
+					<LogsViewRunData
+						data-test-id="log-details-output"
+						pane-type="output"
+						:class="$style.groupRunData"
+						:title="locale.baseText('logs.details.header.actions.output')"
+						:log-entry="groupOutput.entry"
+						:override-outputs="groupOutput.overrideOutputs"
+						:collapsing-table-column-name="null"
+						:search-shortcut="searchShortcutPriorityPanel === 'output' ? 'ctrl+f' : undefined"
+						:show-redacted-overlay="panels !== LOG_DETAILS_PANEL_STATE.BOTH"
+					/>
+				</div>
+				<div
+					v-if="isRedacted && panels === LOG_DETAILS_PANEL_STATE.BOTH"
+					:class="$style.redactedOverlay"
+				>
+					<RedactedDataState
+						:title="locale.baseText('ndv.output.redacted.title')"
+						:reason="reason"
+						:can-reveal="canReveal"
+						:credential-to-share="credentialToShare"
+						@share-credential="openCredentialSharing"
 						wide
 						@open-settings="uiStore.openModal(WORKFLOW_SETTINGS_MODAL_KEY)"
 						@reveal="revealData"
@@ -242,15 +377,10 @@ function handleResizeEnd() {
 	overflow: hidden;
 }
 
-.header {
-	padding: var(--spacing--2xs);
-}
-
 .actions {
 	display: flex;
 	align-items: center;
 	gap: var(--spacing--2xs);
-	padding-inline-end: var(--spacing--2xs);
 
 	.pressed {
 		background-color: var(--button--outline-color--secondary--focus);
@@ -316,5 +446,24 @@ function handleResizeEnd() {
 	display: flex;
 	align-items: center;
 	justify-content: center;
+}
+
+.groupPane {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	overflow: hidden;
+	height: 100%;
+	width: 100%;
+}
+
+.boundarySelect {
+	flex-shrink: 0;
+	padding: var(--spacing--2xs);
+}
+
+.groupRunData {
+	flex-grow: 1;
+	overflow: hidden;
 }
 </style>

@@ -1,9 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { fireEvent, waitFor, within } from '@testing-library/vue';
+import { setActivePinia, createPinia } from 'pinia';
+import { defineComponent, h, ref, type Component, type PropType, type Ref } from 'vue';
+import type { BaseTextKey } from '@n8n/i18n';
+import type { ITelemetryTrackProperties } from 'n8n-workflow';
 import { createComponentRenderer } from '@/__tests__/render';
+import { EMPTY_ASSISTANT_MENTION_COUNTS } from '@/features/ai/assistant-at-mentions/assistantAtMentions.types';
 import InstanceAiInput from '../components/InstanceAiInput.vue';
-import { INSTANCE_AI_EMPTY_STATE_SUGGESTIONS as suggestions } from '../emptyStateSuggestions';
+import type { ContextChip } from '../instanceAi.contextChip';
+import {
+	INSTANCE_AI_EMPTY_STATE_SUGGESTIONS as suggestions,
+	isPromptSuggestion,
+	type InstanceAiEmptyStateSuggestion,
+} from '../emptyStateSuggestions';
 
 const telemetryTrack = vi.fn();
 
@@ -14,8 +24,16 @@ type InputTestProps = {
 	currentThreadId: string;
 	amendContext: { agentId: string; role: string } | null;
 	contextualSuggestion: string | null;
-	researchMode: boolean;
-	suggestions?: typeof suggestions;
+	isWorkflowBuilderAvailable: boolean;
+	suggestions?: readonly unknown[];
+	suggestionsComponent?: Component;
+	suggestionsComponentProps?: Record<string, unknown>;
+	suggestionCatalogVersion?: string;
+	suggestionTelemetryPayload?: ITelemetryTrackProperties;
+	placeholderKey?: BaseTextKey;
+	placeholder?: string;
+	placeholderPreview?: Readonly<Ref<string | undefined>>;
+	contextChip?: ContextChip | null;
 };
 
 const defaultProps = (): InputTestProps => ({
@@ -25,7 +43,8 @@ const defaultProps = (): InputTestProps => ({
 	currentThreadId: 'thread-1',
 	amendContext: null,
 	contextualSuggestion: null,
-	researchMode: false,
+	isWorkflowBuilderAvailable: true,
+	contextChip: null,
 });
 
 function inputProps(overrides: Partial<InputTestProps> = {}): InputTestProps {
@@ -35,16 +54,218 @@ function inputProps(overrides: Partial<InputTestProps> = {}): InputTestProps {
 	};
 }
 
-vi.mock('@/app/composables/useTelemetry', () => ({
+function emittedArgument(args: unknown, index: number): unknown {
+	return Array.isArray(args) ? args[index] : undefined;
+}
+
+vi.mock('@n8n/composables/useTelemetry', () => ({
 	useTelemetry: vi.fn(() => ({ track: telemetryTrack })),
 }));
 
+const CustomInsertSuggestionsComponent = defineComponent({
+	name: 'CustomInsertSuggestionsComponent',
+	props: {
+		suggestions: {
+			type: Array as PropType<readonly InstanceAiEmptyStateSuggestion[]>,
+			required: true,
+		},
+		disabled: {
+			type: Boolean,
+			required: true,
+		},
+	},
+	emits: ['insert-suggestion'],
+	setup(props, { emit }) {
+		return () =>
+			h(
+				'button',
+				{
+					type: 'button',
+					'data-test-id': 'custom-suggestion-insert',
+					disabled: props.disabled,
+					onClick: () => {
+						const [suggestion] = props.suggestions;
+						if (!suggestion || !isPromptSuggestion(suggestion)) {
+							return;
+						}
+
+						emit('insert-suggestion', {
+							promptKey: suggestion.promptKey,
+							suggestionId: 'custom-build-workflow',
+							suggestionKind: 'prompt',
+							position: 1,
+							prefillType: 'suggestion_catalog',
+						});
+					},
+				},
+				'Custom insert suggestion',
+			);
+	},
+});
+
+const CustomCycleSuggestionsComponent = defineComponent({
+	name: 'CustomCycleSuggestionsComponent',
+	props: {
+		suggestions: {
+			type: Array as PropType<readonly InstanceAiEmptyStateSuggestion[]>,
+			required: true,
+		},
+		disabled: {
+			type: Boolean,
+			required: true,
+		},
+	},
+	emits: ['cycle-suggestions'],
+	setup(props, { emit }) {
+		return () =>
+			h(
+				'button',
+				{
+					type: 'button',
+					'data-test-id': 'custom-suggestions-cycle',
+					disabled: props.disabled,
+					onClick: () => {
+						emit('cycle-suggestions', {
+							visibleSuggestionIds: ['build-agent', 'find-automation-ideas'],
+							cycleCount: 1,
+						});
+					},
+				},
+				'Cycle suggestions',
+			);
+	},
+});
+
+const CustomRawPromptSuggestionsComponent = defineComponent({
+	name: 'CustomRawPromptSuggestionsComponent',
+	props: {
+		suggestions: {
+			type: Array as PropType<readonly { id: string; builderPrompt: string }[]>,
+			required: true,
+		},
+		disabled: {
+			type: Boolean,
+			required: true,
+		},
+	},
+	emits: ['preview-change', 'insert-suggestion', 'cycle-suggestions'],
+	setup(props, { emit }) {
+		return () =>
+			h('div', [
+				h(
+					'button',
+					{
+						type: 'button',
+						'data-test-id': 'custom-raw-suggestion-preview',
+						disabled: props.disabled,
+						onFocus: () =>
+							emit(
+								'preview-change',
+								props.suggestions[0] ? { prompt: props.suggestions[0].builderPrompt } : null,
+							),
+					},
+					'Preview raw suggestion',
+				),
+				h(
+					'button',
+					{
+						type: 'button',
+						'data-test-id': 'custom-raw-suggestion-insert',
+						disabled: props.disabled,
+						onClick: () =>
+							emit('insert-suggestion', {
+								prompt: props.suggestions[0]?.builderPrompt ?? '',
+								suggestionId: 'custom-raw-prompt',
+								suggestionKind: 'prompt',
+								position: 1,
+								telemetryPayload: { suggestion_source: 'v2_top_used_fallback' },
+								prefillType: 'suggestion_catalog',
+							}),
+					},
+					'Insert raw suggestion',
+				),
+				h(
+					'button',
+					{
+						type: 'button',
+						'data-test-id': 'custom-raw-suggestion-cycle',
+						disabled: props.disabled,
+						onClick: () =>
+							emit('cycle-suggestions', {
+								visibleSuggestionIds: ['custom-raw-prompt'],
+								cycleCount: 1,
+								telemetryPayload: { suggestion_source: 'v2_top_used_fallback' },
+							}),
+					},
+					'Cycle raw suggestion',
+				),
+			]);
+	},
+});
+
+const InputMenuStub = defineComponent({
+	emits: ['attach-files'],
+	setup(_props, { emit }) {
+		return () =>
+			h(
+				'button',
+				{
+					type: 'button',
+					'data-test-id': 'instance-ai-input-menu-attach',
+					onClick: () => emit('attach-files'),
+				},
+				'Attach file',
+			);
+	},
+});
+
+const DirectSubmitHarness = defineComponent({
+	setup(_props, { emit }) {
+		const inputRef = ref<InstanceType<typeof InstanceAiInput> | null>(null);
+		return () =>
+			h('div', [
+				h(InstanceAiInput, {
+					ref: (el: unknown) => {
+						inputRef.value = el as InstanceType<typeof InstanceAiInput> | null;
+					},
+					...defaultProps(),
+					currentThreadId: '',
+					onSubmit: (...args: unknown[]) => emit('submit', ...args),
+				}),
+				h(
+					'button',
+					{
+						'data-test-id': 'harness-direct-submit',
+						onClick: () =>
+							inputRef.value?.submitSuggestion({
+								prompt: 'Score my leads automatically',
+								suggestionId: 'score-my-leads',
+								suggestionKind: 'quick_example',
+								position: 1,
+								suggestionCatalogVersion: 'agent-templates-v1',
+								prefillType: 'suggestion_catalog',
+							}),
+					},
+					'Direct submit',
+				),
+			]);
+	},
+});
+
+const renderDirectSubmitHarness = createComponentRenderer(DirectSubmitHarness);
+
 const renderComponent = createComponentRenderer(InstanceAiInput, {
 	props: defaultProps(),
+	global: {
+		stubs: {
+			InstanceAiInputMenu: true,
+		},
+	},
 });
 
 describe('InstanceAiInput', () => {
 	beforeEach(() => {
+		setActivePinia(createPinia());
 		vi.clearAllMocks();
 		telemetryTrack.mockReset();
 	});
@@ -58,6 +279,37 @@ describe('InstanceAiInput', () => {
 				{ id: 'quick-examples', type: 'menu' },
 			],
 		);
+	});
+
+	it('keeps contextual and unavailable placeholders above an animated preview', async () => {
+		const placeholderPreview = ref<string | undefined>('Build me an agent');
+		const { getByRole, rerender } = renderComponent({
+			props: inputProps({ placeholderPreview }),
+		});
+		const input = getByRole('textbox');
+		expect(input).toHaveAttribute('placeholder', 'Build me an agent');
+		await rerender({ contextualSuggestion: 'Explain the result' });
+		expect(input).toHaveAttribute('placeholder', 'Explain the result');
+		placeholderPreview.value = 'Build me another agent';
+		await rerender({ isWorkflowBuilderAvailable: false });
+		expect(input).toHaveAttribute('placeholder', 'Workflow builder unavailable');
+	});
+
+	it('reports initial and edited draft content without submitting placeholder previews', async () => {
+		const { emitted, getByRole, rerender } = renderComponent({
+			props: inputProps({ placeholder: 'Build a news agent' }),
+		});
+		const textbox = getByRole('textbox');
+		expect(emitted()['content-change']).toEqual([[false]]);
+		expect(textbox).toHaveValue('');
+		await fireEvent.keyDown(textbox, { key: 'Enter' });
+		expect(emitted().submit).toBeUndefined();
+		await fireEvent.update(textbox, 'My draft');
+		await rerender({ placeholder: 'Build a different agent' });
+		expect(textbox).toHaveValue('My draft');
+		expect(emitted()['content-change']).toEqual([[false], [true]]);
+		await fireEvent.update(textbox, '');
+		expect(emitted()['content-change']).toEqual([[false], [true], [false]]);
 	});
 
 	it('renders the four empty-state suggestions when the textarea is empty', () => {
@@ -78,6 +330,72 @@ describe('InstanceAiInput', () => {
 		expect(getByTestId('instance-ai-suggestion-quick-examples')).toHaveTextContent(
 			'Quick examples',
 		);
+	});
+
+	it('uses a caller-provided base placeholder', () => {
+		const { getByRole } = renderComponent({
+			props: {
+				placeholderKey: 'experiments.instanceAiPromptSuggestionsV2.input.placeholder',
+			},
+		});
+
+		expect(getByRole('textbox')).toHaveAttribute(
+			'placeholder',
+			'Tell me what to build or ask a question',
+		);
+	});
+
+	it('prefers a caller-provided placeholder text over the placeholder key', () => {
+		const { getByRole } = renderComponent({
+			props: {
+				placeholder: 'Ask Support Agent…',
+				placeholderKey: 'experiments.instanceAiPromptSuggestionsV2.input.placeholder',
+			},
+		});
+
+		expect(getByRole('textbox')).toHaveAttribute('placeholder', 'Ask Support Agent…');
+	});
+
+	it('uses the new agent placeholder when the caller passes its key', () => {
+		const { getByRole } = renderComponent({
+			props: {
+				placeholderKey: 'instanceAi.input.newAgentPlaceholder',
+			},
+		});
+
+		expect(getByRole('textbox')).toHaveAttribute(
+			'placeholder',
+			'Describe the agent you want to build',
+		);
+	});
+
+	it('uses the default placeholder for a saved agent artifact', () => {
+		const { getByRole } = renderComponent({
+			props: {
+				contextChip: {
+					type: 'agent-artifact',
+					agentId: 'agent-1',
+					projectId: 'project-1',
+					label: 'Support Agent',
+				},
+			},
+		});
+
+		expect(getByRole('textbox')).toHaveAttribute('placeholder', 'Ask anything...');
+	});
+
+	it('disables the composer when the workflow builder is unavailable', () => {
+		const { getByRole, getByTestId, queryByTestId } = renderComponent({
+			props: {
+				isWorkflowBuilderAvailable: false,
+				suggestions,
+			},
+		});
+
+		expect(getByRole('textbox')).toBeDisabled();
+		expect(getByRole('textbox')).toHaveAttribute('placeholder', 'Workflow builder unavailable');
+		expect(getByTestId('instance-ai-send-button')).toBeDisabled();
+		expect(queryByTestId('instance-ai-suggestion-build-workflow')).not.toBeInTheDocument();
 	});
 
 	it('shows a ghost prompt in the placeholder when hovering a prompt suggestion', async () => {
@@ -133,6 +451,52 @@ describe('InstanceAiInput', () => {
 		await fireEvent.keyDown(getByRole('textbox'), { key: 'Enter' });
 
 		expect(emitted().submit).toBeUndefined();
+	});
+
+	it('does not submit when credits are exhausted', async () => {
+		const { emitted, getByRole } = renderComponent({
+			props: {
+				isStreaming: false,
+				isOutOfCredits: true,
+				suggestions,
+			},
+		});
+
+		const textbox = getByRole('textbox');
+		expect(textbox).toBeDisabled();
+		await fireEvent.keyDown(textbox, { key: 'Enter' });
+
+		expect(emitted().submit).toBeUndefined();
+	});
+
+	it('submits on Enter while credits remain', async () => {
+		const { emitted, getByRole } = renderComponent({
+			props: {
+				isStreaming: false,
+				isOutOfCredits: false,
+				suggestions,
+			},
+		});
+
+		const textbox = getByRole('textbox');
+		await userEvent.type(textbox, 'Keep going');
+		await fireEvent.keyDown(textbox, { key: 'Enter' });
+
+		expect(emittedArgument(emitted().submit?.[0], 0)).toBe('Keep going');
+	});
+
+	it('keeps stop available while a run is streaming and credits are exhausted', async () => {
+		const { emitted, getByRole } = renderComponent({
+			props: {
+				isStreaming: true,
+				isOutOfCredits: true,
+				suggestions,
+			},
+		});
+
+		await userEvent.click(getByRole('button', { name: 'Stop' }));
+
+		expect(emitted().stop).toHaveLength(1);
 	});
 
 	it('does not change the placeholder when hovering the quick examples trigger', async () => {
@@ -213,7 +577,7 @@ describe('InstanceAiInput', () => {
 		expect(textbox).toHaveAttribute('placeholder', initialPlaceholder);
 	});
 
-	it('submits immediately when a prompt suggestion is clicked', async () => {
+	it('inserts a prompt suggestion and submits it only when send is clicked', async () => {
 		const { emitted, getByRole, getByTestId } = renderComponent({
 			props: {
 				isStreaming: false,
@@ -224,11 +588,301 @@ describe('InstanceAiInput', () => {
 		const textbox = getByRole('textbox');
 		await userEvent.click(getByTestId('instance-ai-suggestion-build-agent'));
 
+		expect(emitted().submit).toBeUndefined();
+		expect(textbox).toHaveValue(
+			'I want to build a new agent. Help me figure out what to build. Ask me what the main purpose of the agent is, what should trigger it into action, what apps, tools, or knowledge it should have access to, and whether I have a preference for the AI model used.',
+		);
+
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
 		expect(emitted().submit?.[0]).toEqual([
 			'I want to build a new agent. Help me figure out what to build. Ask me what the main purpose of the agent is, what should trigger it into action, what apps, tools, or knowledge it should have access to, and whether I have a preference for the AI model used.',
 			undefined,
+			expect.any(Function),
+			{
+				kind: 'prefill',
+				prefillType: 'v1_opener',
+				prefillId: 'build-agent',
+				promptModified: false,
+			},
+			expect.any(Number),
+			EMPTY_ASSISTANT_MENTION_COUNTS,
+			[],
 		]);
 		expect(textbox).toHaveValue('');
+	});
+
+	it('inserts from a caller-provided suggestions component without submitting', async () => {
+		const { emitted, getByRole, getByTestId, queryByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomInsertSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+			},
+		});
+
+		telemetryTrack.mockClear();
+		const textbox = getByRole('textbox');
+
+		await userEvent.click(getByTestId('custom-suggestion-insert'));
+
+		await waitFor(() => {
+			expect(textbox).toHaveValue(
+				"I want to build a new workflow. Help me figure out what to build. Ask me what's the end goal, what should trigger it, and what apps or services are involved.",
+			);
+			expect(queryByTestId('custom-suggestion-insert')).not.toBeInTheDocument();
+		});
+		expect(emitted().submit).toBeUndefined();
+		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestion selected', {
+			thread_id: 'thread-1',
+			suggestion_catalog_version: 'v2',
+			suggestion_id: 'custom-build-workflow',
+			suggestion_kind: 'prompt',
+			position: 1,
+		});
+
+		const payload = telemetryTrack.mock.calls[0]?.[1] as Record<string, unknown>;
+		expect(payload).not.toHaveProperty('prompt');
+		expect(Object.values(payload)).not.toContain(
+			"I want to build a new workflow. Help me figure out what to build. Ask me what's the end goal, what should trigger it, and what apps or services are involved.",
+		);
+	});
+
+	it('tracks an inserted suggestion as submitted when the inserted prompt is sent unchanged', async () => {
+		const { getByRole, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomInsertSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+				currentThreadId: '',
+			},
+		});
+
+		telemetryTrack.mockClear();
+
+		await userEvent.click(getByTestId('custom-suggestion-insert'));
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		expect(getByRole('textbox')).toHaveValue('');
+		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestion submitted', {
+			suggestion_catalog_version: 'v2',
+			suggestion_id: 'custom-build-workflow',
+			suggestion_kind: 'prompt',
+			position: 1,
+			prompt_modified: false,
+		});
+	});
+
+	it('tracks an inserted suggestion as modified when the inserted prompt is edited before submit', async () => {
+		const { getByRole, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomInsertSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+				currentThreadId: '',
+			},
+		});
+
+		telemetryTrack.mockClear();
+
+		await userEvent.click(getByTestId('custom-suggestion-insert'));
+		await userEvent.type(getByRole('textbox'), ' Please include error handling.');
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestion submitted', {
+			suggestion_catalog_version: 'v2',
+			suggestion_id: 'custom-build-workflow',
+			suggestion_kind: 'prompt',
+			position: 1,
+			prompt_modified: true,
+		});
+	});
+
+	it('does not track an inserted suggestion as submitted after the inserted prompt is cleared and replaced', async () => {
+		const { getByRole, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomInsertSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+				currentThreadId: '',
+			},
+		});
+
+		telemetryTrack.mockClear();
+
+		await userEvent.click(getByTestId('custom-suggestion-insert'));
+		const textbox = getByRole('textbox');
+		await userEvent.clear(textbox);
+		await userEvent.type(textbox, 'Build something unrelated from scratch');
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		const submittedEvents = telemetryTrack.mock.calls.filter(
+			([eventName]) => eventName === 'Instance AI prompt suggestion submitted',
+		);
+		expect(submittedEvents).toHaveLength(0);
+	});
+
+	it('reports the pre-fill that filled the composer when an inserted suggestion is sent', async () => {
+		const { emitted, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomInsertSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+				currentThreadId: '',
+			},
+		});
+
+		await userEvent.click(getByTestId('custom-suggestion-insert'));
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		await waitFor(() => expect(emitted().submit?.[0]).toBeDefined());
+		expect(emittedArgument(emitted().submit?.[0], 3)).toEqual({
+			kind: 'prefill',
+			prefillType: 'suggestion_catalog',
+			prefillId: 'custom-build-workflow',
+			promptModified: false,
+		});
+	});
+
+	it('reports the pre-fill as modified when the inserted prompt is edited before sending', async () => {
+		const { emitted, getByRole, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomInsertSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+				currentThreadId: '',
+			},
+		});
+
+		await userEvent.click(getByTestId('custom-suggestion-insert'));
+		await userEvent.type(getByRole('textbox'), ' Also handle errors.');
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		await waitFor(() => expect(emitted().submit?.[0]).toBeDefined());
+		expect(emittedArgument(emitted().submit?.[0], 3)).toMatchObject({
+			kind: 'prefill',
+			prefillType: 'suggestion_catalog',
+			promptModified: true,
+		});
+	});
+
+	it('reports user authorship once a pre-filled prompt is cleared and replaced', async () => {
+		const { emitted, getByRole, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomInsertSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+				currentThreadId: '',
+			},
+		});
+
+		await userEvent.click(getByTestId('custom-suggestion-insert'));
+		const textbox = getByRole('textbox');
+		await userEvent.clear(textbox);
+		await userEvent.type(textbox, 'Build something unrelated from scratch');
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		await waitFor(() => expect(emitted().submit?.[0]).toBeDefined());
+		expect(emittedArgument(emitted().submit?.[0], 3)).toEqual({ kind: 'user_typed' });
+	});
+
+	// A refused send (a concurrency cap, a 429) puts the draft back. The retry has
+	// to stay attributed to the surface that wrote it, not read as user-typed.
+	it('keeps the pre-fill attribution when a refused send restores the draft', async () => {
+		const { emitted, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomInsertSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+				currentThreadId: '',
+			},
+		});
+
+		await userEvent.click(getByTestId('custom-suggestion-insert'));
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+		await waitFor(() => expect(emitted().submit?.[0]).toBeDefined());
+
+		// The host refuses the send and hands the draft back.
+		const restoreDraft = emittedArgument(emitted().submit?.[0], 2);
+		if (typeof restoreDraft !== 'function') throw new Error('Expected a draft recovery callback');
+		expect(restoreDraft()).toBe(true);
+
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+		await waitFor(() => expect(emitted().submit?.[1]).toBeDefined());
+
+		expect(emittedArgument(emitted().submit?.[1], 3)).toEqual({
+			kind: 'prefill',
+			prefillType: 'suggestion_catalog',
+			prefillId: 'custom-build-workflow',
+			promptModified: false,
+		});
+	});
+
+	it('reports a Tab-accepted contextual follow-up as a pre-fill', async () => {
+		const { emitted, getByRole, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				contextualSuggestion: 'Add error handling to the workflow',
+			},
+		});
+
+		getByRole('textbox').focus();
+		await userEvent.keyboard('{Tab}');
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		await waitFor(() => expect(emitted().submit?.[0]).toBeDefined());
+		expect(emittedArgument(emitted().submit?.[0], 0)).toBe('Add error handling to the workflow');
+		expect(emittedArgument(emitted().submit?.[0], 3)).toEqual({
+			kind: 'prefill',
+			prefillType: 'contextual_followup',
+			promptModified: false,
+		});
+	});
+
+	// The split empty state sends a row straight off, with no insert step, so the
+	// composer was already empty and `resetDraftComposer` does not change it --
+	// the watcher never fires. Anything the user types next must not inherit the
+	// pre-fill that was just sent.
+	it('attributes a direct suggestion submit to the payload catalog, not the home-screen catalog', async () => {
+		telemetryTrack.mockClear();
+		const { getByTestId } = renderDirectSubmitHarness();
+
+		await userEvent.click(getByTestId('harness-direct-submit'));
+
+		expect(telemetryTrack).toHaveBeenCalledWith(
+			'Instance AI prompt suggestion submitted',
+			expect.objectContaining({
+				suggestion_catalog_version: 'agent-templates-v1',
+				suggestion_id: 'score-my-leads',
+				position: 1,
+			}),
+		);
+	});
+
+	it('does not attribute a later typed message to a directly submitted suggestion', async () => {
+		const { emitted, getByRole, getByTestId } = renderDirectSubmitHarness();
+
+		await userEvent.click(getByTestId('harness-direct-submit'));
+		await waitFor(() => expect(emitted().submit?.[0]).toBeDefined());
+		expect(emittedArgument(emitted().submit?.[0], 3)).toMatchObject({
+			kind: 'prefill',
+			prefillType: 'suggestion_catalog',
+		});
+
+		await userEvent.type(getByRole('textbox'), 'Something else entirely');
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		await waitFor(() => expect(emitted().submit?.[1]).toBeDefined());
+		expect(emittedArgument(emitted().submit?.[1], 3)).toEqual({ kind: 'user_typed' });
 	});
 
 	it('submits typed text and attachments from the send button', async () => {
@@ -263,12 +917,85 @@ describe('InstanceAiInput', () => {
 						fileName: 'note.txt',
 					}),
 				],
+				expect.any(Function),
+				{ kind: 'user_typed' },
+				expect.any(Number),
+				EMPTY_ASSISTANT_MENTION_COUNTS,
+				[],
 			],
 		]);
 		expect(textbox).toHaveValue('');
+		expect(container.querySelector('.n8n-attachment')).not.toBeInTheDocument();
+
+		const restoreDraft = emittedArgument(emitted().submit?.[0], 2);
+		expect(restoreDraft).toBeTypeOf('function');
+		if (typeof restoreDraft !== 'function') throw new Error('Expected a draft recovery callback');
+		expect(restoreDraft()).toBe(true);
+		await waitFor(() => {
+			expect(textbox).toHaveValue('Please send this with context');
+			expect(container.querySelector('.n8n-attachment')).toBeInTheDocument();
+		});
 	});
 
-	it('opens quick examples and submits immediately when an example is clicked', async () => {
+	it('emits a draft recovery callback for a text-only message', async () => {
+		const { emitted, getByRole, getByTestId } = renderComponent({
+			props: { isStreaming: false },
+		});
+
+		const textbox = getByRole('textbox');
+		await userEvent.type(textbox, 'Build me an invoice workflow');
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+
+		await waitFor(() => expect(emitted().submit?.[0]).toBeDefined());
+		expect(textbox).toHaveValue('');
+
+		const restoreDraft = emittedArgument(emitted().submit?.[0], 2);
+		expect(restoreDraft).toBeTypeOf('function');
+		if (typeof restoreDraft !== 'function') throw new Error('Expected a draft recovery callback');
+		expect(restoreDraft()).toBe(true);
+		await waitFor(() => expect(textbox).toHaveValue('Build me an invoice workflow'));
+	});
+
+	it('opens the hidden file picker from the input menu', async () => {
+		const fileInputClick = vi.spyOn(HTMLInputElement.prototype, 'click');
+		const { getByTestId, queryByTestId } = renderComponent({
+			global: { stubs: { InstanceAiInputMenu: InputMenuStub } },
+		});
+
+		expect(queryByTestId('chat-input-attach-button')).not.toBeInTheDocument();
+		await userEvent.click(getByTestId('instance-ai-input-menu-attach'));
+
+		expect(fileInputClick).toHaveBeenCalledOnce();
+		fileInputClick.mockRestore();
+	});
+
+	it('does not restore a submitted draft over newer composer content', async () => {
+		const { container, emitted, getByRole, getByTestId } = renderComponent({
+			props: { isStreaming: false },
+		});
+		const textbox = getByRole('textbox');
+		await userEvent.type(textbox, 'Original message');
+		const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+		Object.defineProperty(fileInput, 'files', {
+			value: [new File(['old context'], 'old-context.txt', { type: 'text/plain' })],
+			configurable: true,
+		});
+		await fireEvent.change(fileInput);
+		await waitFor(() => expect(container.querySelector('.n8n-attachment')).toBeInTheDocument());
+		await userEvent.click(getByTestId('instance-ai-send-button'));
+		await waitFor(() => expect(emitted().submit?.[0]).toBeDefined());
+
+		const restoreDraft = emittedArgument(emitted().submit?.[0], 2);
+		expect(restoreDraft).toBeTypeOf('function');
+		if (typeof restoreDraft !== 'function') throw new Error('Expected a draft recovery callback');
+		await userEvent.type(textbox, 'New message');
+
+		expect(restoreDraft()).toBe(false);
+		expect(textbox).toHaveValue('New message');
+		expect(container.querySelector('.n8n-attachment')).not.toBeInTheDocument();
+	});
+
+	it('opens quick examples and inserts an example without submitting', async () => {
 		const { emitted, getByRole, getByTestId, queryByTestId } = renderComponent({
 			props: {
 				isStreaming: false,
@@ -286,11 +1013,10 @@ describe('InstanceAiInput', () => {
 		await userEvent.click(getByTestId('instance-ai-quick-example-answer-support-requests'));
 
 		const textbox = getByRole('textbox');
-		expect(emitted().submit?.[0]).toEqual([
+		expect(emitted().submit).toBeUndefined();
+		expect(textbox).toHaveValue(
 			'When a new email arrives in our Outlook inbox, use Claude to summarize what the prospect is looking for, rate its urgency and potential value, then notify the right person in Slack based on the product and region of the prospect.',
-			undefined,
-		]);
-		expect(textbox).toHaveValue('');
+		);
 		expect(queryByTestId('instance-ai-quick-examples-panel')).not.toBeInTheDocument();
 	});
 
@@ -337,10 +1063,10 @@ describe('InstanceAiInput', () => {
 		});
 
 		await waitFor(() => {
-			expect(getByTestId('attachment-preview-remove')).toBeInTheDocument();
+			expect(getByTestId('attachment-remove')).toBeInTheDocument();
 		});
 
-		await userEvent.click(getByTestId('attachment-preview-remove'));
+		await userEvent.click(getByTestId('attachment-remove'));
 
 		await waitFor(() => {
 			expect(getByTestId('instance-ai-suggestion-build-workflow')).toBeInTheDocument();
@@ -365,17 +1091,30 @@ describe('InstanceAiInput', () => {
 		});
 	});
 
-	it('toggles research mode from the composer footer button', async () => {
-		const { emitted, getByTestId } = renderComponent({
+	it('renders a dismissible handoff context chip inside the input', async () => {
+		const { emitted, getByRole, getByTestId } = renderComponent({
 			props: {
-				isStreaming: false,
-				suggestions,
+				contextChip: {
+					type: 'agent-preview-session',
+					agentId: 'agent-1',
+					threadId: 'preview-thread-1',
+					label: 'SEO Auditor session',
+				},
 			},
 		});
 
-		await userEvent.click(getByTestId('instance-ai-research-toggle'));
+		const textbox = getByRole('textbox');
+		const chip = getByTestId('instance-ai-handoff-context-chip');
 
-		expect(emitted()['toggle-research-mode']).toEqual([[]]);
+		expect(chip).toHaveTextContent('SEO Auditor session');
+		expect(chip.querySelector('[data-icon="robot"]')).toBeInTheDocument();
+		expect(chip.closest('[class*="inputWrapper"]')).toContainElement(textbox);
+
+		const dismiss = getByTestId('instance-ai-handoff-context-chip-dismiss');
+		expect(dismiss).toHaveAccessibleName('Close');
+		await userEvent.click(dismiss);
+
+		expect(emitted()['dismiss-context-chip']).toEqual([[]]);
 	});
 
 	it('emits stop when the streaming stop button is clicked', async () => {
@@ -415,6 +1154,23 @@ describe('InstanceAiInput', () => {
 		});
 	});
 
+	it('tracks suggestions shown on the empty state without a thread id', async () => {
+		renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				currentThreadId: '',
+				suggestionCatalogVersion: 'v2-empty-state-test',
+			},
+		});
+
+		await waitFor(() => {
+			expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestions shown', {
+				suggestion_catalog_version: 'v2-empty-state-test',
+			});
+		});
+	});
+
 	it('tracks suggestions shown once when suggestions hide and reappear in the same thread', async () => {
 		const { rerender } = renderComponent({
 			props: {
@@ -428,7 +1184,6 @@ describe('InstanceAiInput', () => {
 			expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestions shown', {
 				thread_id: 'thread-shown',
 				suggestion_catalog_version: 'v1',
-				research_mode: false,
 			});
 		});
 
@@ -462,7 +1217,6 @@ describe('InstanceAiInput', () => {
 			expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestions shown', {
 				thread_id: 'thread-a',
 				suggestion_catalog_version: 'v1',
-				research_mode: false,
 			});
 		});
 
@@ -472,7 +1226,6 @@ describe('InstanceAiInput', () => {
 			expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestions shown', {
 				thread_id: 'thread-b',
 				suggestion_catalog_version: 'v1',
-				research_mode: false,
 			});
 		});
 		expect(
@@ -480,6 +1233,123 @@ describe('InstanceAiInput', () => {
 				([eventName]) => eventName === 'Instance AI prompt suggestions shown',
 			),
 		).toHaveLength(2);
+	});
+
+	it('tracks shown telemetry with a caller-provided catalog version', async () => {
+		renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionCatalogVersion: 'v2',
+				suggestionTelemetryPayload: {
+					suggestion_format: 'cards',
+					suggestion_source: 'matrix',
+					metadata_load_state: 'loaded',
+				},
+				currentThreadId: 'thread-v2',
+			},
+		});
+
+		await waitFor(() => {
+			expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestions shown', {
+				thread_id: 'thread-v2',
+				suggestion_catalog_version: 'v2',
+				suggestion_format: 'cards',
+				suggestion_source: 'matrix',
+				metadata_load_state: 'loaded',
+			});
+		});
+	});
+
+	it('tracks cycle telemetry from a caller-provided suggestions component', async () => {
+		const { getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions,
+				suggestionsComponent: CustomCycleSuggestionsComponent,
+				suggestionCatalogVersion: 'v2',
+			},
+		});
+
+		telemetryTrack.mockClear();
+		await userEvent.click(getByTestId('custom-suggestions-cycle'));
+
+		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestions cycled', {
+			suggestion_catalog_version: 'v2',
+			visible_suggestion_ids: ['build-agent', 'find-automation-ideas'],
+			cycle_count: 1,
+		});
+		expect(telemetryTrack.mock.calls[0]?.[1]).not.toHaveProperty('thread_id');
+	});
+
+	it('inserts raw prompt suggestions and merges experiment telemetry payloads', async () => {
+		const { getByRole, getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions: [{ id: 'custom-raw-prompt', builderPrompt: 'Build my exact workflow' }],
+				suggestionsComponent: CustomRawPromptSuggestionsComponent,
+				suggestionCatalogVersion: 'v4-personalized',
+				suggestionTelemetryPayload: {
+					suggestion_catalog_version: 'v4-personalized',
+					suggestion_format: 'cards',
+					suggestion_source: 'matrix',
+					profile_role: 'sales',
+					metadata_load_state: 'loaded',
+					variant: 'variant-cards',
+					'$feature/093_instance_ai_personalized_prompt_suggestions': 'variant-cards',
+				},
+			},
+		});
+
+		telemetryTrack.mockClear();
+		await fireEvent.focus(getByTestId('custom-raw-suggestion-preview'));
+
+		expect(getByRole('textbox')).toHaveAttribute('placeholder', 'Build my exact workflow');
+
+		await userEvent.click(getByTestId('custom-raw-suggestion-insert'));
+
+		expect(getByRole('textbox')).toHaveValue('Build my exact workflow');
+		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestion selected', {
+			thread_id: 'thread-1',
+			suggestion_catalog_version: 'v4-personalized',
+			suggestion_format: 'cards',
+			suggestion_source: 'v2_top_used_fallback',
+			profile_role: 'sales',
+			metadata_load_state: 'loaded',
+			variant: 'variant-cards',
+			'$feature/093_instance_ai_personalized_prompt_suggestions': 'variant-cards',
+			suggestion_id: 'custom-raw-prompt',
+			suggestion_kind: 'prompt',
+			position: 1,
+		});
+	});
+
+	it('merges experiment telemetry payloads for suggestion cycling', async () => {
+		const { getByTestId } = renderComponent({
+			props: {
+				isStreaming: false,
+				suggestions: [{ id: 'custom-raw-prompt', builderPrompt: 'Build my exact workflow' }],
+				suggestionsComponent: CustomRawPromptSuggestionsComponent,
+				suggestionCatalogVersion: 'v4-personalized',
+				suggestionTelemetryPayload: {
+					suggestion_format: 'list',
+					suggestion_source: 'role_default',
+					metadata_load_state: 'loaded',
+				},
+			},
+		});
+
+		telemetryTrack.mockClear();
+		await userEvent.click(getByTestId('custom-raw-suggestion-cycle'));
+
+		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestions cycled', {
+			suggestion_catalog_version: 'v4-personalized',
+			suggestion_format: 'list',
+			suggestion_source: 'v2_top_used_fallback',
+			metadata_load_state: 'loaded',
+			visible_suggestion_ids: ['custom-raw-prompt'],
+			cycle_count: 1,
+		});
 	});
 
 	it('tracks quick examples opened with semantic payload', async () => {
@@ -496,40 +1366,14 @@ describe('InstanceAiInput', () => {
 		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI quick examples opened', {
 			thread_id: 'thread-1',
 			suggestion_catalog_version: 'v1',
-			research_mode: false,
 			suggestion_id: 'quick-examples',
 			position: 4,
 		});
 	});
 
-	it('includes research mode in the quick examples telemetry payload when enabled', async () => {
-		const { getByTestId } = renderComponent({
-			props: {
-				isStreaming: false,
-				suggestions,
-				researchMode: true,
-			},
-		});
-
-		telemetryTrack.mockClear();
-		await userEvent.click(getByTestId('instance-ai-suggestion-quick-examples'));
-
-		expect(telemetryTrack).toHaveBeenCalledTimes(1);
-		expect(telemetryTrack.mock.calls[0]).toEqual([
-			'Instance AI quick examples opened',
-			{
-				thread_id: 'thread-1',
-				suggestion_catalog_version: 'v1',
-				research_mode: true,
-				suggestion_id: 'quick-examples',
-				position: 4,
-			},
-		]);
-	});
-
-	it('tracks top-level suggestion selection before submit', async () => {
+	it('tracks top-level suggestion selection when inserting into the composer', async () => {
 		const onSubmit = vi.fn();
-		const { getByTestId } = renderComponent({
+		const { getByRole, getByTestId, queryByTestId } = renderComponent({
 			props: {
 				isStreaming: false,
 				suggestions,
@@ -546,42 +1390,20 @@ describe('InstanceAiInput', () => {
 
 		await userEvent.click(getByTestId('instance-ai-suggestion-build-workflow'));
 
+		await waitFor(() => {
+			expect(getByRole('textbox')).toHaveValue(
+				"I want to build a new workflow. Help me figure out what to build. Ask me what's the end goal, what should trigger it, and what apps or services are involved.",
+			);
+			expect(queryByTestId('instance-ai-suggestion-build-workflow')).not.toBeInTheDocument();
+		});
 		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestion selected', {
 			thread_id: 'thread-1',
 			suggestion_catalog_version: 'v1',
-			research_mode: false,
 			suggestion_id: 'build-workflow',
 			suggestion_kind: 'prompt',
 			position: 1,
 		});
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-	});
-
-	it('includes the research-mode flag when tracking top-level suggestion selection telemetry', async () => {
-		const { getByTestId } = renderComponent({
-			props: {
-				isStreaming: false,
-				suggestions,
-				researchMode: true,
-			},
-		});
-
-		telemetryTrack.mockClear();
-
-		await userEvent.click(getByTestId('instance-ai-suggestion-build-workflow'));
-
-		expect(telemetryTrack).toHaveBeenCalledTimes(1);
-		expect(telemetryTrack.mock.calls[0]).toEqual([
-			'Instance AI prompt suggestion selected',
-			{
-				thread_id: 'thread-1',
-				suggestion_catalog_version: 'v1',
-				research_mode: true,
-				suggestion_id: 'build-workflow',
-				suggestion_kind: 'prompt',
-				position: 1,
-			},
-		]);
+		expect(onSubmit).not.toHaveBeenCalled();
 	});
 
 	it('tracks quick-example suggestion selection with semantic payload', async () => {
@@ -601,7 +1423,6 @@ describe('InstanceAiInput', () => {
 		expect(telemetryTrack).toHaveBeenCalledWith('Instance AI prompt suggestion selected', {
 			thread_id: 'thread-1',
 			suggestion_catalog_version: 'v1',
-			research_mode: false,
 			suggestion_id: 'answer-support-requests',
 			suggestion_kind: 'quick_example',
 			position: 3,
@@ -609,7 +1430,7 @@ describe('InstanceAiInput', () => {
 	});
 
 	it('never includes prompt text in telemetry payloads', async () => {
-		const { getByTestId } = renderComponent({
+		const { getByRole, getByTestId } = renderComponent({
 			props: {
 				isStreaming: false,
 				suggestions,
@@ -618,6 +1439,11 @@ describe('InstanceAiInput', () => {
 
 		telemetryTrack.mockClear();
 		await userEvent.click(getByTestId('instance-ai-suggestion-build-workflow'));
+		const textbox = getByRole('textbox');
+		await userEvent.clear(textbox);
+		await waitFor(() => {
+			expect(getByTestId('instance-ai-suggestion-quick-examples')).toBeVisible();
+		});
 		await userEvent.click(getByTestId('instance-ai-suggestion-quick-examples'));
 		await userEvent.click(getByTestId('instance-ai-quick-example-answer-support-requests'));
 
@@ -641,5 +1467,11 @@ describe('InstanceAiInput', () => {
 		});
 
 		expect(queryByTestId('instance-ai-suggestion-build-workflow')).not.toBeInTheDocument();
+	});
+
+	it('raises the character limit for long, externally-drafted prompts', () => {
+		const { getByRole } = renderComponent();
+
+		expect(getByRole('textbox')).toHaveAttribute('maxlength', '25000');
 	});
 });

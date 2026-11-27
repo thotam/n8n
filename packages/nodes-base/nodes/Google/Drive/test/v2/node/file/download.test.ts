@@ -1,12 +1,15 @@
+import { requestPath } from 'n8n-workflow';
 import * as download from '../../../../v2/actions/file/download.operation';
 import * as transport from '../../../../v2/transport';
 import { createMockExecuteFunction, driveNode } from '../helpers';
+import type { Mock } from 'vitest';
+import type * as _importType0 from '../../../../v2/transport';
 
-jest.mock('../../../../v2/transport', () => {
-	const originalModule = jest.requireActual('../../../../v2/transport');
+vi.mock('../../../../v2/transport', async () => {
+	const originalModule = await vi.importActual<typeof _importType0>('../../../../v2/transport');
 	return {
 		...originalModule,
-		googleApiRequest: jest.fn(async function () {
+		googleApiRequest: vi.fn(async function () {
 			return {};
 		}),
 	};
@@ -14,7 +17,7 @@ jest.mock('../../../../v2/transport', () => {
 
 describe('test GoogleDriveV2: file download', () => {
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 	});
 
 	it('should be called with', async () => {
@@ -37,13 +40,13 @@ describe('test GoogleDriveV2: file download', () => {
 		expect(transport.googleApiRequest).toBeCalledTimes(2);
 		expect(transport.googleApiRequest).toHaveBeenCalledWith(
 			'GET',
-			'/drive/v3/files/fileIDxxxxxx',
+			requestPath`/drive/v3/files/fileIDxxxxxx`,
 			{},
 			{ fields: 'mimeType,name', supportsTeamDrives: true, supportsAllDrives: true },
 		);
 		expect(transport.googleApiRequest).toHaveBeenCalledWith(
 			'GET',
-			'/drive/v3/files/fileIDxxxxxx',
+			requestPath`/drive/v3/files/fileIDxxxxxx`,
 			{},
 			{ alt: 'media', supportsAllDrives: true },
 			undefined,
@@ -68,7 +71,7 @@ describe('test GoogleDriveV2: file download', () => {
 			},
 		};
 
-		(transport.googleApiRequest as jest.Mock)
+		(transport.googleApiRequest as Mock)
 			.mockResolvedValueOnce({ mimeType: 'application/vnd.google-apps.document', name: 'test' })
 			.mockResolvedValueOnce({
 				headers: { 'content-type': 'text/markdown' },
@@ -82,9 +85,47 @@ describe('test GoogleDriveV2: file download', () => {
 		expect(transport.googleApiRequest).toHaveBeenNthCalledWith(
 			2,
 			'GET',
-			'/drive/v3/files/fileIDxxxxxx/export',
+			requestPath`/drive/v3/files/fileIDxxxxxx/export`,
 			{},
 			{ mimeType: 'text/markdown', supportsAllDrives: true },
+			undefined,
+			{ encoding: 'arraybuffer', json: false, returnFullResponse: true, useStream: true },
+		);
+	});
+
+	it('should export Google Sheets with a supported format by default', async () => {
+		const nodeParameters = {
+			operation: 'download',
+			fileId: {
+				__rl: true,
+				value: 'fileIDxxxxxx',
+				mode: 'list',
+			},
+			options: {},
+		};
+
+		(transport.googleApiRequest as Mock)
+			.mockResolvedValueOnce({ mimeType: 'application/vnd.google-apps.spreadsheet', name: 'test' })
+			.mockResolvedValueOnce({
+				headers: {
+					'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+				},
+				body: Buffer.from(''),
+			});
+
+		const fakeExecuteFunction = createMockExecuteFunction(nodeParameters, driveNode);
+		await download.execute.call(fakeExecuteFunction, 0, { json: {} });
+
+		expect(transport.googleApiRequest).toHaveBeenCalledTimes(2);
+		expect(transport.googleApiRequest).toHaveBeenNthCalledWith(
+			2,
+			'GET',
+			requestPath`/drive/v3/files/fileIDxxxxxx/export`,
+			{},
+			{
+				mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+				supportsAllDrives: true,
+			},
 			undefined,
 			{ encoding: 'arraybuffer', json: false, returnFullResponse: true, useStream: true },
 		);

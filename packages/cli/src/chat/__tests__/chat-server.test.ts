@@ -1,16 +1,17 @@
 import type { Application } from 'express';
 import { ServerResponse } from 'http';
-import type { Server as HttpServer } from 'http';
-import type { IncomingMessage } from 'http';
-import { mock, mockReset } from 'jest-mock-extended';
-import type { WebSocket } from 'ws';
-import type { WebSocketServer } from 'ws';
+import type { Server as HttpServer, IncomingMessage } from 'http';
+import { mock, mockReset } from 'vitest-mock-extended';
+import type { WebSocket, WebSocketServer } from 'ws';
 
 import { ChatServer } from '../chat-server';
 import type { ChatService } from '../chat-service';
 import type { ChatRequest } from '../chat-service.types';
 
-jest.mock('ws');
+vi.mock('ws', () => ({
+	Server: vi.fn(function () {}),
+	WebSocketServer: vi.fn(function () {}),
+}));
 
 describe('ChatServer', () => {
 	const mockChatService = mock<ChatService>();
@@ -18,7 +19,7 @@ describe('ChatServer', () => {
 	const mockApp = mock<Application>() as unknown as Application & {
 		handle: (req: IncomingMessage, res: ServerResponse) => void;
 	};
-	mockApp.handle = jest.fn();
+	mockApp.handle = vi.fn();
 	const mockHttpServer = mock<HttpServer>();
 
 	let chatServer: ChatServer;
@@ -43,7 +44,7 @@ describe('ChatServer', () => {
 		chatServer.setup(mockHttpServer, mockApp);
 
 		const req = {
-			url: 'http://localhost:5678/chat?sessionId=123&executionId=456',
+			url: '/chat?sessionId=123&executionId=456',
 			socket: { remoteAddress: '127.0.0.1' },
 		} as ChatRequest;
 		const socket = {} as any;
@@ -64,7 +65,7 @@ describe('ChatServer', () => {
 		chatServer.setup(mockHttpServer, mockApp);
 
 		const req = {
-			url: 'http://localhost:5678/chat?sessionId=123&executionId=456',
+			url: '/chat?sessionId=123&executionId=456',
 			socket: { remoteAddress: '127.0.0.1' },
 		} as ChatRequest;
 		const socket = {} as any;

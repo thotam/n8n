@@ -1,44 +1,47 @@
 import { randomBytes } from 'crypto';
 import type { IHookFunctions, IWebhookFunctions } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import { mauticApiRequest } from '../GenericFunctions';
 import { MauticTrigger } from '../MauticTrigger.node';
 import { verifySignature } from '../MauticTriggerHelpers';
+import type { Mock, Mocked } from 'vitest';
+import type * as _importType0 from 'crypto';
 
-jest.mock('../GenericFunctions');
-jest.mock('../MauticTriggerHelpers');
-jest.mock('crypto', () => ({
-	...jest.requireActual('crypto'),
-	randomBytes: jest.fn(),
+vi.mock('../GenericFunctions');
+vi.mock('../MauticTriggerHelpers');
+vi.mock('crypto', async () => ({
+	...(await vi.importActual<typeof _importType0>('crypto')),
+	randomBytes: vi.fn(),
 }));
 
 describe('MauticTrigger', () => {
 	let trigger: MauticTrigger;
 	let mockHookFunctions: Pick<
-		jest.Mocked<IHookFunctions>,
+		Mocked<IHookFunctions>,
 		'getNodeWebhookUrl' | 'getNodeParameter' | 'getWorkflowStaticData'
 	>;
 	let mockWebhookFunctions: Pick<
-		jest.Mocked<IWebhookFunctions>,
+		Mocked<IWebhookFunctions>,
 		'getRequestObject' | 'getResponseObject' | 'getWorkflowStaticData' | 'helpers'
 	>;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		trigger = new MauticTrigger();
 
 		mockHookFunctions = {
-			getNodeWebhookUrl: jest.fn(),
-			getNodeParameter: jest.fn(),
-			getWorkflowStaticData: jest.fn(),
+			getNodeWebhookUrl: vi.fn(),
+			getNodeParameter: vi.fn(),
+			getWorkflowStaticData: vi.fn(),
 		};
 
 		mockWebhookFunctions = {
-			getRequestObject: jest.fn(),
-			getResponseObject: jest.fn(),
-			getWorkflowStaticData: jest.fn(),
+			getRequestObject: vi.fn(),
+			getResponseObject: vi.fn(),
+			getWorkflowStaticData: vi.fn(),
 			helpers: {
-				returnJsonArray: jest.fn((data) => data),
+				returnJsonArray: vi.fn((data) => data),
 			} as any,
 		};
 	});
@@ -56,10 +59,10 @@ describe('MauticTrigger', () => {
 			});
 			mockHookFunctions.getWorkflowStaticData.mockReturnValue({});
 
-			(randomBytes as jest.Mock).mockReturnValue({
-				toString: jest.fn().mockReturnValue(webhookSecret),
+			(randomBytes as Mock).mockReturnValue({
+				toString: vi.fn().mockReturnValue(webhookSecret),
 			});
-			(mauticApiRequest as jest.Mock).mockResolvedValue({ hook: { id: 'hook-123' } });
+			(mauticApiRequest as Mock).mockResolvedValue({ hook: { id: 'hook-123' } });
 
 			const result = await trigger.webhookMethods!.default.create.call(
 				mockHookFunctions as unknown as IHookFunctions,
@@ -69,7 +72,7 @@ describe('MauticTrigger', () => {
 			expect(randomBytes).toHaveBeenCalledWith(32);
 			expect(mauticApiRequest).toHaveBeenCalledWith(
 				'POST',
-				'/hooks/new',
+				requestPath`/hooks/new`,
 				expect.objectContaining({
 					secret: webhookSecret,
 					webhookUrl,
@@ -82,6 +85,19 @@ describe('MauticTrigger', () => {
 		});
 	});
 
+	describe('webhookMethods.default.checkExists', () => {
+		it('should return false for a webhook ID of ".." without a request', async () => {
+			mockHookFunctions.getWorkflowStaticData.mockReturnValue({ webhookId: '..' });
+
+			const result = await trigger.webhookMethods!.default.checkExists.call(
+				mockHookFunctions as unknown as IHookFunctions,
+			);
+
+			expect(result).toBe(false);
+			expect(mauticApiRequest).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('webhookMethods.default.delete', () => {
 		it('should delete webhook and clean up secret', async () => {
 			const webhookData: any = {
@@ -89,14 +105,14 @@ describe('MauticTrigger', () => {
 				webhookSecret: 'test-secret',
 			};
 			mockHookFunctions.getWorkflowStaticData.mockReturnValue(webhookData);
-			(mauticApiRequest as jest.Mock).mockResolvedValue({});
+			(mauticApiRequest as Mock).mockResolvedValue({});
 
 			const result = await trigger.webhookMethods!.default.delete.call(
 				mockHookFunctions as unknown as IHookFunctions,
 			);
 
 			expect(result).toBe(true);
-			expect(mauticApiRequest).toHaveBeenCalledWith('DELETE', '/hooks/hook-123/delete');
+			expect(mauticApiRequest).toHaveBeenCalledWith('DELETE', requestPath`/hooks/hook-123/delete`);
 			expect(webhookData.webhookId).toBeUndefined();
 			expect(webhookData.webhookSecret).toBeUndefined();
 		});
@@ -105,12 +121,12 @@ describe('MauticTrigger', () => {
 	describe('webhook', () => {
 		it('should return 401 when signature verification fails', async () => {
 			const mockResponse = {
-				status: jest.fn().mockReturnThis(),
-				send: jest.fn().mockReturnThis(),
-				end: jest.fn(),
+				status: vi.fn().mockReturnThis(),
+				send: vi.fn().mockReturnThis(),
+				end: vi.fn(),
 			};
 
-			(verifySignature as jest.Mock).mockReturnValue(false);
+			(verifySignature as Mock).mockReturnValue(false);
 			mockWebhookFunctions.getResponseObject.mockReturnValue(mockResponse as any);
 
 			const result = await trigger.webhook.call(
@@ -128,7 +144,7 @@ describe('MauticTrigger', () => {
 				'mautic.lead_post_save_new': [{ contact: { id: 1, name: 'Test' } }],
 			};
 
-			(verifySignature as jest.Mock).mockReturnValue(true);
+			(verifySignature as Mock).mockReturnValue(true);
 			mockWebhookFunctions.getRequestObject.mockReturnValue({
 				body: bodyData,
 			} as any);

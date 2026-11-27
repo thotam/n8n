@@ -1,22 +1,77 @@
+import { UrlService } from '@n8n/backend-services';
 import { GlobalConfig } from '@n8n/config';
-import type { AuthenticatedRequest } from '@n8n/db';
 import { Container } from '@n8n/di';
 import type { Router, ErrorRequestHandler, RequestHandler } from 'express';
 import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import type { JsonObject } from 'swagger-ui-express';
-import validator from 'validator';
 
-import { Logger } from '@n8n/backend-common';
+import { rememberRawBody } from '@/idempotency/idempotency-request';
 
-import { EventService } from '@/events/event.service';
-import { License } from '@/license';
-import { AuthStrategyRegistry } from '@/services/auth-strategy.registry';
-import { LastActiveAtService } from '@/services/last-active-at.service';
-import { UrlService } from '@/services/url.service';
-
+import { PublicApiControllerRegistry } from './public-api-controller.registry';
+import { PublicApiRateLimitSettingsService } from './public-api-rate-limit-settings.service';
+import { stripGitBookParentTags } from './swagger-spec';
 import { sendPublicApiErrorResponse } from './v1/public-api-error-response';
+
+import { License } from '@/license';
+
+import './v1/controllers';
+
+// Renders `x-required-scope` as a badge on each operation. swagger-ui-express
+// serializes this function's source into the page, so it must be self-contained:
+// no closures, no imports.
+type ImmutableLike = { get(key: string): unknown };
+type ImmutableListLike = { toJS(): string[] };
+type SwaggerUiSystem = {
+	React: {
+		createElement(component: unknown, props: unknown): unknown;
+		useEffect(effect: () => undefined | (() => void), deps: unknown[]): void;
+	};
+	specSelectors?: {
+		specJson(): { getIn(path: string[]): ImmutableLike | null | undefined };
+	};
+};
+type OperationSummaryProps = { specPath?: ImmutableListLike };
+
+function scopeBadgePlugin() {
+	const wrapOperationSummary =
+		(originalComponent: unknown, system: SwaggerUiSystem) => (props: OperationSummaryProps) => {
+			const pathArr = props.specPath?.toJS ? props.specPath.toJS() : null;
+			const op = pathArr ? (system.specSelectors?.specJson().getIn(pathArr) ?? null) : null;
+			const rawScope = op?.get ? op.get('x-required-scope') : null;
+			const scope = typeof rawScope === 'string' ? rawScope : null;
+			const method = pathArr ? pathArr[2] : null;
+			const pathStr = pathArr ? pathArr[1] : null;
+			system.React.useEffect(() => {
+				if (!scope || scope === 'none' || !method || !pathStr) return;
+				const candidates = document.querySelectorAll('.opblock-summary-' + method);
+				let target: Element | null = null;
+				for (const c of candidates) {
+					const pathEl = c.querySelector('.opblock-summary-path');
+					if (pathEl && pathEl.getAttribute('data-path') === pathStr) {
+						target =
+							c.querySelector('.opblock-summary-path-description-wrapper') ??
+							c.querySelector('.opblock-summary-description');
+						break;
+					}
+				}
+				if (!target) return;
+				const existing = target.querySelector(':scope > .x-scope-badge');
+				if (existing) existing.remove();
+				const badge = document.createElement('span');
+				badge.className = 'x-scope-badge';
+				badge.textContent = scope;
+				target.appendChild(badge);
+				return () => {
+					badge.remove();
+				};
+			}, [scope, method, pathStr]);
+			return system.React.createElement(originalComponent, props);
+		};
+	// eslint-disable-next-line @typescript-eslint/naming-convention -- Swagger UI plugin keys are PascalCase
+	return { wrapComponents: { OperationSummary: wrapOperationSummary } };
+}
 
 function createLazySwaggerMiddleware(
 	openApiSpecPath: string,
@@ -32,7 +87,8 @@ function createLazySwaggerMiddleware(
 
 			const YAML = await import('yaml');
 			const spec = await fs.readFile(openApiSpecPath, 'utf-8');
-			const swaggerDocument = YAML.parse(spec) as JsonObject;
+			const openapiSpec = YAML.parse(spec) as JsonObject;
+			const swaggerDocument = stripGitBookParentTags(openapiSpec);
 			// add the server depending on the config so the user can interact with the API
 			// from the Swagger UI
 			swaggerDocument.server = [
@@ -45,14 +101,18 @@ function createLazySwaggerMiddleware(
 			const swaggerThemePath = path.join(__dirname, 'swagger-theme.css');
 			const swaggerThemeCss = await fs.readFile(swaggerThemePath, { encoding: 'utf-8' });
 
+			const swaggerSetupOpts = {
+				customCss: swaggerThemeCss,
+				customSiteTitle: 'n8n Public API UI',
+				customfavIcon: `${n8nPath}favicon.ico`,
+				swaggerOptions: {
+					plugins: [scopeBadgePlugin],
+				},
+			};
 			cachedRouter = express.Router();
 			cachedRouter.use(
-				serveFiles(swaggerDocument),
-				setup(swaggerDocument, {
-					customCss: swaggerThemeCss,
-					customSiteTitle: 'n8n Public API UI',
-					customfavIcon: `${n8nPath}favicon.ico`,
-				}),
+				serveFiles(swaggerDocument, swaggerSetupOpts),
+				setup(swaggerDocument, swaggerSetupOpts),
 			);
 		}
 
@@ -60,102 +120,19 @@ function createLazySwaggerMiddleware(
 	};
 }
 
-function createLazyValidatorMiddleware(
-	openApiSpecPath: string,
-	handlersDirectory: string,
-	version: string,
-): RequestHandler {
-	let cachedRouter: Router | undefined;
-	let initPromise: Promise<Router> | undefined;
-
-	return async (req, res, next) => {
-		if (!cachedRouter) {
-			initPromise ??= (async () => {
-				const { middleware: openApiValidatorMiddleware } = await import(
-					'express-openapi-validator'
-				);
-
-				const authenticate = async (req: AuthenticatedRequest) => {
-					const authenticated = await Container.get(AuthStrategyRegistry).authenticate(req);
-
-					if (authenticated) {
-						Container.get(LastActiveAtService)
-							.updateLastActiveIfStale(req.user.id)
-							.catch((error: unknown) => {
-								Container.get(Logger).error('Failed to update last active timestamp', {
-									error,
-								});
-							});
-						Container.get(EventService).emit('public-api-invoked', {
-							userId: req.user.id,
-							path: req.path,
-							method: req.method,
-							apiVersion: version,
-							userAgent: req.headers['user-agent'],
-						});
-					}
-
-					return authenticated;
-				};
-
-				const router = express.Router();
-				router.use(
-					openApiValidatorMiddleware({
-						apiSpec: openApiSpecPath,
-						operationHandlers: handlersDirectory,
-						validateRequests: true,
-						validateApiSpec: true,
-						formats: {
-							email: {
-								type: 'string',
-								validate: (email: string) => validator.isEmail(email),
-							},
-							identifier: {
-								type: 'string',
-								validate: (identifier: string) =>
-									validator.isUUID(identifier) || validator.isEmail(identifier),
-							},
-							jsonString: {
-								validate: (data: string) => {
-									try {
-										JSON.parse(data);
-										return true;
-									} catch (e) {
-										return false;
-									}
-								},
-							},
-							nanoid: {
-								type: 'string',
-								validate: (id: string) => {
-									return /^[A-Za-z0-9]{16}$/.test(id);
-								},
-							},
-						},
-						validateSecurity: {
-							handlers: {
-								ApiKeyAuth: authenticate,
-								BearerAuth: authenticate,
-							},
-						},
-					}),
-				);
-				return router;
-			})();
-			cachedRouter = await initPromise;
-		}
-
-		void cachedRouter(req, res, next);
-	};
+function createPublicControllerMiddleware(version: string): RequestHandler {
+	const router = express.Router({ mergeParams: true });
+	Container.get(PublicApiControllerRegistry).activate(router, version);
+	return router;
 }
 
 function createApiRouter(
 	version: string,
 	openApiSpecPath: string,
-	handlersDirectory: string,
 	publicApiEndpoint: string,
 ): Router {
 	const globalConfig = Container.get(GlobalConfig);
+	const payloadLimit = `${globalConfig.endpoints.payloadSizeMax}mb`;
 	const apiController = express.Router();
 
 	if (!globalConfig.publicApi.swaggerUiDisabled) {
@@ -166,6 +143,9 @@ function createApiRouter(
 	}
 
 	apiController.get(`/${publicApiEndpoint}/${version}/openapi.yml`, (_, res) => {
+		// Public, read-only spec with no auth or sensitive data - safe to expose
+		// cross-origin for documentation playgrounds
+		res.header('Access-Control-Allow-Origin', '*');
 		res.sendFile(openApiSpecPath);
 	});
 
@@ -180,11 +160,22 @@ function createApiRouter(
 		next(error);
 	};
 
+	// No route matched: the path is not part of the public API.
+	const notFoundHandler: RequestHandler = (_req, res) => {
+		res.status(404).json({ message: 'not found' });
+	};
+
 	apiController.use(
 		`/${publicApiEndpoint}/${version}`,
-		express.json(),
+		express.json({
+			limit: payloadLimit,
+			verify: (req, _res, buf) => {
+				rememberRawBody(req, buf);
+			},
+		}),
 		jsonParseErrorHandler,
-		createLazyValidatorMiddleware(openApiSpecPath, handlersDirectory, version),
+		createPublicControllerMiddleware(version),
+		notFoundHandler,
 	);
 
 	const publicApiErrorHandler: ErrorRequestHandler = (
@@ -207,9 +198,11 @@ export const loadPublicApiVersions = async (
 	const folders = await fs.readdir(__dirname);
 	const versions = folders.filter((folderName) => folderName.startsWith('v'));
 
+	await Container.get(PublicApiRateLimitSettingsService).load();
+
 	const apiRouters = versions.map((version) => {
 		const openApiPath = path.join(__dirname, version, 'openapi.yml');
-		return createApiRouter(version, openApiPath, __dirname, publicApiEndpoint);
+		return createApiRouter(version, openApiPath, publicApiEndpoint);
 	});
 
 	const version = versions.pop()?.charAt(1);
@@ -220,6 +213,12 @@ export const loadPublicApiVersions = async (
 	};
 };
 
-export function isApiEnabled(): boolean {
+/**
+ * Whether API-key (token) based authentication is accepted on the public API.
+ * Public API routes are always registered regardless of this flag — the UI
+ * authenticates against them with the user's session cookie instead, which
+ * must keep working even when token-based access is disabled.
+ */
+export function isApiKeyAuthEnabled(): boolean {
 	return !Container.get(GlobalConfig).publicApi.disabled && !Container.get(License).isAPIDisabled();
 }

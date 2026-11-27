@@ -1,58 +1,115 @@
 import type {
 	AgentBuilder,
+	AgentMessage,
 	BuiltMemory,
+	BuiltProviderTool,
 	BuiltTool,
 	CredentialProvider,
+	FetchFn,
+	McpClient,
 	ModelConfig,
 	ToolDescriptor,
 	JSONObject,
+	RuntimeSkill,
+	RuntimeSkillLinkedFiles,
+	RuntimeSkillSource,
+	Agent as RuntimeAgent,
 } from '@n8n/agents';
-import { Agent, Memory, Tool, wrapToolForApproval } from '@n8n/agents';
-import type { AgentSkill } from '@n8n/api-types';
+import { modelConfigToId } from '@n8n/agents';
+import { wrapToolForApproval } from '@n8n/agents/tool';
+import { isRecord } from '@n8n/utils/is-record';
+import {
+	getNativeWebSearchProviderTools,
+	getProviderPrefix,
+	hasNativeWebSearchProvider,
+	isNativeWebSearchRequested,
+	isRoutedAnthropicModel,
+} from '@n8n/ai-utilities/agent-config';
+import {
+	AI_GATEWAY_MANAGED_TAG,
+	type AgentModelCredentialConfig,
+	type AgentSkill,
+	type AgentJsonConfig,
+	type AgentJsonMcpServerConfig,
+	type AgentJsonMemoryConfig,
+	type AgentJsonToolConfig,
+	type AgentJsonSkillConfig,
+} from '@n8n/api-types';
+import { UserError } from '@n8n/errors';
+import { createHash } from 'crypto';
 import { z } from 'zod';
 
-import type {
-	AgentJsonConfig,
-	AgentJsonConfigRef,
-	AgentJsonMemoryConfig,
-	AgentJsonToolConfig,
-} from './agent-json-config';
-import { mapCredentialForProvider } from './credential-field-mapping';
+import {
+	resolveEpisodicMemoryEmbeddingProviderOptions,
+	type ManagedEmbeddingProviderOptionsResolver,
+} from '@/modules/knowledge/vector-stores/embedding-credential';
+import { resolveCredentialAwareModelConfig } from './model-config';
 import { resolveProviderToolName } from './provider-tool-aliases';
+import {
+	resolveWebSearchGatewayProxyConfig,
+	type AiGatewaySearchCredentialResolver,
+} from './web-search-credential';
+import { buildVectorStore } from '@/modules/knowledge/vector-stores/factory';
+import { createVectorStoreErrorSanitizer } from '@/modules/knowledge/vector-stores/error-sanitizer';
+import type { FinishKnowledgeToolCall } from '../agent-knowledge-usage-tracker';
 
+const WEB_SEARCH_TOOL_NAME = 'web_search';
+const WEB_SEARCH_INPUT_SCHEMA = z.object({
+	query: z.string().min(1).describe('Search query'),
+	maxResults: z.number().int().min(1).max(10).optional().describe('Maximum number of results'),
+	includeDomains: z.array(z.string()).optional().describe('Only return results from these domains'),
+	excludeDomains: z.array(z.string()).optional().describe('Exclude results from these domains'),
+});
+
+const WEB_SEARCH_PLAN_INSTRUCTION =
+	'Before using web_search, choose the smallest search plan that can answer the user. Default to one broad, high-signal query. After each search, stop if the results already contain enough credible sources to answer. Use a second search only when the first result set is insufficient or the user asked for comparison across independent source categories. Do not fan out variations of the same query, and do not search for confirmation only. Use more than two searches only when the user explicitly asks for deep research, exhaustive coverage, or multiple independent topics.';
+
+export type FallbackWebSearchArgs = z.infer<typeof WEB_SEARCH_INPUT_SCHEMA>;
+export type FallbackWebSearchHandler = (
+	args: FallbackWebSearchArgs,
+	/** Aborts when the run stops. */
+	options?: { signal?: AbortSignal },
+) => Promise<unknown>;
+
+const WEB_SEARCH_POLICY_INSTRUCTION =
+	'### Web search policy\n' +
+	'Use web search only on high-signal requests: explicit web/current/latest/live/recent/research/source requests, or questions that require up-to-date external facts. Do not use web search for static knowledge, uploaded knowledge, local config, codebase questions, or confirmation. Prefer answering directly or using local knowledge tools first. One search is usually enough; do not search repeatedly unless the user asks for deep research.';
+
+/**
+ * Appended only for the in-app preview chat. Without this the agent agrees to
+ * setup changes it cannot make. The preview UI offers the n8n Assistant hand-off
+ * beside this answer.
+ */
+const PREVIEW_SELF_MODIFICATION_POLICY =
+	'### Preview chat policy\n' +
+	'This conversation only runs you. You can change things in n8n, including your own setup, only through your tools. Your setup is your instructions, model, tools, skills, knowledge, channels, integrations, schedules, name and any other part of your configuration. A request that names no other owner, such as "add a tool" or "connect a Slack channel", is about your setup.\n' +
+	'If none of your tools can make a change that the user asks for, say plainly that you cannot make it here, and tell them to ask the n8n Assistant, which edits the agent for them.\n' +
+	'Never claim that a change was applied unless a tool result confirms it.';
+
+/** `null` drops the tool from the agent; `undefined` falls back to the inert marker tool. */
 export type ToolResolver = (
 	toolSchema: AgentJsonToolConfig,
 ) => Promise<BuiltTool | null | undefined>;
 
 export interface ToolExecutor {
 	executeTool(toolName: string, input: unknown, ctx: unknown): Promise<unknown>;
-	executeToMessageSync?(toolName: string, output: unknown): unknown;
+	executeToMessage(toolName: string, output: unknown): Promise<AgentMessage | undefined>;
 }
 
 /** Factory function that reconstructs a BuiltMemory backend from serialized params. */
 export type MemoryFactory = (params: AgentJsonMemoryConfig) => BuiltMemory | Promise<BuiltMemory>;
 
-const DEFAULT_WORKING_MEMORY_TEMPLATE = `# Thread memory
-- User facts:
-- User preferences/instructions:
-- Current goal/task:
-- Current state:
-- Key active items:
-- Decisions made:
-- Open follow-ups:
-- Resolved or superseded:`;
-
-const DEFAULT_WORKING_MEMORY_INSTRUCTION = [
-	'Thread working memory is maintained automatically after turns by an out-of-band observer.',
-	'Thread working memory applies only to this same session/thread.',
-	'Do not claim it is available in a different session, new thread, or cross-thread profile unless the product explicitly provides that context.',
-	'Use it silently as private read-only context for this session.',
-	'Treat working memory as internal context; do not reveal, quote, append, or reproduce the raw working-memory document in user-visible replies.',
-	'If the user asks what you remember, answer conversationally from relevant memory instead of dumping the document.',
-	'Do not try to edit, summarize, refresh, or maintain working memory directly.',
-].join(' ');
+/**
+ * Build an SDK `McpClient` from a single JSON-config MCP server entry. The
+ * platform layer owns this factory because it needs access to the credential
+ * store and OAuth2 refresh infrastructure, both of which are out of scope for
+ * `buildFromJson`.
+ */
+export type McpClientBuilder = (server: AgentJsonMcpServerConfig) => Promise<McpClient>;
 
 export interface BuildFromJsonOptions {
+	/** Routes a gated tool through the configured approval destination. */
+	wrapApproval?: (tool: BuiltTool, ref: AgentJsonToolConfig) => BuiltTool;
 	/** Executes custom tool handlers inside isolates. */
 	toolExecutor: ToolExecutor;
 	credentialProvider: CredentialProvider;
@@ -62,6 +119,85 @@ export interface BuildFromJsonOptions {
 	skills?: Record<string, AgentSkill>;
 	/** Memory backend factories keyed by storage preset name. */
 	memoryFactory: MemoryFactory;
+	/**
+	 * When provided, each entry in `config.mcpServers` is built into an
+	 * `McpClient` and attached to the agent via `agent.mcp(client)`. The
+	 * platform layer is responsible for tracking returned clients for
+	 * teardown when the runtime is evicted.
+	 *
+	 */
+	buildMcpClient?: McpClientBuilder;
+	/** Resolves proxy-backed OpenAI embedding options for `credential: "managed"`. */
+	resolveManagedEmbeddingProviderOptions?: ManagedEmbeddingProviderOptionsResolver;
+	/** Proxy-aware `fetch` for the agent's model calls (see `createAiProxyFetch`). */
+	modelFetch?: FetchFn;
+	/** Policy-aware `fetch` for fallback web-search calls (see `createWebSearchFetch`). */
+	webSearchFetch?: FetchFn;
+	/**
+	 * Replaces the live Brave/SearXNG call behind the fallback `web_search`
+	 * tool. When set, the tool is attached without requiring a search provider
+	 * or credential in the config (eval instrumentation only).
+	 */
+	fallbackWebSearch?: FallbackWebSearchHandler;
+	/**
+	 * Leave out the provider's own tools (native web search and configured
+	 * `providerTools`) and attach the fallback `web_search` tool instead, so
+	 * every call goes through a tool handler.
+	 */
+	disableProviderTools?: boolean;
+	/**
+	 * Attach MCP servers whose credential is still pending instead of skipping
+	 * them. Only safe when MCP traffic cannot reach the real server — set by
+	 * the eval path when its mock MCP transport is injected.
+	 */
+	attachAuthPendingMcpServers?: boolean;
+	/**
+	 * Build for the in-app preview chat, which appends
+	 * {@link PREVIEW_SELF_MODIFICATION_POLICY} to the instructions. Runtimes
+	 * built with this differ from every other surface, so callers must keep
+	 * them on their own cache key.
+	 */
+	previewChat?: boolean;
+	/** Called when each vector store search starts. The returned function gets the size of the output that the model gets. */
+	onVectorStoreSearch?: (runId: string | undefined) => FinishKnowledgeToolCall;
+}
+
+function wrapVectorStoreSearch(
+	searchTool: BuiltTool,
+	sanitizeError: (error: unknown) => Error,
+	onVectorStoreSearch?: (runId: string | undefined) => FinishKnowledgeToolCall,
+): BuiltTool {
+	const searchHandler = searchTool.handler;
+	if (!searchHandler) {
+		return searchTool;
+	}
+
+	return {
+		...searchTool,
+		async handler(input, ctx) {
+			const finishSearch = onVectorStoreSearch?.(ctx.runId);
+			const startedAt = Date.now();
+			let output: unknown;
+			try {
+				output = await searchHandler.call(searchTool, input, ctx);
+			} catch (error) {
+				const errorType = error instanceof Error ? error.name : typeof error;
+				finishSearch?.({ failed: true, searchDurationMs: Date.now() - startedAt, errorType });
+				throw sanitizeError(error);
+			}
+			if (!finishSearch) return output;
+
+			const searchDurationMs = Date.now() - startedAt;
+
+			const modelOutput = searchTool.toModelOutput ? searchTool.toModelOutput(output) : output;
+			const json: string | undefined = JSON.stringify(modelOutput);
+			const contentChars = json?.length ?? 0;
+			const emptySearch =
+				isRecord(output) && Array.isArray(output.results) && output.results.length === 0;
+			finishSearch({ failed: false, contentChars, searchDurationMs, emptySearch });
+			return output;
+		},
+	};
 }
 
 /**
@@ -75,144 +211,320 @@ export async function buildFromJson(
 	config: AgentJsonConfig,
 	toolDescriptors: Record<string, ToolDescriptor>,
 	options: BuildFromJsonOptions,
-): Promise<Agent> {
+): Promise<RuntimeAgent> {
+	const { Agent, createRuntimeSkillRegistry } = await import('@n8n/agents');
 	const agent = new Agent(config.name);
 
-	// Derive the provider prefix for credential field remapping.
-	const slashIdx = config.model.indexOf('/');
-	const providerPrefix = slashIdx !== -1 ? config.model.slice(0, slashIdx) : '';
-
-	// Resolve credentials upfront and embed them directly in the model config
-	// object so createModel() receives the full set of fields it needs.
-	if (config.credential) {
-		const raw = await options.credentialProvider.resolve(config.credential);
-		const mapped = mapCredentialForProvider(providerPrefix, raw);
-		agent.model({ id: config.model, ...mapped } as ModelConfig);
-	} else {
-		agent.model(config.model);
+	const resolvedModelConfig = await resolveModelConfig(config, options.credentialProvider);
+	agent.model(resolvedModelConfig);
+	if (options.modelFetch) {
+		agent.modelFetch(options.modelFetch);
 	}
 
-	const configuredSkills = getConfiguredSkills(config.skills ?? [], options.skills ?? {});
-	agent.instructions(withSkillCatalog(config.instructions, configuredSkills));
+	const configuredSkillSource = getConfiguredSkillSource(
+		config.skills ?? [],
+		options.skills ?? {},
+		createRuntimeSkillRegistry,
+	);
+	agent.instructions(buildInstructions(config, options));
 
 	// Tools
 	if (config.tools) {
 		for (const ref of config.tools) {
+			if (ref.enabled === false) continue;
 			const built = await resolveToolRef(ref, toolDescriptors, options);
 			if (built) {
 				agent.tool(built);
 			}
 		}
 	}
-	if (configuredSkills.length > 0) {
-		agent.tool(createLoadSkillTool(configuredSkills));
+
+	if (config.mcpServers?.length && options.buildMcpClient) {
+		for (const server of config.mcpServers) {
+			// Draft MCP connections may not have an endpoint URL yet, or may
+			// require a credential that setup skipped. Attempting to connect
+			// anyway would mean an unauthenticated request to a server that
+			// requires auth, so treat either as an incomplete draft and skip
+			// attaching it rather than risk a connection attempt.
+			if (!server.url.trim()) continue;
+			if (
+				server.authentication !== 'none' &&
+				!server.credential &&
+				!options.attachAuthPendingMcpServers
+			)
+				continue;
+
+			const client = await options.buildMcpClient(server);
+			agent.mcp(client);
+		}
 	}
 
+	if (config.vectorStores?.length) {
+		for (const vectorStoreConfig of config.vectorStores) {
+			// Draft connections may not have a credential (or embedding credential)
+			// selected yet — skip them rather than failing the whole agent build.
+			if (!vectorStoreConfig.credential || !vectorStoreConfig.embedding.credential) continue;
+			const sanitizer = createVectorStoreErrorSanitizer(
+				options.credentialProvider,
+				vectorStoreConfig,
+			);
+			try {
+				const vectorStore = await buildVectorStore(vectorStoreConfig, sanitizer.credentialProvider);
+				const searchTool = vectorStore.asTool({ description: vectorStoreConfig.useWhen }).build();
+				agent.tool(
+					wrapVectorStoreSearch(searchTool, sanitizer.sanitize, options.onVectorStoreSearch),
+				);
+			} catch (error) {
+				throw sanitizer.sanitize(error);
+			}
+		}
+	}
+
+	agent.skills(configuredSkillSource);
+
 	// Provider tools
-	if (config.providerTools) {
-		for (const [name, args] of Object.entries(config.providerTools)) {
+	const providerTools = options.disableProviderTools
+		? undefined
+		: getNativeWebSearchProviderTools(config, { includeDefaultArgs: false });
+	if (providerTools) {
+		for (const [name, args] of Object.entries(providerTools)) {
 			const resolved = resolveProviderToolName(name);
 			agent.providerTool({ name: resolved as `${string}.${string}`, args });
 		}
 	}
+	const fallbackWebSearchTool = buildFallbackWebSearchTool(
+		config,
+		options.credentialProvider,
+		options.webSearchFetch,
+		options.fallbackWebSearch,
+		options.disableProviderTools,
+	);
+	if (fallbackWebSearchTool) {
+		agent.tool(fallbackWebSearchTool);
+	}
 
 	// Memory
 	if (config.memory?.enabled) {
-		await applyMemoryFromConfig(agent, config.memory, options.memoryFactory);
+		await applyMemoryFromConfig(agent, config.memory, options);
 	}
 
 	// Config options
 	if (config.config) {
-		if (config.config.thinking) {
-			const { provider, ...rest } = config.config.thinking;
-			agent.thinking(provider, rest);
+		if (config.config.reasoning) {
+			agent.reasoning(config.config.reasoning);
 		}
 		if (config.config.toolCallConcurrency) {
 			agent.toolCallConcurrency(config.config.toolCallConcurrency);
 		}
+		if (config.config.maxIterations) {
+			agent.configuration({ maxIterations: config.config.maxIterations });
+		}
+	}
+
+	if (config.config?.promptCaching) {
+		agent.promptCaching(config.config.promptCaching);
+	} else if (isRoutedAnthropicModel(config.model)) {
+		// Existing agents receive the cache default without a config update.
+		agent.promptCaching({ enabled: true });
 	}
 
 	return agent;
 }
 
-type ConfiguredSkill = { id: string; skill: AgentSkill };
+function getProviderToolPrefix(toolName: string): string | undefined {
+	const dotIndex = toolName.indexOf('.');
+	return dotIndex > 0 ? toolName.slice(0, dotIndex) : undefined;
+}
 
-function getConfiguredSkills(
-	refs: Array<Extract<AgentJsonConfigRef, { type: 'skill' }>>,
+function buildInstructions(config: AgentJsonConfig, options: BuildFromJsonOptions): string {
+	const name = config.name.trim();
+	return [
+		name ? `Your name is ${JSON.stringify(name)}.` : undefined,
+		config.instructions.trimEnd(),
+		config.config?.webSearch?.enabled === true ? WEB_SEARCH_POLICY_INSTRUCTION : undefined,
+		options.previewChat === true ? PREVIEW_SELF_MODIFICATION_POLICY : undefined,
+	]
+		.filter(Boolean)
+		.join('\n\n');
+}
+
+/**
+ * Build provider-defined tools for a specific model from persisted agent config.
+ * Used for inline sub-agents whose effective model may differ from the parent model.
+ */
+export function buildProviderToolsForModel(
+	config: AgentJsonConfig,
+	modelConfig: ModelConfig,
+): BuiltProviderTool[] {
+	const modelId = modelConfigToId(modelConfig);
+	if (!modelId) return [];
+
+	const providerPrefix = getProviderPrefix(modelId);
+	if (!providerPrefix) return [];
+
+	const providerTools = getNativeWebSearchProviderTools(
+		{ ...config, model: modelId },
+		{ includeDefaultArgs: false },
+	);
+
+	return Object.entries(providerTools)
+		.map(([name, args]) => ({
+			name: resolveProviderToolName(name) as `${string}.${string}`,
+			args,
+		}))
+		.filter((tool) => getProviderToolPrefix(tool.name) === providerPrefix);
+}
+
+function buildFallbackWebSearchTool(
+	config: AgentJsonConfig,
+	credentialProvider: CredentialProvider & Partial<AiGatewaySearchCredentialResolver>,
+	webSearchFetch?: FetchFn,
+	fallbackWebSearch?: FallbackWebSearchHandler,
+	disableProviderTools = false,
+): BuiltTool | null {
+	const webSearchConfig = config.config?.webSearch;
+
+	if (!webSearchConfig?.enabled) return null;
+	if (
+		!disableProviderTools &&
+		isNativeWebSearchRequested(config) &&
+		hasNativeWebSearchProvider(config.model)
+	) {
+		return null;
+	}
+	// Provider tools are disabled so that every search goes through a handler the caller owns.
+	// Without that handler, the live search below would run for real, so there is no web search.
+	if (disableProviderTools && !fallbackWebSearch) return null;
+	if (fallbackWebSearch) {
+		return {
+			name: WEB_SEARCH_TOOL_NAME,
+			description: 'Search the web for current information.',
+			systemInstruction: WEB_SEARCH_PLAN_INSTRUCTION,
+			inputSchema: WEB_SEARCH_INPUT_SCHEMA,
+			handler: async (input, ctx) =>
+				await fallbackWebSearch(
+					WEB_SEARCH_INPUT_SCHEMA.parse(input),
+					ctx?.abortSignal ? { signal: ctx.abortSignal } : undefined,
+				),
+		};
+	}
+	if (webSearchConfig.provider !== 'brave' && webSearchConfig.provider !== 'searxng') {
+		throw new UserError('Web search is enabled but no fallback search provider is configured.');
+	}
+	if (!webSearchConfig.credential) {
+		throw new UserError('Web search is enabled but no search credential is configured.');
+	}
+	const credentialId = webSearchConfig.credential;
+
+	return {
+		name: WEB_SEARCH_TOOL_NAME,
+		description: 'Search the web for current information.',
+		systemInstruction: WEB_SEARCH_PLAN_INSTRUCTION,
+		inputSchema: WEB_SEARCH_INPUT_SCHEMA,
+		handler: async (input) => {
+			const args = WEB_SEARCH_INPUT_SCHEMA.parse(input);
+			const { braveSearch, searxngSearch } = await import('@n8n/ai-utilities');
+			const searchOptions = {
+				maxResults: args.maxResults,
+				includeDomains: args.includeDomains,
+				excludeDomains: args.excludeDomains,
+			};
+
+			if (webSearchConfig.provider === 'brave') {
+				// n8n Connect (Gateway credits): route through the AI gateway with a
+				// minted credential instead of the user's API key.
+				if (credentialId === AI_GATEWAY_MANAGED_TAG) {
+					const proxyConfig = await resolveWebSearchGatewayProxyConfig(
+						webSearchConfig.provider,
+						credentialProvider,
+					);
+					return await braveSearch('', args.query, { ...searchOptions, proxyConfig });
+				}
+				const credential = await credentialProvider.resolve(credentialId);
+				if (typeof credential.apiKey !== 'string') {
+					throw new Error('Brave Search credential is missing an API key.');
+				}
+				return await braveSearch(credential.apiKey, args.query, searchOptions, webSearchFetch);
+			}
+
+			// SearXNG is self-hosted, so it has no gateway-served managed path.
+			if (credentialId === AI_GATEWAY_MANAGED_TAG) {
+				throw new UserError('Gateway credits web search is only available for Brave Search.');
+			}
+			const credential = await credentialProvider.resolve(credentialId);
+			if (typeof credential.apiUrl !== 'string') {
+				throw new Error('SearXNG credential is missing an API URL.');
+			}
+			return await searxngSearch(credential.apiUrl, args.query, searchOptions, webSearchFetch);
+		},
+	};
+}
+
+function getConfiguredSkillSource(
+	refs: AgentJsonSkillConfig[],
 	skills: Record<string, AgentSkill>,
-): ConfiguredSkill[] {
+	createRegistry: (skills: RuntimeSkill[]) => RuntimeSkillSource['registry'],
+): RuntimeSkillSource {
 	const seen = new Set<string>();
-	const configured: ConfiguredSkill[] = [];
+	const configured: RuntimeSkill[] = [];
+	const referencesBySkillId = new Map<
+		string,
+		Map<string, NonNullable<AgentSkill['references']>[number]>
+	>();
 
 	for (const ref of refs) {
 		if (seen.has(ref.id)) continue;
 		seen.add(ref.id);
 		const skill = skills[ref.id];
 		if (!skill) throw new Error(`Skill "${ref.id}" not found in stored skill bodies`);
-		configured.push({ id: ref.id, skill });
+		const textFiles = (skill.references ?? []).filter((file) => !file.isBinary);
+		const linkedFiles = linkedFilesForSkill(textFiles);
+		referencesBySkillId.set(
+			ref.id,
+			new Map(textFiles.map((reference) => [reference.path, reference])),
+		);
+		configured.push({
+			id: ref.id,
+			name: skill.name,
+			description: skill.description,
+			instructions: skill.instructions,
+			linkedFiles,
+		});
 	}
 
-	return configured;
-}
-
-function withSkillCatalog(instructions: string, skills: ConfiguredSkill[]): string {
-	if (skills.length === 0) return instructions;
-
-	const catalog = formatSkillCatalog(skills);
-	const baseInstructions = instructions.trimEnd();
-
-	return `Skill loading protocol:
-Skills are optional instruction packs, not execution tools. Use them to get extra guidance only when they are relevant to the user's current request.
-
-Available skills:
-${catalog}
-
-When deciding whether to load a skill:
-- Match the user's request against the skill name and description.
-- If one skill clearly matches, call load_skill once with that skill's id, then follow the returned instructions.
-- If the relevant skill was already loaded for this request, do not call load_skill again.
-- If no skill clearly matches, do not call load_skill.
-- Do not load a skill just because it is listed here.${baseInstructions ? `\n\n${baseInstructions}` : ''}`;
-}
-
-function createLoadSkillTool(skills: ConfiguredSkill[]): BuiltTool {
-	const skillsById = new Map(skills.map(({ id, skill }) => [id, skill]));
-
-	return new Tool('load_skill')
-		.description(
-			'Load the full instructions for an attached skill. Use the skill id listed in the system instructions.',
-		)
-		.input(
-			z.object({
-				skillId: z.string().describe('The skill id from the Available skills list'),
-			}),
-		)
-		.handler(async ({ skillId }: { skillId: string }) => {
-			const skill = skillsById.get(skillId);
-			if (!skill) {
-				return {
-					ok: false,
-					error: `Skill "${skillId}" is not attached to this agent.`,
-				};
-			}
-
-			return {
-				ok: true,
+	const skillsById = new Map(configured.map((skill) => [skill.id, skill]));
+	return {
+		registry: createRegistry(configured),
+		loadSkill: async (skillId) => (await Promise.resolve(skillsById.get(skillId))) ?? null,
+		loadFile: async (skillId, filePath) => {
+			const reference = referencesBySkillId.get(skillId)?.get(filePath);
+			if (!reference) return await Promise.resolve(null);
+			return await Promise.resolve({
 				skillId,
-				name: skill.name,
-				description: skill.description,
-				instructions: skill.instructions,
-			};
-		})
-		.build();
+				filePath: reference.path,
+				content: reference.content,
+				bytes: Buffer.byteLength(reference.content, 'utf8'),
+				sha256: createHash('sha256').update(reference.content).digest('hex'),
+			});
+		},
+	};
 }
 
-function formatSkillCatalog(skills: ConfiguredSkill[]): string {
-	return skills
-		.map(
-			({ id, skill }) => `- name: ${skill.name}\n  description: ${skill.description}\n  id: ${id}`,
-		)
-		.join('\n');
+function linkedFilesForSkill(
+	files: NonNullable<AgentSkill['references']>,
+): RuntimeSkillLinkedFiles {
+	return {
+		references: files.map((reference) => ({
+			path: reference.path,
+			bytes: Buffer.byteLength(reference.content, 'utf8'),
+			sha256: createHash('sha256').update(reference.content).digest('hex'),
+		})),
+		templates: [],
+		scripts: [],
+		assets: [],
+		examples: [],
+		other: [],
+	};
 }
 
 async function resolveToolRef(
@@ -226,23 +538,34 @@ async function resolveToolRef(
 			if (!descriptor) {
 				throw new Error(`Custom tool "${ref.id}" not found in tool descriptors`);
 			}
-
 			const builtTool: BuiltTool = {
 				name: descriptor.name,
 				description: descriptor.description,
 				systemInstruction: descriptor.systemInstruction ?? undefined,
 				inputSchema: descriptor.inputSchema ?? undefined,
+				outputTrust: descriptor.outputTrust === 'untrusted' ? 'untrusted' : undefined,
+				// Lets a test run block custom code even when its name matches a built-in tool.
+				metadata: { customTool: true },
 				handler: async (input, ctx) => {
 					return await options.toolExecutor.executeTool(descriptor.name, input, {
 						resumeData: 'resumeData' in ctx ? ctx.resumeData : undefined,
 						parentTelemetry: ctx.parentTelemetry,
 					});
 				},
+				...(descriptor.hasToMessage
+					? {
+							toMessage: async (output: unknown) =>
+								await options.toolExecutor.executeToMessage(descriptor.name, output),
+						}
+					: {}),
 				providerOptions: descriptor.providerOptions as Record<string, JSONObject> | undefined,
 			};
 
 			if (ref.requireApproval) {
-				return wrapToolForApproval(builtTool, { requireApproval: true });
+				return (
+					options.wrapApproval?.(builtTool, ref) ??
+					wrapToolForApproval(builtTool, { requireApproval: true })
+				);
 			}
 			return builtTool;
 		}
@@ -258,9 +581,13 @@ async function resolveToolRef(
 					options: { name: ref.name, description: ref.description },
 				},
 			};
-			const tool = (await options.resolveTool?.(ref)) ?? marker;
+			const resolved = await options.resolveTool?.(ref);
+			if (resolved === null) return null;
+			const tool = resolved ?? marker;
 			if (ref.requireApproval) {
-				return wrapToolForApproval(tool, { requireApproval: true });
+				return (
+					options.wrapApproval?.(tool, ref) ?? wrapToolForApproval(tool, { requireApproval: true })
+				);
 			}
 			return tool;
 		}
@@ -272,9 +599,13 @@ async function resolveToolRef(
 				editable: false,
 				metadata: { nodeTool: true, ...ref.node },
 			};
-			const tool = (await options.resolveTool?.(ref)) ?? marker;
+			const resolved = await options.resolveTool?.(ref);
+			if (resolved === null) return null;
+			const tool = resolved ?? marker;
 			if (ref.requireApproval) {
-				return wrapToolForApproval(tool, { requireApproval: true });
+				return (
+					options.wrapApproval?.(tool, ref) ?? wrapToolForApproval(tool, { requireApproval: true })
+				);
 			}
 			return tool;
 		}
@@ -284,26 +615,141 @@ async function resolveToolRef(
 async function applyMemoryFromConfig(
 	agent: AgentBuilder,
 	memoryConfig: AgentJsonMemoryConfig,
-	memoryFactory: MemoryFactory,
+	{
+		memoryFactory,
+		credentialProvider,
+		resolveManagedEmbeddingProviderOptions,
+		modelFetch,
+	}: BuildFromJsonOptions,
 ) {
+	const { Memory } = await import('@n8n/agents');
 	const memory = new Memory();
 
 	const builtMemory = memoryFactory(memoryConfig);
 	memory.storage(await Promise.resolve(builtMemory));
-	memory
-		.freeform(DEFAULT_WORKING_MEMORY_TEMPLATE)
-		.scope('thread')
-		.instruction(DEFAULT_WORKING_MEMORY_INSTRUCTION);
 
-	if (memoryConfig.lastMessages) {
-		memory.lastMessages(memoryConfig.lastMessages);
+	if (memoryConfig.episodicMemory?.enabled === true) {
+		memory.episodicMemory(
+			await resolveEpisodicMemoryJsonConfig(memoryConfig.episodicMemory, credentialProvider, {
+				resolveManagedEmbeddingProviderOptions,
+				modelFetch,
+			}),
+		);
 	}
 
-	if (memoryConfig.semanticRecall) {
-		memory.semanticRecall(memoryConfig.semanticRecall);
+	if (memoryConfig.observationalMemory?.enabled !== false) {
+		const observationalMemory = memoryConfig.observationalMemory;
+
+		const { createObservationLogObserveFn, createObservationLogReflectFn } = await import(
+			'@n8n/agents'
+		);
+
+		memory.observationalMemory({
+			...(observationalMemory?.observerModel !== undefined && {
+				observe: createObservationLogObserveFn(
+					await resolveMemoryWorkerModelConfig(
+						observationalMemory.observerModel,
+						credentialProvider,
+					),
+				),
+			}),
+			...(observationalMemory?.reflectorModel !== undefined && {
+				reflect: createObservationLogReflectFn(
+					await resolveMemoryWorkerModelConfig(
+						observationalMemory.reflectorModel,
+						credentialProvider,
+					),
+				),
+			}),
+			...(observationalMemory?.observerThresholdTokens !== undefined && {
+				observerThresholdTokens: observationalMemory.observerThresholdTokens,
+			}),
+			...(observationalMemory?.reflectorThresholdTokens !== undefined && {
+				reflectorThresholdTokens: observationalMemory.reflectorThresholdTokens,
+			}),
+			...(observationalMemory?.renderTokenBudget !== undefined && {
+				renderTokenBudget: observationalMemory.renderTokenBudget,
+			}),
+			...(observationalMemory?.observationLogTailLimit !== undefined && {
+				observationLogTailLimit: observationalMemory.observationLogTailLimit,
+			}),
+			...(observationalMemory?.lockTtlMs !== undefined && {
+				lockTtlMs: observationalMemory.lockTtlMs,
+			}),
+			// Any windowShares object replaces the SDK's default 200k cap, so pass it only with a cap set.
+			...(observationalMemory?.windowShares?.maxContextWindowTokens !== undefined && {
+				windowShares: {
+					maxContextWindowTokens: observationalMemory.windowShares.maxContextWindowTokens,
+				},
+			}),
+		});
 	}
 
 	memory.titleGeneration({ sync: true });
 
 	agent.memory(memory);
+}
+
+async function resolveEpisodicMemoryJsonConfig(
+	config: Extract<NonNullable<AgentJsonMemoryConfig['episodicMemory']>, { enabled: true }>,
+	credentialProvider: CredentialProvider,
+	{
+		resolveManagedEmbeddingProviderOptions,
+		modelFetch,
+	}: Pick<BuildFromJsonOptions, 'resolveManagedEmbeddingProviderOptions' | 'modelFetch'>,
+) {
+	const { DEFAULT_EPISODIC_MEMORY_EMBEDDING_MODEL, createEpisodicMemoryConsolidateFn } =
+		await import('@n8n/agents');
+	const embeddingModel = DEFAULT_EPISODIC_MEMORY_EMBEDDING_MODEL;
+	const embeddingProviderOptions = await resolveEpisodicMemoryEmbeddingProviderOptions(
+		config.credential,
+		embeddingModel,
+		credentialProvider,
+		{ resolveManaged: resolveManagedEmbeddingProviderOptions, fetch: modelFetch },
+	);
+
+	if (!embeddingProviderOptions) {
+		throw new Error('Managed Episodic Memory embeddings require the AI assistant proxy.');
+	}
+
+	return {
+		enabled: true,
+		...(config.reflectorModel !== undefined && {
+			consolidate: createEpisodicMemoryConsolidateFn(
+				await resolveMemoryWorkerModelConfig(config.reflectorModel, credentialProvider),
+			),
+		}),
+		...(config.topK !== undefined && { topK: config.topK }),
+		...(config.maxEntriesPerRun !== undefined && { maxEntriesPerRun: config.maxEntriesPerRun }),
+		...(config.guidance !== undefined && { guidance: config.guidance }),
+		embeddingProviderOptions,
+	};
+}
+
+async function resolveModelConfig(
+	config: AgentJsonConfig,
+	credentialProvider: CredentialProvider,
+): Promise<ModelConfig> {
+	if (!config.credential) return config.model;
+
+	return await resolveCredentialAwareModelConfig(
+		config.model,
+		config.credential,
+		credentialProvider,
+	);
+}
+
+async function resolveMemoryWorkerModelConfig(
+	config: AgentModelCredentialConfig,
+	credentialProvider: CredentialProvider,
+): Promise<ModelConfig> {
+	// Mirrors `resolveModelConfig`: an empty credential means "not configured",
+	// which must not reach `resolve('')` and surface as a credential-not-found error.
+	if (!config.credential) return config.model;
+
+	return await resolveCredentialAwareModelConfig(
+		config.model,
+		config.credential,
+		credentialProvider,
+	);
 }

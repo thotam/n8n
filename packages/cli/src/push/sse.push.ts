@@ -18,6 +18,8 @@ export class SSEPush extends AbstractPush<Connection> {
 		res.setHeader('Content-Type', 'text/event-stream; charset=UTF-8');
 		res.setHeader('Cache-Control', 'no-cache');
 		res.setHeader('Connection', 'keep-alive');
+		res.setHeader('Incremental', '?1');
+		res.setHeader('X-Accel-Buffering', 'no');
 		res.writeHead(200);
 		res.write(':ok\n\n');
 		res.flush();
@@ -25,11 +27,11 @@ export class SSEPush extends AbstractPush<Connection> {
 		super.add(pushRef, userId, connection);
 
 		// When the client disconnects, remove the client.
-		// Only remove if this connection is still the active one for this pushRef —
+		// Only remove if this connection is still the active one for this pushRef and user —
 		// a newer connection may have already replaced it via add().
 		const removeClient = () => {
-			if (this.getConnection(pushRef) === connection) {
-				this.remove(pushRef);
+			if (this.getConnection(pushRef, userId) === connection) {
+				this.remove(pushRef, userId);
 			}
 		};
 		req.once('end', removeClient);

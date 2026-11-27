@@ -1,4 +1,5 @@
 import { testDb, mockInstance } from '@n8n/backend-test-utils';
+import { GlobalConfig } from '@n8n/config';
 import { CommandMetadata, type CommandClass } from '@n8n/decorators';
 import { Container } from '@n8n/di';
 import argvParser from 'yargs-parser';
@@ -10,22 +11,25 @@ mockInstance(MessageEventBus);
 
 export const setupTestCommand = <T extends CommandClass>(Command: T) => {
 	// mock SIGINT/SIGTERM registration
-	process.once = jest.fn();
-	process.exit = jest.fn() as never;
+	process.once = vi.fn();
+	process.exit = vi.fn() as never;
 
 	beforeAll(async () => {
+		// `BaseCommand.init()` starts the PostHog client when diagnostics are on. Keep it off
+		// so a command test reads feature flags from `featureFlags.override` only.
+		Container.get(GlobalConfig).diagnostics.enabled = false;
 		await testDb.init();
 	});
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		mockInstance(TelemetryEventRelay);
 	});
 
 	afterAll(async () => {
 		await testDb.terminate();
 
-		jest.restoreAllMocks();
+		vi.restoreAllMocks();
 	});
 
 	const run = async (argv: string[] = []) => {

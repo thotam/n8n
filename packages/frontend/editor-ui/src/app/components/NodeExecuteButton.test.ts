@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router';
 import userEvent from '@testing-library/user-event';
 import { waitFor } from '@testing-library/vue';
 import { createComponentRenderer } from '@/__tests__/render';
-import { type MockedStore, mockedStore, getTooltip } from '@/__tests__/utils';
+import { type MockedStore, mockedStore, getTooltip, queryTooltip } from '@/__tests__/utils';
 import { mockNode, mockNodeTypeDescription } from '@/__tests__/mocks';
 import { nodeViewEventBus } from '@/app/event-bus';
 import {
@@ -20,6 +20,7 @@ import {
 } from '@/app/constants';
 import NodeExecuteButton from './NodeExecuteButton.vue';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
+import { useWorkflowExecutionStateStore } from '@/app/stores/workflowExecutionState.store';
 import {
 	injectWorkflowDocumentStore,
 	useWorkflowDocumentStore,
@@ -31,13 +32,8 @@ import { useRunWorkflow } from '@/app/composables/useRunWorkflow';
 import { useExternalHooks } from '@/app/composables/useExternalHooks';
 import { usePinnedData } from '@/app/composables/usePinnedData';
 import { useMessage } from '@/app/composables/useMessage';
-import { useToast } from '@/app/composables/useToast';
+import { useToast } from '@n8n/composables/useToast';
 import * as buttonParameterUtils from '@/features/ndv/parameters/utils/buttonParameter.utils';
-import {
-	injectWorkflowState,
-	useWorkflowState,
-	type WorkflowState,
-} from '@/app/composables/useWorkflowState';
 
 vi.mock('vue-router', () => ({
 	useRouter: () => ({}),
@@ -45,7 +41,7 @@ vi.mock('vue-router', () => ({
 	RouterLink: vi.fn(),
 }));
 
-vi.mock('@/app/composables/useToast', () => {
+vi.mock('@n8n/composables/useToast', () => {
 	const showError = vi.fn();
 	const showMessage = vi.fn();
 	return {
@@ -104,14 +100,6 @@ vi.mock('@/app/composables/useMessage', () => {
 	};
 });
 
-vi.mock('@/app/composables/useWorkflowState', async () => {
-	const actual = await vi.importActual('@/app/composables/useWorkflowState');
-	return {
-		...actual,
-		injectWorkflowState: vi.fn(),
-	};
-});
-
 vi.mock('@/app/stores/workflowDocument.store', async (importOriginal) => ({
 	...(await importOriginal()),
 	injectWorkflowDocumentStore: vi.fn(),
@@ -127,7 +115,7 @@ let runWorkflow: ReturnType<typeof useRunWorkflow>;
 let externalHooks: ReturnType<typeof useExternalHooks>;
 let message: ReturnType<typeof useMessage>;
 let toast: ReturnType<typeof useToast>;
-let workflowState: WorkflowState;
+let workflowExecutionStateStore: ReturnType<typeof useWorkflowExecutionStateStore>;
 let nodeViewEventBusEmitSpy: ReturnType<typeof vi.spyOn>;
 
 describe('NodeExecuteButton', () => {
@@ -147,11 +135,12 @@ describe('NodeExecuteButton', () => {
 		workflowsStore.workflowId = 'abc123';
 		workflowDocumentStore = useWorkflowDocumentStore(createWorkflowDocumentId('abc123'));
 		vi.mocked(injectWorkflowDocumentStore).mockReturnValue(shallowRef(workflowDocumentStore));
-		workflowState = useWorkflowState();
-		vi.mocked(injectWorkflowState).mockReturnValue(workflowState);
+		workflowExecutionStateStore = useWorkflowExecutionStateStore(
+			createWorkflowDocumentId('abc123'),
+		);
 
 		nodeTypesStore = mockedStore(useNodeTypesStore);
-		ndvStore = mockedStore(useNDVStore);
+		ndvStore = mockedStore(useNDVStore, createWorkflowDocumentId('abc123'));
 
 		runWorkflow = useRunWorkflow({ router: useRouter() });
 		externalHooks = useExternalHooks();
@@ -165,6 +154,18 @@ describe('NodeExecuteButton', () => {
 
 	it('renders without error', () => {
 		expect(() => renderComponent()).not.toThrow();
+	});
+
+	it('keeps the tooltip trigger around a natively disabled button', async () => {
+		const { getByRole, emitted } = renderComponent({
+			props: { disabled: true, tooltip: 'Execute this node' },
+		});
+		const button = getByRole('button');
+		expect(button).toBeDisabled();
+		await userEvent.hover(button.parentElement!);
+		await waitFor(() => expect(getTooltip()).toHaveTextContent('Execute this node'));
+		await userEvent.click(button);
+		expect(emitted('execute')).toBeUndefined();
 	});
 
 	it('displays correct button label for regular node', () => {
@@ -223,7 +224,11 @@ describe('NodeExecuteButton', () => {
 	it('displays "Stop Listening" when node is listening for events', () => {
 		const node = mockNode({ name: 'test-node', type: SET_NODE_TYPE });
 		vi.spyOn(workflowDocumentStore, 'getNodeByName').mockReturnValue(node);
-		workflowsStore.executionWaitingForWebhook = true;
+		vi.spyOn(
+			useWorkflowExecutionStateStore(createWorkflowDocumentId('abc123')),
+			'executionWaitingForWebhook',
+			'get',
+		).mockReturnValue(true);
 		nodeTypesStore.isTriggerNode = () => true;
 
 		const { getByRole } = renderComponent();
@@ -233,9 +238,13 @@ describe('NodeExecuteButton', () => {
 	it('displays "Stop Listening" when node is running and is a trigger node', () => {
 		const node = mockNode({ name: 'test-node', type: SET_NODE_TYPE });
 		vi.spyOn(workflowDocumentStore, 'getNodeByName').mockReturnValue(node);
-		workflowState.executingNode.isNodeExecuting = vi.fn().mockReturnValue(true);
+		workflowExecutionStateStore.executingNode.isNodeExecuting = vi.fn().mockReturnValue(true);
 		nodeTypesStore.isTriggerNode = () => true;
-		workflowsStore.isWorkflowRunning = true;
+		vi.spyOn(
+			useWorkflowExecutionStateStore(createWorkflowDocumentId('abc123')),
+			'isWorkflowRunning',
+			'get',
+		).mockReturnValue(true);
 
 		const { getByRole } = renderComponent();
 		expect(getByRole('button').textContent).toBe('Stop Listening');
@@ -244,8 +253,12 @@ describe('NodeExecuteButton', () => {
 	it('sets button to loading state when node is executing', () => {
 		const node = mockNode({ name: 'test-node', type: SET_NODE_TYPE });
 		vi.spyOn(workflowDocumentStore, 'getNodeByName').mockReturnValue(node);
-		workflowState.executingNode.isNodeExecuting = vi.fn().mockReturnValue(true);
-		workflowsStore.isWorkflowRunning = true;
+		workflowExecutionStateStore.executingNode.isNodeExecuting = vi.fn().mockReturnValue(true);
+		vi.spyOn(
+			useWorkflowExecutionStateStore(createWorkflowDocumentId('abc123')),
+			'isWorkflowRunning',
+			'get',
+		).mockReturnValue(true);
 
 		const { getByRole } = renderComponent();
 		expect(getByRole('button')).toHaveAttribute('aria-busy', 'true');
@@ -259,7 +272,8 @@ describe('NodeExecuteButton', () => {
 		const { getByRole } = renderComponent();
 
 		const button = getByRole('button');
-		expect(button).toBeDisabled();
+		expect(button).toHaveAttribute('aria-disabled', 'true');
+		expect(button).not.toBeDisabled();
 
 		await userEvent.hover(button);
 
@@ -269,9 +283,58 @@ describe('NodeExecuteButton', () => {
 		});
 	});
 
+	describe('test step tooltip visibility', () => {
+		const POPUP_COUNT_KEY = 'N8N_NODE_TEST_STEP_POPUP_COUNT';
+		const tooltip = 'Execute previous nodes';
+
+		beforeEach(() => {
+			vi.spyOn(workflowDocumentStore, 'getNodeByName').mockReturnValue(
+				mockNode({ name: 'test-node', type: SET_NODE_TYPE }),
+			);
+		});
+
+		afterEach(() => {
+			localStorage.removeItem(POPUP_COUNT_KEY);
+		});
+
+		it('keeps showing the tooltip on an icon-only button past the popup limit', async () => {
+			localStorage.setItem(POPUP_COUNT_KEY, '10');
+
+			const { getByRole } = renderComponent({ props: { tooltip, iconOnly: true } });
+
+			await userEvent.hover(getByRole('button'));
+
+			await waitFor(() => expect(getTooltip()).toHaveTextContent(tooltip));
+		});
+
+		it('shows the tooltip on a labeled button below the popup limit', async () => {
+			localStorage.setItem(POPUP_COUNT_KEY, '0');
+
+			const { getByRole } = renderComponent({ props: { tooltip } });
+
+			await userEvent.hover(getByRole('button'));
+
+			await waitFor(() => expect(getTooltip()).toHaveTextContent(tooltip));
+		});
+
+		it('stops showing the tooltip on a labeled button past the popup limit', async () => {
+			localStorage.setItem(POPUP_COUNT_KEY, '10');
+
+			const { getByRole } = renderComponent({ props: { tooltip } });
+
+			await userEvent.hover(getByRole('button'));
+
+			expect(queryTooltip()).toBeNull();
+		});
+	});
+
 	it('should be disabled when workflow is running but node is not executing', async () => {
-		workflowsStore.isWorkflowRunning = true;
-		workflowState.executingNode.isNodeExecuting = vi.fn().mockReturnValue(false);
+		vi.spyOn(
+			useWorkflowExecutionStateStore(createWorkflowDocumentId('abc123')),
+			'isWorkflowRunning',
+			'get',
+		).mockReturnValue(true);
+		workflowExecutionStateStore.executingNode.isNodeExecuting = vi.fn().mockReturnValue(false);
 		vi.spyOn(workflowDocumentStore, 'getNodeByName').mockReturnValue(
 			mockNode({ name: 'test-node', type: SET_NODE_TYPE }),
 		);
@@ -279,7 +342,8 @@ describe('NodeExecuteButton', () => {
 		const { getByRole } = renderComponent();
 
 		const button = getByRole('button');
-		expect(button).toBeDisabled();
+		expect(button).toHaveAttribute('aria-disabled', 'true');
+		expect(button).not.toBeDisabled();
 
 		await userEvent.hover(button);
 
@@ -303,11 +367,16 @@ describe('NodeExecuteButton', () => {
 
 		const { getByRole } = renderComponent();
 
-		expect(getByRole('button')).toBeDisabled();
+		expect(getByRole('button')).toHaveAttribute('aria-disabled', 'true');
+		expect(getByRole('button')).not.toBeDisabled();
 	});
 
 	it('stops webhook when clicking button while listening for events', async () => {
-		workflowsStore.executionWaitingForWebhook = true;
+		vi.spyOn(
+			useWorkflowExecutionStateStore(createWorkflowDocumentId('abc123')),
+			'executionWaitingForWebhook',
+			'get',
+		).mockReturnValue(true);
 		nodeTypesStore.isTriggerNode = () => true;
 		vi.spyOn(workflowDocumentStore, 'getNodeByName').mockReturnValue(
 			mockNode({ name: 'test-node', type: SET_NODE_TYPE }),
@@ -321,10 +390,14 @@ describe('NodeExecuteButton', () => {
 	});
 
 	it('stops execution when clicking button while workflow is running', async () => {
-		workflowsStore.isWorkflowRunning = true;
+		vi.spyOn(
+			useWorkflowExecutionStateStore(createWorkflowDocumentId('abc123')),
+			'isWorkflowRunning',
+			'get',
+		).mockReturnValue(true);
 		nodeTypesStore.isTriggerNode = () => true;
-		useWorkflowState().setActiveExecutionId('test-execution-id');
-		workflowState.executingNode.isNodeExecuting = vi.fn().mockReturnValue(true);
+		workflowExecutionStateStore.setActiveExecutionId('test-execution-id');
+		workflowExecutionStateStore.executingNode.isNodeExecuting = vi.fn().mockReturnValue(true);
 		vi.spyOn(workflowDocumentStore, 'getNodeByName').mockReturnValue(
 			mockNode({ name: 'test-node', type: SET_NODE_TYPE }),
 		);

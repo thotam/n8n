@@ -1,5 +1,5 @@
 import type { Channel, Connection, ConsumeMessage, Message } from 'amqplib';
-import { mock, mockDeep } from 'jest-mock-extended';
+import { mock, mockDeep } from 'vitest-mock-extended';
 import type {
 	IExecuteResponsePromiseData,
 	INode,
@@ -8,11 +8,13 @@ import type {
 	IWorkflowMetadata,
 } from 'n8n-workflow';
 
+const { connect } = vi.hoisted(() => ({ connect: vi.fn() }));
+vi.mock('amqplib', () => ({ connect }));
+
 const mockChannel = mock<Channel>();
 const mockConnection = mock<Connection>({ createChannel: async () => mockChannel });
 mockChannel.connection = mockConnection;
-const connect = jest.fn().mockReturnValue(mockConnection);
-jest.mock('amqplib', () => ({ connect }));
+connect.mockReturnValue(mockConnection);
 
 import {
 	parseMessage,
@@ -35,7 +37,10 @@ describe('RabbitMQ GenericFunctions', () => {
 	};
 	const context = mockDeep<ITriggerFunctions>();
 
-	beforeEach(() => jest.clearAllMocks());
+	beforeEach(() => {
+		vi.clearAllMocks();
+		connect.mockReturnValue(mockConnection);
+	});
 
 	describe('parseMessage', () => {
 		const helpers = mock<ITriggerFunctions['helpers']>();
@@ -139,6 +144,91 @@ describe('RabbitMQ GenericFunctions', () => {
 			expect(mockChannel.checkQueue).toHaveBeenCalledWith('queue');
 			expect(mockChannel.bindQueue).not.toHaveBeenCalled();
 		});
+
+		it('should await queue bindings sequentially before returning the channel', async () => {
+			context.getCredentials.mockResolvedValue(credentials);
+
+			let resolveFirstBind: (value?: unknown) => void = () => {};
+			const firstBindPromise = new Promise((resolve) => {
+				resolveFirstBind = resolve;
+			});
+
+			let resolveSecondBind: (value?: unknown) => void = () => {};
+			const secondBindPromise = new Promise((resolve) => {
+				resolveSecondBind = resolve;
+			});
+
+			let secondBindStarted = false;
+			let connectQueueFinished = false;
+
+			mockChannel.bindQueue.mockImplementation(async (_queue, exchange) => {
+				if (exchange === 'exchange-1') {
+					await firstBindPromise;
+					return {} as never;
+				}
+				if (exchange === 'exchange-2') {
+					secondBindStarted = true;
+					await secondBindPromise;
+					return {} as never;
+				}
+				return {} as never;
+			});
+
+			const bindings = [
+				{ exchange: 'exchange-1', routingKey: 'key-1' },
+				{ exchange: 'exchange-2', routingKey: 'key-2' },
+			];
+			const options = mock<TriggerOptions>({
+				assertQueue: true,
+				binding: { bindings },
+			});
+
+			const connectPromise = rabbitmqConnectQueue.call(context, 'queue', options).then((ch) => {
+				connectQueueFinished = true;
+				return ch;
+			});
+
+			// Yield event loop
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			// First binding should have been called, but second must not start yet
+			expect(mockChannel.bindQueue).toHaveBeenCalledTimes(1);
+			expect(mockChannel.bindQueue).toHaveBeenCalledWith('queue', 'exchange-1', 'key-1');
+			expect(secondBindStarted).toBe(false);
+			expect(connectQueueFinished).toBe(false);
+
+			// Resolve first binding
+			resolveFirstBind();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			// Second binding should now have started
+			expect(mockChannel.bindQueue).toHaveBeenCalledTimes(2);
+			expect(mockChannel.bindQueue).toHaveBeenNthCalledWith(2, 'queue', 'exchange-2', 'key-2');
+			expect(secondBindStarted).toBe(true);
+			expect(connectQueueFinished).toBe(false);
+
+			// Resolve second binding
+			resolveSecondBind();
+			const channel = await connectPromise;
+
+			// Channel should now be returned
+			expect(connectQueueFinished).toBe(true);
+			expect(channel).toBe(mockChannel);
+		});
+
+		it('should reject when a queue binding fails', async () => {
+			context.getCredentials.mockResolvedValue(credentials);
+			const bindings = [{ exchange: 'bad-exchange', routingKey: 'key-1' }];
+			const options = mock<TriggerOptions>({
+				assertQueue: true,
+				binding: { bindings },
+			});
+			mockChannel.bindQueue.mockRejectedValueOnce(new Error('Channel closed: exchange not found'));
+
+			await expect(rabbitmqConnectQueue.call(context, 'queue', options)).rejects.toThrow(
+				'Channel closed: exchange not found',
+			);
+		});
 	});
 
 	describe('rabbitmqConnectExchange', () => {
@@ -228,8 +318,8 @@ describe('RabbitMQ GenericFunctions', () => {
 				promise: new Promise<IRun>((resolve) => {
 					resolvePromise = resolve;
 				}),
-				resolve: jest.fn(),
-				reject: jest.fn(),
+				resolve: vi.fn(),
+				reject: vi.fn(),
 			};
 			context.helpers.createDeferredPromise.mockReturnValue(deferredPromise);
 
@@ -268,8 +358,8 @@ describe('RabbitMQ GenericFunctions', () => {
 				promise: new Promise<IRun>((resolve) => {
 					resolvePromise = resolve;
 				}),
-				resolve: jest.fn(),
-				reject: jest.fn(),
+				resolve: vi.fn(),
+				reject: vi.fn(),
 			};
 			context.helpers.createDeferredPromise.mockReturnValue(deferredPromise);
 
@@ -308,8 +398,8 @@ describe('RabbitMQ GenericFunctions', () => {
 				promise: new Promise<IRun>((resolve) => {
 					resolvePromise = resolve;
 				}),
-				resolve: jest.fn(),
-				reject: jest.fn(),
+				resolve: vi.fn(),
+				reject: vi.fn(),
 			};
 			context.helpers.createDeferredPromise.mockReturnValue(deferredPromise);
 
@@ -349,8 +439,8 @@ describe('RabbitMQ GenericFunctions', () => {
 					promise: new Promise<IRun>((resolve) => {
 						resolvePromise = resolve;
 					}),
-					resolve: jest.fn(),
-					reject: jest.fn(),
+					resolve: vi.fn(),
+					reject: vi.fn(),
 				};
 				return { deferred, resolve: (data: IRun) => resolvePromise(data) };
 			};
@@ -361,8 +451,8 @@ describe('RabbitMQ GenericFunctions', () => {
 					promise: new Promise<IExecuteResponsePromiseData>((resolve) => {
 						resolvePromise = resolve;
 					}),
-					resolve: jest.fn(),
-					reject: jest.fn(),
+					resolve: vi.fn(),
+					reject: vi.fn(),
 				};
 				return {
 					deferred,

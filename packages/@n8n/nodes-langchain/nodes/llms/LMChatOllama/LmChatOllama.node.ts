@@ -1,5 +1,4 @@
 import type { ChatOllamaInput } from '@langchain/ollama';
-import { ChatOllama } from '@langchain/ollama';
 import {
 	makeN8nLlmFailedAttemptHandler,
 	N8nLlmTracing,
@@ -7,6 +6,7 @@ import {
 	getConnectionHintNoticeField,
 } from '@n8n/ai-utilities';
 import {
+	assertCredentialAllowsUrl,
 	NodeConnectionTypes,
 	type INodeType,
 	type INodeTypeDescription,
@@ -14,7 +14,10 @@ import {
 	type SupplyData,
 } from 'n8n-workflow';
 
+import { wrapChatModelMessageInput } from '@utils/chatModelMessageWrapper';
+
 import { ollamaModel, ollamaOptions, ollamaDescription } from '../LMOllama/description';
+import { N8nChatOllama } from './N8nChatOllama';
 
 export class LmChatOllama implements INodeType {
 	description: INodeTypeDescription = {
@@ -57,6 +60,14 @@ export class LmChatOllama implements INodeType {
 
 	async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<SupplyData> {
 		const credentials = await this.getCredentials('ollamaApi');
+		const baseUrl = credentials.baseUrl as string;
+
+		assertCredentialAllowsUrl({
+			node: this.getNode(),
+			credentialData: credentials,
+			url: baseUrl,
+			surface: 'Ollama',
+		});
 
 		const modelName = this.getNodeParameter('model', itemIndex) as string;
 		const options = this.getNodeParameter('options', itemIndex, {}) as ChatOllamaInput;
@@ -66,12 +77,13 @@ export class LmChatOllama implements INodeType {
 				}
 			: undefined;
 
+		const egressFilter = this.helpers.getSecureEgressFilter();
 		const fetchWithTimeout = async (input: RequestInfo | URL, init?: RequestInit) =>
-			await proxyFetch(input, init, {});
+			await proxyFetch({ input, init, egressFilter });
 
-		const model = new ChatOllama({
+		const model = new N8nChatOllama({
 			...options,
-			baseUrl: credentials.baseUrl as string,
+			baseUrl,
 			model: modelName,
 			format: options.format === 'default' ? undefined : options.format,
 			callbacks: [new N8nLlmTracing(this)],
@@ -81,7 +93,7 @@ export class LmChatOllama implements INodeType {
 		});
 
 		return {
-			response: model,
+			response: wrapChatModelMessageInput(model),
 		};
 	}
 }

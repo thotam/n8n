@@ -1,21 +1,13 @@
-import type crypto from 'node:crypto';
-import { createPublicKey } from 'node:crypto';
-
 import { Logger } from '@n8n/backend-common';
+import { OutboundHttp } from '@n8n/backend-network';
 import { Service } from '@n8n/di';
 import type { Algorithm } from 'jsonwebtoken';
-import { OperationalError } from 'n8n-workflow';
+import { OperationalError } from '@n8n/errors';
+import { createPublicKey } from 'node:crypto';
 import { z } from 'zod';
 
 import type { JwksKeySource } from '../token-exchange.schemas';
 import { JwtAlgorithmSchema } from '../token-exchange.schemas';
-
-/**
- * Superset of jsonwebtoken's Algorithm that includes EdDSA.
- * The `@types/jsonwebtoken` definition omits EdDSA, but jsonwebtoken
- * handles it at runtime and the JwtAlgorithmSchema accepts it.
- */
-type SupportedAlgorithm = Algorithm | 'EdDSA';
 
 const FETCH_TIMEOUT_MS = 10_000;
 const DEFAULT_TTL_SECONDS = 3600;
@@ -53,7 +45,7 @@ const supportedAlgorithmSet = new Set<string>(JwtAlgorithmSchema.options);
 const SigningJwkSchema = z
 	.object({
 		kid: z.string().min(1),
-		kty: z.enum(['RSA', 'EC', 'OKP']),
+		kty: z.enum(['RSA', 'EC']),
 		alg: z.string().optional(),
 		use: z
 			.string()
@@ -76,23 +68,21 @@ const JwkSetSchema = z.object({
 // Algorithm inference
 // ──────────────────────────────────────────────────────────────────────
 
-const CURVE_TO_ALGORITHM: Record<string, SupportedAlgorithm> = {
+const CURVE_TO_ALGORITHM: Record<string, Algorithm> = {
 	'P-256': 'ES256',
 	'P-384': 'ES384',
 	'P-521': 'ES512',
-	Ed25519: 'EdDSA',
 };
 
-function inferAlgorithm(jwk: SigningJwk): SupportedAlgorithm | undefined {
+function inferAlgorithm(jwk: SigningJwk): Algorithm | undefined {
 	if (jwk.alg) {
-		return supportedAlgorithmSet.has(jwk.alg) ? (jwk.alg as SupportedAlgorithm) : undefined;
+		return supportedAlgorithmSet.has(jwk.alg) ? (jwk.alg as Algorithm) : undefined;
 	}
 
 	switch (jwk.kty) {
 		case 'RSA':
 			return 'RS256';
 		case 'EC':
-		case 'OKP':
 			return jwk.crv ? CURVE_TO_ALGORITHM[jwk.crv] : undefined;
 		default:
 			return undefined;
@@ -123,7 +113,10 @@ function parseMaxAge(cacheControl: string | null): number | undefined {
 export class JwksResolverService {
 	private readonly logger: Logger;
 
-	constructor(logger: Logger) {
+	constructor(
+		logger: Logger,
+		private readonly outboundHttp: OutboundHttp,
+	) {
 		this.logger = logger.scoped('token-exchange');
 	}
 
@@ -134,7 +127,13 @@ export class JwksResolverService {
 			defaultTtlSeconds?: number;
 		},
 	): Promise<JwksResolverResult> {
-		const fetcher = options?.fetcher ?? globalThis.fetch;
+		const fetcher =
+			options?.fetcher ??
+			this.outboundHttp
+				.transport({
+					useDefaultSsrfPolicy: 'unsafe', // JWKS sources are admin-configured trusted-key endpoints
+				})
+				.asCustomFetch();
 		const defaultTtl = options?.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS;
 		const { url } = source;
 
@@ -246,7 +245,7 @@ export class JwksResolverService {
 
 		let keyObject: ReturnType<typeof createPublicKey>;
 		try {
-			keyObject = createPublicKey({ format: 'jwk', key: jwk } as crypto.JsonWebKeyInput);
+			keyObject = createPublicKey({ format: 'jwk', key: jwk });
 		} catch {
 			return {
 				skipped: { kid: jwk.kid, reason: 'failed to create public key from JWK material' },

@@ -1,6 +1,7 @@
 import { Pinecone } from '@pinecone-database/pinecone';
 import { MilvusClient } from '@zilliz/milvus2-sdk-node';
-import { ApplicationError, type IDataObject, type ILoadOptionsFunctions } from 'n8n-workflow';
+import { requestUrl, type IDataObject, type ILoadOptionsFunctions } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
 
 import type { QdrantCredential } from '../../VectorStoreQdrant/Qdrant.utils';
 import { createQdrantClient } from '../../VectorStoreQdrant/Qdrant.utils';
@@ -30,7 +31,7 @@ export async function supabaseTableNameSearch(this: ILoadOptionsFunctions) {
 	const results = [];
 
 	if (typeof credentials.host !== 'string') {
-		throw new ApplicationError('Expected Supabase credentials host to be a string');
+		throw new UserError('Expected Supabase credentials host to be a string');
 	}
 
 	const { paths } = (await this.helpers.requestWithAuthentication.call(this, 'supabaseApi', {
@@ -38,7 +39,7 @@ export async function supabaseTableNameSearch(this: ILoadOptionsFunctions) {
 			Prefer: 'return=representation',
 		},
 		method: 'GET',
-		uri: `${credentials.host}/rest/v1/`,
+		uri: requestUrl`${credentials.host}/rest/v1/`,
 		json: true,
 	})) as { paths: IDataObject };
 

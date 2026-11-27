@@ -2,11 +2,12 @@
 import { computed } from 'vue';
 import { N8nIcon, N8nOption, N8nSelect, N8nTooltip } from '@n8n/design-system';
 import { useI18n } from '@n8n/i18n';
-import { useRolesStore } from '@/app/stores/roles.store';
 import type {
 	RoleMappingRuleResponse,
 	RoleMappingRuleType,
 } from '@n8n/rest-api-client/api/roleMappingRule';
+import InstanceRoleAssignmentSelect from './InstanceRoleAssignmentSelect.vue';
+import ProjectRoleAssignmentSelect from './ProjectRoleAssignmentSelect.vue';
 import RuleMappingExpressionInput from './RuleMappingExpressionInput.vue';
 
 const props = withDefaults(
@@ -31,27 +32,9 @@ const emit = defineEmits<{
 }>();
 
 const i18n = useI18n();
-const rolesStore = useRolesStore();
 
-const EXCLUDED_GLOBAL_ROLES = ['global:owner', 'global:chatUser'];
-
-const instanceRoleOptions = computed(() =>
-	rolesStore.roles.global
-		.filter((role) => !EXCLUDED_GLOBAL_ROLES.includes(role.slug))
-		.map((role) => ({ label: role.displayName, value: role.slug })),
-);
-
-const projectRoleOptions = computed(() =>
-	rolesStore.processedProjectRoles.map((role) => ({
-		label: role.displayName,
-		value: role.slug,
-	})),
-);
-
-const roleOptions = computed(() =>
-	props.type === 'project' ? projectRoleOptions.value : instanceRoleOptions.value,
-);
-
+// Instance rules assign an instance role; project rules pick a
+// project role — both via the grouped role dropdown (Instance/ProjectRoleAssignmentSelect).
 const selectedProjectNames = computed(() => {
 	if (!props.rule.projectIds?.length) return '';
 	return props.projects
@@ -62,12 +45,18 @@ const selectedProjectNames = computed(() => {
 </script>
 <template>
 	<div :class="[$style.row, { [$style.disabled]: props.disabled }]" data-test-id="rule-row">
-		<div :class="$style.cellDrag" class="drag-handle" aria-label="Reorder rule">
+		<div
+			:class="$style.cellDrag"
+			class="drag-handle"
+			:aria-label="i18n.baseText('settings.sso.settings.roleMappingRules.reorderRule')"
+		>
 			<N8nIcon icon="grip-vertical" size="small" color="text-light" />
 		</div>
 		<div :class="$style.cellPriority">{{ priority }}.</div>
 		<div :class="$style.cellCondition">
-			<span :class="$style.label">If</span>
+			<span :class="$style.label">{{
+				i18n.baseText('settings.sso.settings.roleMappingRules.if')
+			}}</span>
 			<RuleMappingExpressionInput
 				:model-value="props.rule.expression"
 				:disabled="props.disabled"
@@ -78,23 +67,23 @@ const selectedProjectNames = computed(() => {
 			/>
 		</div>
 		<div :class="$style.cellRole">
-			<span :class="$style.label">assign</span>
-			<N8nSelect
+			<span :class="$style.label">{{
+				i18n.baseText('settings.sso.settings.roleMappingRules.assign')
+			}}</span>
+			<InstanceRoleAssignmentSelect
+				v-if="props.type !== 'project'"
 				:model-value="props.rule.role"
-				size="small"
 				:disabled="props.disabled"
-				placeholder="Select role"
-				:class="$style.roleSelect"
-				data-test-id="rule-role-select"
-				@update:model-value="emit('update', props.rule.id, { role: String($event) })"
-			>
-				<N8nOption
-					v-for="option in roleOptions"
-					:key="option.value"
-					:label="option.label"
-					:value="option.value"
-				/>
-			</N8nSelect>
+				test-id="rule-role-select"
+				@update:model-value="emit('update', props.rule.id, { role: $event })"
+			/>
+			<ProjectRoleAssignmentSelect
+				v-else
+				:model-value="props.rule.role"
+				:disabled="props.disabled"
+				test-id="rule-role-select"
+				@update:model-value="emit('update', props.rule.id, { role: $event })"
+			/>
 		</div>
 		<div v-if="props.type === 'project'" :class="$style.cellProject">
 			<span :class="$style.label">in</span>
@@ -129,7 +118,7 @@ const selectedProjectNames = computed(() => {
 				size="small"
 				color="text-light"
 				:class="[$style.actionIcon, { [$style.disabledIcon]: props.disabled }]"
-				aria-label="Duplicate rule"
+				:aria-label="i18n.baseText('settings.sso.settings.roleMappingRules.duplicateRule')"
 				data-test-id="rule-copy-button"
 				@click="!props.disabled && emit('duplicate', props.rule.id)"
 			/>
@@ -140,7 +129,7 @@ const selectedProjectNames = computed(() => {
 				size="small"
 				color="text-light"
 				:class="[$style.actionIcon, { [$style.disabledIcon]: props.disabled }]"
-				aria-label="Delete rule"
+				:aria-label="i18n.baseText('settings.sso.settings.roleMappingRules.deleteRule')"
 				data-test-id="rule-delete-button"
 				@click="!props.disabled && emit('delete', props.rule.id)"
 			/>
@@ -204,10 +193,6 @@ const selectedProjectNames = computed(() => {
 	gap: var(--spacing--2xs);
 	padding: 0 var(--spacing--2xs);
 	flex-shrink: 0;
-}
-
-.roleSelect {
-	width: 130px;
 }
 
 .cellAction {

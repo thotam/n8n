@@ -4,8 +4,12 @@
  * Core types for building n8n workflows programmatically.
  */
 
+import type { IWorkflowGroup } from 'n8n-workflow';
+
 import type { ValidationOptions, ValidationResult } from '../validation/index';
 import type { PluginRegistry } from '../workflow-builder/plugins/registry';
+
+export type { IWorkflowGroup };
 
 // =============================================================================
 // Data Types
@@ -83,6 +87,11 @@ export interface NewCredentialValue {
  */
 export type OnError = 'stopWorkflow' | 'continueRegularOutput' | 'continueErrorOutput';
 
+/** Custom OpenTelemetry span attributes, set for each node in the node's Settings tab. */
+export interface CustomTelemetryTags {
+	tag?: Array<{ key: string; value: string }>;
+}
+
 // =============================================================================
 // Workflow Settings (with extensibility)
 // =============================================================================
@@ -99,6 +108,8 @@ export interface WorkflowSettings {
 	saveExecutionProgress?: boolean;
 	executionTimeout?: number;
 	executionOrder?: 'v0' | 'v1';
+	/** The engine that runs the workflow. A workflow without an engine runs on `v1`. */
+	engineType?: 'v1' | 'v2';
 	callerPolicy?: 'any' | 'none' | 'workflowsFromAList' | 'workflowsFromSameOwner';
 	callerIds?: string;
 	/** Allow additional settings fields */
@@ -148,27 +159,58 @@ export interface IConnections {
  * Minimal node-info shape needed to resolve a node's error-output index.
  * Accepts either a NodeJSON or a GraphNode instance config, so callers on
  * both import and export paths can hand theirs off without conversion.
+ * Without `typeVersion`, the latest node version is assumed.
  */
 interface ErrorIndexNodeInfo {
 	name?: string;
 	type: string;
+	typeVersion?: number;
 	parameters?: IDataObject;
+}
+
+function readOption(value: unknown, key: string): unknown {
+	return typeof value === 'object' && value !== null ? Reflect.get(value, key) : undefined;
+}
+
+function countSwitchRules(parameters: IDataObject | undefined): number | undefined {
+	const rules = parameters?.rules;
+	const rulesArray = readOption(rules, 'values') ?? readOption(rules, 'rules');
+	return Array.isArray(rulesArray) ? rulesArray.length : undefined;
+}
+
+/**
+ * Count the outputs of a Switch node, as each node version defines them:
+ * - V1 always has 4 outputs.
+ * - V2 and V3 in expression mode have `outputsAmount` (V2) or `numberOutputs`
+ *   (V3) outputs, 4 by default.
+ * - V2 in rules mode has one output for each rule, no rules by default.
+ * - V3 in rules mode has one output for each rule (one rule by default), plus
+ *   one when `options.fallbackOutput` is `'extra'`.
+ */
+function countSwitchOutputs(parameters: IDataObject | undefined, typeVersion = 3): number {
+	if (typeVersion < 2) return 4;
+	const isV2 = typeVersion < 3;
+
+	if (parameters?.mode === 'expression') {
+		const amount = parameters[isV2 ? 'outputsAmount' : 'numberOutputs'];
+		return typeof amount === 'number' ? amount : 4;
+	}
+
+	const rulesCount = countSwitchRules(parameters) ?? (isV2 ? 0 : 1);
+	const hasFallbackOutput = !isV2 && readOption(parameters?.options, 'fallbackOutput') === 'extra';
+	return hasFallbackOutput ? rulesCount + 1 : rulesCount;
 }
 
 /**
  * Resolve the output index at which a node's error pin should live in the
- * modern (main[n]) format. Kept in sync with the NODE_SEMANTICS table in
- * codegen/semantic-registry.ts — the rule is always `natural output count`,
- * with 1 as the fallback for community / unknown nodes.
+ * modern (main[n]) format. The serializer, the codegen and the validators
+ * share this rule. The rule is always `natural output count`, with 1 as the
+ * fallback for community / unknown nodes.
  */
-export function resolveErrorOutputIndex(type: string, parameters?: IDataObject): number {
+export function resolveErrorOutputIndex(node: ErrorIndexNodeInfo): number {
+	const { type, parameters, typeVersion } = node;
 	if (type === 'n8n-nodes-base.if') return 2; // trueBranch + falseBranch
-	if (type === 'n8n-nodes-base.switch') {
-		const rules = parameters?.rules as { rules?: unknown[]; values?: unknown[] } | undefined;
-		const rulesArray = rules?.rules ?? rules?.values;
-		const numCases = Array.isArray(rulesArray) ? rulesArray.length : 4;
-		return numCases + 1; // cases + fallback
-	}
+	if (type === 'n8n-nodes-base.switch') return countSwitchOutputs(parameters, typeVersion);
 	if (type === 'n8n-nodes-base.splitInBatches') return 2; // done + loop
 	if (type === 'n8n-nodes-base.merge') return 1; // single output
 	return 1;
@@ -212,7 +254,7 @@ export function foldLegacyErrorConnections(
 		if (!Array.isArray(errorTargets) || errorTargets.length === 0) continue;
 
 		const node = nodeLookup.get(nodeName);
-		const targetIndex = node ? resolveErrorOutputIndex(node.type, node.parameters) : 1;
+		const targetIndex = node ? resolveErrorOutputIndex(node) : 1;
 
 		const main = Array.isArray(nodeConns.main) ? nodeConns.main : [];
 		// Pad any missing earlier output slots with empty arrays so the error
@@ -292,6 +334,11 @@ export function generateUniqueName(baseName: string, exists: (name: string) => b
 // Internal: Serialization types
 // =============================================================================
 
+/** Persisted managed references use a null ID with the managed marker. */
+type NodeJSONCredential =
+	| { id?: string; name: string; __aiGatewayManaged?: boolean }
+	| { id: null; name: string; __aiGatewayManaged?: boolean };
+
 /**
  * Node JSON representation (for serialization)
  */
@@ -302,15 +349,19 @@ export interface NodeJSON {
 	typeVersion: number;
 	position: [number, number];
 	parameters?: IDataObject;
-	credentials?: Record<string, { id?: string; name: string }>;
+	credentials?: Record<string, NodeJSONCredential>;
 	webhookId?: string;
 	disabled?: boolean;
 	notes?: string;
 	notesInFlow?: boolean;
 	executeOnce?: boolean;
 	retryOnFail?: boolean;
+	maxTries?: number;
+	waitBetweenTries?: number;
 	alwaysOutputData?: boolean;
 	onError?: OnError;
+	extendsCredential?: string;
+	customTelemetryTags?: CustomTelemetryTags;
 }
 
 /**
@@ -327,6 +378,13 @@ export interface WorkflowJSON {
 		templateId?: string;
 		instanceId?: string;
 	};
+	/**
+	 * Node groups, referencing their members by node ID. Internally the SDK carries
+	 * group members by node *handle* (the value from `node(...)`) and resolves them to
+	 * the emitted node IDs here at the JSON boundary, so groups survive
+	 * `regenerateNodeIds()` like connections do.
+	 */
+	nodeGroups?: IWorkflowGroup[];
 }
 
 // =============================================================================
@@ -419,6 +477,12 @@ export interface WorkflowContext {
  * Configuration options for creating a node
  */
 export interface NodeConfig<TParams = IDataObject> {
+	/**
+	 * Stable n8n node id. Keep it verbatim when editing an existing node — execution
+	 * logs, poll cursors, dedupe state and the version diff are all keyed on it, and a
+	 * rename does not change it. Omit it for a node you are adding; one is assigned on save.
+	 */
+	id?: string;
 	parameters?: TParams;
 	credentials?: Record<
 		string,
@@ -432,8 +496,12 @@ export interface NodeConfig<TParams = IDataObject> {
 	notesInFlow?: boolean;
 	executeOnce?: boolean;
 	retryOnFail?: boolean;
+	maxTries?: number;
+	waitBetweenTries?: number;
 	alwaysOutputData?: boolean;
 	onError?: OnError;
+	extendsCredential?: string;
+	customTelemetryTags?: CustomTelemetryTags;
 	pinData?: IDataObject[];
 	/**
 	 * Declared output shape for data flow validation.
@@ -448,6 +516,8 @@ export interface NodeConfig<TParams = IDataObject> {
  * Configuration for sticky notes
  */
 export interface StickyNoteConfig {
+	/** Stable n8n node id — see {@link NodeConfig.id}. */
+	id?: string;
 	color?: number;
 	position?: [number, number];
 	width?: number;
@@ -463,6 +533,17 @@ export interface StickyNoteConfig {
  * Subnode configuration for AI nodes
  */
 export interface SubnodeConfig {
+	/**
+	 * Language model(s) for the parent node.
+	 *
+	 * - single instance, or `[m]` — the primary model, on input index 0.
+	 * - flat `[primary, fallback]` — sequential input indices (0, 1, …). On an Agent
+	 *   or Basic LLM Chain, index 1 is the Fallback Model input, which the node only
+	 *   declares when its `needsFallback` parameter is `true` — set that alongside,
+	 *   or the fallback never runs. Model Selector takes many models this way and
+	 *   has no such toggle.
+	 * - nested `[[m1, m2]]` — every model on the SAME input index; not a fallback.
+	 */
 	model?: LanguageModelInstance | LanguageModelInstance[] | LanguageModelInstance[][];
 	memory?: MemoryInstance;
 	tools?: ToolInstance[];
@@ -642,6 +723,27 @@ export function isNodeInstance(value: unknown): value is NodeInstance<string, st
 	// After 'in' checks, safely access the to property
 	const toProp = (value as Record<string, unknown>).to;
 	return typeof toProp === 'function';
+}
+
+/**
+ * A sticky note that was asked to wrap a set of nodes.
+ *
+ * Only the anchor node IDs are recorded at construction time: node positions do not
+ * exist yet when `sticky()` runs, so the box is resolved during serialization from
+ * wherever the anchors ended up. IDs rather than names, because a node can be
+ * auto-renamed on its way into the workflow.
+ */
+export interface AnchoredStickyNote {
+	readonly stickyAnchorIds: readonly string[];
+}
+
+/** Type guard for {@link AnchoredStickyNote}. */
+export function isAnchoredStickyNote(value: object): value is AnchoredStickyNote {
+	return (
+		'stickyAnchorIds' in value &&
+		Array.isArray(value.stickyAnchorIds) &&
+		value.stickyAnchorIds.every((id) => typeof id === 'string')
+	);
 }
 
 // =============================================================================
@@ -987,14 +1089,62 @@ export interface GeneratePinDataOptions {
 	beforeWorkflow?: WorkflowJSON;
 }
 
+/** The ports that set a node's size on the canvas. */
+export interface NodePorts {
+	mainInputs: number;
+	mainOutputs: number;
+	nonMainInputs: number;
+	/** Has a non-main output, as a chat model or a tool does. */
+	configuration: boolean;
+	/** Has a non-main input, as an AI agent does. */
+	configurable: boolean;
+}
+
 export interface ToJSONOptions {
 	/** Use Dagre-based layout matching the FE's tidy-up algorithm. Defaults to false (BFS layout). */
 	tidyUp?: boolean;
+	/**
+	 * Node ports for the tidy-up layout, from `resolveNodePorts`. With them, each node gets
+	 * the size the canvas draws for it. Without them, the size comes from the wired ports only.
+	 */
+	nodePorts?: ReadonlyMap<string, NodePorts>;
+	/**
+	 * Reuse existing group IDs (keyed by group name) instead of deriving deterministic ones.
+	 * Lets an edit of an existing workflow keep its (UI-assigned, random) group IDs so the diff
+	 * isn't skewed; groups without a match fall back to a deterministic ID.
+	 */
+	existingGroupIdsByName?: Map<string, string>;
 }
 
 /**
  * Workflow builder for constructing workflows with a fluent API
  */
+/**
+ * A reference to a node when defining a group: a node handle — the value
+ * returned by `node(...)`. Trigger nodes cannot be grouped.
+ */
+export type GroupMember = NodeInstance<string, string, unknown>;
+
+/** Optional group settings passed as `.group()`'s third argument. */
+export type GroupOptions = {
+	/**
+	 * Description shown when the group is collapsed on the canvas. Capped to
+	 * `GROUP_DESCRIPTION_MAX_LENGTH` characters on serialization; blank is
+	 * treated as no description.
+	 */
+	description?: string;
+};
+
+/**
+ * A node group as authored: members are node handles, resolved to the emitted node
+ * IDs only at serialization. `id` is present for a group carried in from JSON.
+ */
+export type AuthoredNodeGroup = GroupOptions & {
+	id?: string;
+	name: string;
+	members: GroupMember[];
+};
+
 export interface WorkflowBuilder {
 	readonly id: string;
 	readonly name: string;
@@ -1017,6 +1167,27 @@ export interface WorkflowBuilder {
 	to<T>(switchCaseBuilder: SwitchCaseBuilder<T>): WorkflowBuilder;
 	/** Connect to multiple outputs (branching). Each array element connects to incrementing output index. Use null to skip an output. */
 	to(nodes: Array<NodeInstance<string, string, unknown> | NodeChain | null>): WorkflowBuilder;
+
+	/**
+	 * Wire the true output of the IF node the cursor is on (the node just added
+	 * via `.to()`/`.add()`). Chains with `.onFalse()`, e.g.
+	 * `.to(ifNode).onTrue(yes).onFalse(no)`. Throws if the current node is not an IF.
+	 */
+	onTrue(target: IfElseTarget): WorkflowBuilder;
+	/** Wire the false output of the IF node the cursor is on. See {@link onTrue}. */
+	onFalse(target: IfElseTarget): WorkflowBuilder;
+	/**
+	 * Wire a case output of the Switch node the cursor is on, e.g.
+	 * `.to(switchNode).onCase(0, a).onCase(1, b)`. Throws if the current node is not a Switch.
+	 */
+	onCase(index: number, target: SwitchCaseTarget): WorkflowBuilder;
+	/**
+	 * Route the error output of the node the cursor is on to `handler`, e.g.
+	 * `.to(httpNode).onError(notifyFailure).to(next)`. The cursor stays on that node,
+	 * so a following `.to()` continues the main branch. Equivalent to
+	 * `.to(httpNode.onError(notifyFailure))`.
+	 */
+	onError(handler: NodeInstance<string, string, unknown> | InputTarget): WorkflowBuilder;
 
 	settings(settings: WorkflowSettings): WorkflowBuilder;
 
@@ -1054,6 +1225,29 @@ export interface WorkflowBuilder {
 	getNode(name: string): NodeInstance<string, string, unknown> | undefined;
 
 	/**
+	 * Define a node group — a named, semantic grouping of nodes shown as a frame on
+	 * the canvas. Members are referenced the same way connections reference nodes: by
+	 * node handle (the `const` from `node(...)`). Trigger nodes cannot be grouped.
+	 * Members resolve to the emitted node IDs in `toJSON()`, so groups survive
+	 * `regenerateNodeIds()` like connections do. Chainable.
+	 *
+	 * Pass `{ description }` to add the text shown when the group is collapsed.
+	 *
+	 * @example
+	 * ```typescript
+	 * const fetch = node({ ... });
+	 * const transform = node({ ... });
+	 * workflow('id', 'Name')
+	 *   .add(fetch)
+	 *   .to(transform)
+	 *   .group('Data ingestion', [fetch, transform], {
+	 *     description: 'Pulls the CRM contacts and normalizes them',
+	 *   });
+	 * ```
+	 */
+	group(name: string, members: GroupMember[], options?: GroupOptions): WorkflowBuilder;
+
+	/**
 	 * Validate the workflow graph structure.
 	 * Returns errors and warnings without converting to JSON.
 	 */
@@ -1088,8 +1282,10 @@ export interface WorkflowBuilder {
 	 *
 	 * Node IDs are generated using SHA-256 hash of `${workflowId}:${nodeType}:${nodeName}`,
 	 * formatted as a valid UUID v4 structure.
+	 *
+	 * @param existingIdsByName - reuse these IDs (keyed by node name) instead of regenerating.
 	 */
-	regenerateNodeIds(): void;
+	regenerateNodeIds(existingIdsByName?: Map<string, string>): void;
 }
 
 /**
@@ -1103,11 +1299,23 @@ export interface WorkflowBuilderOptions {
 }
 
 /**
+ * Options for `workflow.fromJSON()`
+ */
+export interface FromJSONOptions {
+	/**
+	 * Mock `output` items by node name, as `generatePinData()` returns them.
+	 * WorkflowJSON does not carry `output`, so pass them to give validators the
+	 * authored mocks back.
+	 */
+	declaredOutputs?: Record<string, IDataObject[]>;
+}
+
+/**
  * Static workflow builder methods
  */
 export interface WorkflowBuilderStatic {
 	(id: string, name: string, options?: WorkflowSettings | WorkflowBuilderOptions): WorkflowBuilder;
-	fromJSON(json: WorkflowJSON): WorkflowBuilder;
+	fromJSON(json: WorkflowJSON, options?: FromJSONOptions): WorkflowBuilder;
 }
 
 // =============================================================================

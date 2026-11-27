@@ -12,7 +12,7 @@ import {
 	DropdownMenuTrigger,
 } from 'reka-ui';
 import type { ChatHubSessionDto, ChatSessionId } from '@n8n/api-types';
-import { PopOutWindowKey } from '@/app/constants';
+import { PopOutWindowKey } from '@n8n/composables/injectionKeys';
 import { useChatStore } from '../chat.store';
 import { groupConversationsByDate } from '../chat.utils';
 
@@ -262,7 +262,7 @@ watch(isOpen, (open, _oldValue, onCleanup) => {
 .groupLabel {
 	padding: var(--spacing--2xs);
 	font-size: var(--font-size--2xs);
-	font-weight: var(--font-weight--bold);
+	font-weight: var(--font-weight--medium);
 	color: var(--color--text);
 	line-height: 1;
 }
@@ -287,7 +287,7 @@ watch(isOpen, (open, _oldValue, onCleanup) => {
 	}
 
 	&.active {
-		font-weight: var(--font-weight--bold);
+		font-weight: var(--font-weight--medium);
 	}
 }
 

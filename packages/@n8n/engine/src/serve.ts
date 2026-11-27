@@ -1,29 +1,102 @@
-import { EngineConfig } from '@n8n/config';
+import { EngineConfig, ExecutionsConfig } from '@n8n/config';
 import { Container } from '@n8n/di';
 
-import { createEngineServer } from './server';
+import { AllowAllAdmittance } from './admittance';
+import { SharedSecretIdentityVerifier } from './auth';
+import { createDataSource, runMigrations } from './database';
+import { noopExecutionFilesDeleter } from './dependencies';
+import { createConsoleLogger } from './logging';
+import { createInMemoryWorkQueues } from './queue';
+import { noopExecutionResponseSender } from './response-channel';
+import { retentionPolicyFromHours } from './retention';
+import { createEngineRuntime } from './runtime';
+import { assertSecureTransport, createEngineHttpServer, openEngineTls } from './tls';
 
-const config = Container.get(EngineConfig);
+const logger = createConsoleLogger();
 
-const { app } = createEngineServer();
+async function main(): Promise<void> {
+	const config = Container.get(EngineConfig);
+	const { pruneData, pruneDataMaxAge, pruneDataMaxCount } = Container.get(ExecutionsConfig);
 
-const server = app.listen(config.port, config.host, () => {
-	console.log(`engine: listening on http://${config.host}:${config.port}`);
-});
+	// Refused rather than degraded: an engine with nowhere to record an execution
+	// would report healthy while being unable to run one.
+	if (!config.databaseUrl) {
+		throw new Error('engine: N8N_ENGINE_DATABASE_URL is not set');
+	}
 
-let shuttingDown = false;
-const shutdown = (signal: string): void => {
-	if (shuttingDown) return;
-	shuttingDown = true;
-	console.log(`engine: received ${signal}, shutting down`);
-	server.close((error) => {
-		if (error) {
-			console.error('engine: error during shutdown', error);
-			process.exit(1);
-		}
-		process.exit(0);
+	if (!config.authSecret) {
+		throw new Error('engine: N8N_ENGINE_AUTH_SECRET is not set');
+	}
+
+	// Before the database, so a bad certificate fails the boot in a second.
+	const tls = openEngineTls(config, logger);
+	assertSecureTransport(config, tls !== undefined, {}, logger);
+
+	const dataSource = createDataSource(config.databaseUrl, {
+		poolSize: config.databasePoolSize,
+		connectTimeoutMS: config.databaseConnectionTimeoutMs,
 	});
-};
+	await dataSource.initialize();
+	logger.info(
+		'Running the engine migrations. This waits while another engine process holds the migration lock.',
+	);
+	await runMigrations(dataSource);
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+	const runtime = createEngineRuntime({
+		dataSource,
+		admittance: new AllowAllAdmittance(),
+		identityVerifier: new SharedSecretIdentityVerifier(config.authSecret),
+		logger,
+		// Nothing in this process waits for a response: the caller reads the run
+		// over the API instead.
+		responseSender: noopExecutionResponseSender,
+		// Runs no `v1-node` steps, so it writes no binary files.
+		externalDependencies: () => ({ deleteExecutionFiles: noopExecutionFilesDeleter }),
+		queues: createInMemoryWorkQueues({
+			concurrency: {
+				step: config.stepConcurrency,
+				orchestration: config.orchestrationConcurrency,
+			},
+			logger,
+		}),
+		retention: retentionPolicyFromHours({
+			enabled: pruneData,
+			maxAgeHours: pruneDataMaxAge,
+			maxCount: pruneDataMaxCount,
+		}),
+	});
+	runtime.start();
+
+	const server = createEngineHttpServer(runtime.app, tls).listen(config.port, config.host, () => {
+		logger.info(`listening on ${tls ? 'https' : 'http'}://${config.host}:${config.port}`);
+	});
+
+	let shuttingDown = false;
+	const shutdown = async (signal: string): Promise<void> => {
+		if (shuttingDown) return;
+		shuttingDown = true;
+		logger.info(`received ${signal}, shutting down`);
+		tls?.close();
+		await new Promise<void>((resolve, reject) => {
+			server.close((error) => (error ? reject(error) : resolve()));
+		});
+		await runtime.stop();
+		if (dataSource.isInitialized) await dataSource.destroy();
+		process.exit(0);
+	};
+
+	const onSignal = (signal: string): void => {
+		shutdown(signal).catch((error: unknown) => {
+			logger.error('error during shutdown', { error });
+			process.exit(1);
+		});
+	};
+
+	process.on('SIGTERM', () => onSignal('SIGTERM'));
+	process.on('SIGINT', () => onSignal('SIGINT'));
+}
+
+main().catch((error: unknown) => {
+	logger.error('failed to start', { error });
+	process.exit(1);
+});

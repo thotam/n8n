@@ -1,5 +1,7 @@
 import type { ExtensionMap } from './extensions';
 import { ExpressionExtensionError } from './expression-extension-error';
+import { toWellFormed } from './utf8';
+import { defineField } from './utils';
 
 function isEmpty(value: object): boolean {
 	return Object.keys(value).length === 0;
@@ -19,7 +21,10 @@ function values(value: object): unknown[] {
 
 function hasField(value: object, extraArgs: string[]): boolean {
 	const [name] = extraArgs;
-	return name in value;
+	// Count own and proxy-exposed fields; ignore names inherited from the prototype.
+	if (Object.hasOwn(value, name)) return true;
+	const proto = Object.getPrototypeOf(value) as object | null;
+	return name in value && (proto === null || !(name in proto));
 }
 
 function removeField(value: object, extraArgs: string[]): object {
@@ -66,21 +71,17 @@ function keepFieldsContaining(value: object, extraArgs: string[]): object {
 }
 
 export function compact(value: object): object {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	const newObj: any = {};
-	for (const [key, val] of Object.entries(value)) {
+	const newObj: Record<string, unknown> = {};
+	for (const [key, val] of Object.entries(value) as Array<[string, unknown]>) {
 		if (val !== null && val !== undefined && val !== 'nil' && val !== '') {
 			if (typeof val === 'object') {
-				if (Object.keys(val as object).length === 0) continue;
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument
-				newObj[key] = compact(val);
+				if (Object.keys(val).length === 0) continue;
+				defineField(newObj, key, compact(val));
 			} else {
-				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-				newObj[key] = val;
+				defineField(newObj, key, val);
 			}
 		}
 	}
-	// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 	return newObj;
 }
 
@@ -89,8 +90,10 @@ export function compact(value: object): object {
 // V8 isolate. encodeURIComponent is an ECMAScript built-in available in all
 // V8 contexts, but it doesn't encode !'()~ which WHATWG requires. The extra
 // replace step covers those characters to match URLSearchParams output.
+// URLSearchParams also replaces lone surrogates with U+FFFD, where
+// encodeURIComponent throws a URIError.
 function whatwgEncode(str: string): string {
-	return encodeURIComponent(str)
+	return encodeURIComponent(toWellFormed(str))
 		.replace(/%20/g, '+')
 		.replace(/[!'()~]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
 }
@@ -130,7 +133,8 @@ isEmpty.doc = {
 		{ example: '({}).isEmpty()', evaluated: 'true' },
 	],
 	returnType: 'boolean',
-	docURL: 'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-isEmpty',
+	docURL:
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objectisempty',
 };
 
 isNotEmpty.doc = {
@@ -142,7 +146,7 @@ isNotEmpty.doc = {
 	],
 	returnType: 'boolean',
 	docURL:
-		'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-isNotEmpty',
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objectisnotempty',
 };
 
 compact.doc = {
@@ -151,7 +155,8 @@ compact.doc = {
 		'Removes all fields that have empty values, i.e. are <code>null</code>, <code>undefined</code>, <code>"nil"</code> or <code>""</code>',
 	examples: [{ example: "({ x: null, y: 2, z: '' }).compact()", evaluated: '{ y: 2 }' }],
 	returnType: 'Object',
-	docURL: 'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-compact',
+	docURL:
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objectcompact',
 };
 
 urlEncode.doc = {
@@ -166,7 +171,7 @@ urlEncode.doc = {
 	],
 	returnType: 'string',
 	docURL:
-		'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-urlEncode',
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objecturlencode',
 };
 
 hasField.doc = {
@@ -187,7 +192,8 @@ hasField.doc = {
 			type: 'string',
 		},
 	],
-	docURL: 'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-hasField',
+	docURL:
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objecthasfield',
 };
 
 removeField.doc = {
@@ -210,7 +216,7 @@ removeField.doc = {
 		},
 	],
 	docURL:
-		'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-removeField',
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objectremovefield',
 };
 
 removeFieldsContaining.doc = {
@@ -241,7 +247,7 @@ removeFieldsContaining.doc = {
 		},
 	],
 	docURL:
-		'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-removeFieldsContaining',
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objectremovefieldscontaining',
 };
 
 keepFieldsContaining.doc = {
@@ -272,7 +278,7 @@ keepFieldsContaining.doc = {
 		},
 	],
 	docURL:
-		'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-keepFieldsContaining',
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objectkeepfieldscontaining',
 };
 
 keys.doc = {
@@ -280,7 +286,8 @@ keys.doc = {
 	description:
 		"Returns an array with all the field names (keys) the Object contains. The same as JavaScript's <code>Object.keys(obj)</code>.",
 	examples: [{ example: "({ name: 'Mr Nathan', age: 42 }).keys()", evaluated: "['name', 'age']" }],
-	docURL: 'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-keys',
+	docURL:
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objectkeys',
 	returnType: 'Array',
 };
 
@@ -291,7 +298,8 @@ values.doc = {
 	examples: [
 		{ example: "({ name: 'Mr Nathan', age: 42 }).values()", evaluated: "['Mr Nathan', 42]" },
 	],
-	docURL: 'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-values',
+	docURL:
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objectvalues',
 	returnType: 'Array',
 };
 
@@ -306,7 +314,7 @@ toJsonString.doc = {
 		},
 	],
 	docURL:
-		'https://docs.n8n.io/code/builtin/data-transformation-functions/objects/#object-toJsonString',
+		'https://docs.n8n.io/build/work-with-data/transform-data/expression-reference/object#objecttojsonstring',
 	returnType: 'string',
 };
 

@@ -93,6 +93,8 @@ export const mockNodeTypeDescription = ({
 	webhooks,
 	eventTriggerDescription,
 	maxNodes,
+	deprecated,
+	replacedByNodeType,
 }: Partial<INodeTypeDescription> = {}) =>
 	mock<INodeTypeDescription>({
 		name,
@@ -117,6 +119,8 @@ export const mockNodeTypeDescription = ({
 		parameterPane: undefined,
 		hidden,
 		eventTriggerDescription,
+		deprecated,
+		replacedByNodeType,
 	});
 
 export const mockLoadedNodeType = (name: string) => {
@@ -294,6 +298,8 @@ export function createMockEnterpriseSettings(
 		customRoles: false,
 		personalSpacePolicy: false,
 		dataRedaction: false,
+		otelCustomSpanAttributes: false,
+		workflowReviews: false,
 		...overrides, // Override with any passed properties
 	};
 }
@@ -329,17 +335,11 @@ export function createTestWorkflowExecutionResponse(
 export function createTestExpressionLocalResolveContext(
 	data: Partial<ExpressionLocalResolveContext> = {},
 ): ExpressionLocalResolveContext {
-	const workflow = data.workflow ?? createTestWorkflowObject();
-
 	return {
 		localResolve: true,
-		workflow,
 		nodeName: 'n0',
 		inputNode: { name: 'n1', runIndex: 0, branchIndex: 0 },
-		envVars: {},
 		additionalKeys: {},
-		connections: workflow.connectionsBySourceNode,
-		execution: null,
 		...data,
 	};
 }

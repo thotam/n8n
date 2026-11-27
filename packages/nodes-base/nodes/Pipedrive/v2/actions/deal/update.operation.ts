@@ -4,6 +4,7 @@ import type {
 	INodeExecutionData,
 	INodeProperties,
 } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import { updateDisplayOptions } from '../../../../../utils/utilities';
 import { pipedriveApiRequest, pipedriveGetCustomProperties } from '../../transport';
@@ -11,7 +12,7 @@ import {
 	encodeCustomFieldsV2,
 	resolveCustomFieldsV2,
 	coerceToNumber,
-	toRfc3339,
+	toDateOnly,
 	addFieldsToBody,
 } from '../../helpers';
 import {
@@ -194,13 +195,20 @@ export async function execute(this: IExecuteFunctions): Promise<INodeExecutionDa
 			const updateFields = this.getNodeParameter('updateFields', i);
 			addFieldsToBody(body, updateFields);
 
+			// Pipedrive v2 deals API renamed `user_id` to `owner_id`; remap so the existing
+			// `user_id` parameter (kept for backward compatibility with saved workflows) is accepted.
+			if (body.user_id !== undefined) {
+				body.owner_id = body.user_id;
+				delete body.user_id;
+			}
+
 			// Clear label when set to 'null' string
 			if (body.label === 'null') {
 				body.label = null;
 			}
 
 			if (body.expected_close_date) {
-				body.expected_close_date = toRfc3339(body.expected_close_date as string);
+				body.expected_close_date = toDateOnly(body.expected_close_date as string);
 			}
 			if (body.value !== undefined) {
 				body.value = coerceToNumber(body.value);
@@ -214,7 +222,12 @@ export async function execute(this: IExecuteFunctions): Promise<INodeExecutionDa
 			}
 
 			// v2 API uses PATCH for updates (not PUT)
-			const responseData = await pipedriveApiRequest.call(this, 'PATCH', `/deals/${dealId}`, body);
+			const responseData = await pipedriveApiRequest.call(
+				this,
+				'PATCH',
+				requestPath`/deals/${dealId}`,
+				body,
+			);
 
 			const executionData = this.helpers.constructExecutionMetaData(
 				this.helpers.returnJsonArray(responseData.data as IDataObject),

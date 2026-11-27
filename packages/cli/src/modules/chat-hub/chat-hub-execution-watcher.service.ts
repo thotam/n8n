@@ -1,5 +1,5 @@
 import { Logger } from '@n8n/backend-common';
-import { ExecutionRepository, type IExecutionResponse } from '@n8n/db';
+import { type IExecutionResponse } from '@n8n/db';
 import {
 	OnLifecycleEvent,
 	type WorkflowExecuteAfterContext,
@@ -9,6 +9,7 @@ import { Service } from '@n8n/di';
 import { v4 as uuidv4 } from 'uuid';
 
 import { ChatExecutionManager } from '@/chat/chat-execution-manager';
+import { ExecutionPersistence } from '@/executions/execution-persistence';
 
 import {
 	ChatHubExecutionStore,
@@ -33,7 +34,7 @@ export class ChatHubExecutionWatcherService {
 		private readonly executionStore: ChatHubExecutionStore,
 		private readonly messageRepository: ChatHubMessageRepository,
 		private readonly chatHubExecutionService: ChatHubExecutionService,
-		private readonly executionRepository: ExecutionRepository,
+		private readonly executionPersistence: ExecutionPersistence,
 		private readonly chatStreamService: ChatStreamService,
 		private readonly executionManager: ChatExecutionManager,
 	) {
@@ -116,6 +117,11 @@ export class ChatHubExecutionWatcherService {
 	async handleWorkflowExecuteAfter(ctx: WorkflowExecuteAfterContext): Promise<void> {
 		const { runData, executionId } = ctx;
 
+		// An auto-resume enqueues the next segment from the worker, so that worker also waits
+		// for the job and gets a second call for the same segment. The process that ran the
+		// segment handles it.
+		if (!ctx.executedInThisProcess) return;
+
 		const context = await this.executionStore.get(executionId);
 		if (!context) return; // Not a tracked chat hub execution
 
@@ -143,10 +149,8 @@ export class ChatHubExecutionWatcherService {
 			return;
 		}
 
-		// NOTE: This check is required because on multi-main/queue mode, the resumed execution's
-		// 'workflowExecuteAfter' hook fires one more time after it should have stopped in 'waiting'
-		// state on a Chat response node. On this final hook call the runData.status is 'success' even though
-		// the execution isn't finished. On single-main mode this does not happen.
+		// A `success` run that has not finished must not end the conversation.
+		// oxlint-disable-next-line typescript/no-deprecated
 		if (runData.finished) {
 			await this.pushFinalResults(context, message);
 			await this.executionStore.remove(executionId);
@@ -175,7 +179,7 @@ export class ChatHubExecutionWatcherService {
 
 		// Check if we should auto-resume (after a response was sent by Chat node)
 		if (context.responseMode === 'responseNodes') {
-			const execution = await this.executionRepository.findSingleExecution(executionId, {
+			const execution = await this.executionPersistence.findSingleExecution(executionId, {
 				includeData: true,
 				unflattenData: true,
 			});

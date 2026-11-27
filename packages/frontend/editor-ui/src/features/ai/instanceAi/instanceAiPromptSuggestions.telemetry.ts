@@ -1,12 +1,15 @@
-import { useTelemetry } from '@/app/composables/useTelemetry';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
 
 import { INSTANCE_AI_EMPTY_STATE_SUGGESTIONS_VERSION } from './emptyStateSuggestions';
+import type { ITelemetryTrackProperties } from 'n8n-workflow';
 
 export type TelemetryTracker = Pick<ReturnType<typeof useTelemetry>, 'track'>;
 
+// Experiment cleanup: remove with instanceAiPromptSuggestionsV2.
 export type InstanceAiPromptSuggestionsShownContext = {
-	threadId: string;
-	researchMode: boolean;
+	threadId?: string;
+	suggestionCatalogVersion?: string;
+	telemetryPayload?: ITelemetryTrackProperties;
 };
 
 export type InstanceAiQuickExampleOpenedContext = InstanceAiPromptSuggestionsShownContext & {
@@ -14,27 +17,49 @@ export type InstanceAiQuickExampleOpenedContext = InstanceAiPromptSuggestionsSho
 	position: number;
 };
 
+export type InstanceAiPromptSuggestionsCycledContext = {
+	suggestionCatalogVersion?: string;
+	visibleSuggestionIds: string[];
+	cycleCount: number;
+	telemetryPayload?: ITelemetryTrackProperties;
+};
+
 export type InstanceAiPromptSuggestionSelectedContext = InstanceAiPromptSuggestionsShownContext & {
 	suggestionId: string;
 	suggestionKind: 'prompt' | 'quick_example';
 	position: number;
+	suggestionTitle?: string;
 };
 
+export type InstanceAiPromptSuggestionSubmittedContext =
+	InstanceAiPromptSuggestionSelectedContext & {
+		promptModified: boolean;
+	};
+
 type InstanceAiPromptSuggestionsBasePayload = {
-	thread_id: string;
+	thread_id?: string;
 	suggestion_catalog_version: string;
-	research_mode: boolean;
-};
+} & ITelemetryTrackProperties;
 
 const shownImpressionKeys = new Set<string>();
 
+const resolveSuggestionCatalogVersion = (context: InstanceAiPromptSuggestionsShownContext) =>
+	context.suggestionCatalogVersion ?? INSTANCE_AI_EMPTY_STATE_SUGGESTIONS_VERSION;
+
 const createBasePayload = (
 	context: InstanceAiPromptSuggestionsShownContext,
-): InstanceAiPromptSuggestionsBasePayload => ({
-	thread_id: context.threadId,
-	suggestion_catalog_version: INSTANCE_AI_EMPTY_STATE_SUGGESTIONS_VERSION,
-	research_mode: context.researchMode,
-});
+): InstanceAiPromptSuggestionsBasePayload => {
+	const payload: InstanceAiPromptSuggestionsBasePayload = {
+		...context.telemetryPayload,
+		suggestion_catalog_version: resolveSuggestionCatalogVersion(context),
+	};
+
+	if (context.threadId) {
+		payload.thread_id = context.threadId;
+	}
+
+	return payload;
+};
 
 export function createInstanceAiPromptSuggestionsTelemetry(
 	telemetry: TelemetryTracker,
@@ -42,7 +67,9 @@ export function createInstanceAiPromptSuggestionsTelemetry(
 ) {
 	return {
 		trackSuggestionsShown(context: InstanceAiPromptSuggestionsShownContext) {
-			const impressionKey = context.threadId + ':' + INSTANCE_AI_EMPTY_STATE_SUGGESTIONS_VERSION;
+			// Experiment cleanup: remove with instanceAiPromptSuggestionsV2.
+			const impressionScope = context.threadId || 'empty-state';
+			const impressionKey = impressionScope + ':' + resolveSuggestionCatalogVersion(context);
 			if (shownKeys.has(impressionKey)) {
 				return;
 			}
@@ -58,12 +85,32 @@ export function createInstanceAiPromptSuggestionsTelemetry(
 			});
 		},
 
+		trackSuggestionsCycled(context: InstanceAiPromptSuggestionsCycledContext) {
+			telemetry.track('Instance AI prompt suggestions cycled', {
+				...context.telemetryPayload,
+				suggestion_catalog_version: resolveSuggestionCatalogVersion(context),
+				visible_suggestion_ids: context.visibleSuggestionIds,
+				cycle_count: context.cycleCount,
+			});
+		},
+
 		trackSuggestionSelected(context: InstanceAiPromptSuggestionSelectedContext) {
 			telemetry.track('Instance AI prompt suggestion selected', {
 				...createBasePayload(context),
 				suggestion_id: context.suggestionId,
 				suggestion_kind: context.suggestionKind,
 				position: context.position,
+				...(context.suggestionTitle ? { suggestion_title: context.suggestionTitle } : {}),
+			});
+		},
+
+		trackSuggestionSubmitted(context: InstanceAiPromptSuggestionSubmittedContext) {
+			telemetry.track('Instance AI prompt suggestion submitted', {
+				...createBasePayload(context),
+				suggestion_id: context.suggestionId,
+				suggestion_kind: context.suggestionKind,
+				position: context.position,
+				prompt_modified: context.promptModified,
 			});
 		},
 	};

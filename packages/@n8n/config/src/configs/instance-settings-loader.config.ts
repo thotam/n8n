@@ -33,7 +33,11 @@ export class InstanceSettingsLoaderConfig {
 	@Env('N8N_SSO_MANAGED_BY_ENV')
 	ssoManagedByEnv: boolean = false;
 
-	/** User role provisioning mode: disabled, instance_role, or instance_and_project_roles. */
+	/**
+	 * Which roles direct-claim provisioning sets: disabled, instance_role, or
+	 * instance_and_project_roles. Ignored when N8N_SSO_SCOPES_USE_EXPRESSION_MAPPING selects
+	 * the expression-mapping strategy instead.
+	 */
 	@Env('N8N_SSO_USER_ROLE_PROVISIONING')
 	ssoUserRoleProvisioning: string = 'disabled';
 
@@ -59,6 +63,13 @@ export class InstanceSettingsLoaderConfig {
 	@Env('N8N_SSO_OIDC_ACR_VALUES')
 	oidcAcrValues: string = '';
 
+	/** Space-separated additional scopes appended to the OIDC authorization request. */
+	@Env('N8N_SSO_OIDC_ADDITIONAL_SCOPES')
+	oidcAdditionalScopes: string = '';
+
+	@Env('N8N_SSO_OIDC_RP_INITIATED_LOGOUT_ENABLED')
+	oidcRpInitiatedLogoutEnabled: boolean = false;
+
 	/**
 	 * When true, security policy settings are managed via environment variables.
 	 * On every startup the security policy will be overridden by env vars.
@@ -75,6 +86,23 @@ export class InstanceSettingsLoaderConfig {
 
 	@Env('N8N_PERSONAL_SPACE_SHARING_ENABLED')
 	personalSpaceSharingEnabled: boolean = true;
+
+	/**
+	 * Whether users can request a review of a workflow before they publish it.
+	 * n8n reads this only when `N8N_SECURITY_POLICY_MANAGED_BY_ENV` is true.
+	 */
+	@Env('N8N_WORKFLOW_REVIEWS_ENABLED')
+	workflowReviewsEnabled: boolean = false;
+
+	/**
+	 * Whether every new version of a workflow in a team project needs an
+	 * approved review before anyone can publish it. When false, each project or
+	 * workflow sets its own rule. n8n reads this only when
+	 * `N8N_SECURITY_POLICY_MANAGED_BY_ENV` is true. It has no effect while
+	 * `N8N_WORKFLOW_REVIEWS_ENABLED` is false.
+	 */
+	@Env('N8N_WORKFLOW_REVIEWS_ALWAYS_REQUIRED')
+	workflowReviewsAlwaysRequired: boolean = false;
 
 	// --- SAML ---
 
@@ -119,6 +147,47 @@ export class InstanceSettingsLoaderConfig {
 
 	@Env('N8N_MCP_ACCESS_ENABLED')
 	mcpAccessEnabled: boolean = false;
+
+	// --- Skill Sync ---
+
+	/**
+	 * Whether environment variables control Skill Sync. When true, n8n applies
+	 * `N8N_SKILL_SYNC_ENABLED` on every startup and admins can't change the
+	 * setting in the UI. When false, n8n ignores `N8N_SKILL_SYNC_ENABLED`.
+	 */
+	@Env('N8N_SKILL_SYNC_MANAGED_BY_ENV')
+	skillSyncManagedByEnv: boolean = false;
+
+	/**
+	 * Whether users can sync skills from GitHub repositories. n8n reads this
+	 * only when `N8N_SKILL_SYNC_MANAGED_BY_ENV` is true. Turning it off keeps
+	 * the skills that are already synced.
+	 */
+	@Env('N8N_SKILL_SYNC_ENABLED')
+	skillSyncEnabled: boolean = false;
+
+	/**
+	 * Whether MCP clients can read and save user preferences. n8n reads this value only when
+	 * `N8N_MCP_MANAGED_BY_ENV` is true. When unset, preferences are off on the Enterprise plan
+	 * and on for other plans, unless an admin already changed the setting.
+	 */
+	@Env('N8N_MCP_PREFERENCES_ENABLED')
+	mcpPreferencesEnabled?: boolean;
+
+	/**
+	 * Whether `N8N_PREFERENCES_ENABLED` controls the Preferences setting. When true, n8n applies
+	 * that value on every startup and admins can't change the setting in the UI.
+	 */
+	@Env('N8N_PREFERENCES_MANAGED_BY_ENV')
+	preferencesManagedByEnv: boolean = false;
+
+	/**
+	 * Whether users can save preferences that n8n Assistant and MCP clients apply. n8n reads
+	 * this value only when `N8N_PREFERENCES_MANAGED_BY_ENV` is true. Turning it off keeps the
+	 * saved preferences.
+	 */
+	@Env('N8N_PREFERENCES_ENABLED')
+	preferencesEnabled: boolean = false;
 
 	// --- Community packages ---
 

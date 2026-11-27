@@ -2,22 +2,25 @@ import type { IExecuteFunctions } from 'n8n-workflow';
 
 import { GoogleSheet } from '../../../v2/helpers/GoogleSheet';
 import { apiRequest } from '../../../v2/transport';
+import type { Mock } from 'vitest';
 
-jest.mock('../../../v2/transport', () => ({
+const requestTarget = (value: unknown) => expect.objectContaining({ value });
+
+vi.mock('../../../v2/transport', () => ({
 	apiRequest: {
-		call: jest.fn(),
+		call: vi.fn(),
 	},
 }));
 
 describe('GoogleSheet', () => {
 	let googleSheet: GoogleSheet;
 	const mockExecuteFunctions: Partial<IExecuteFunctions> = {
-		getNode: jest.fn(),
+		getNode: vi.fn(),
 	};
 	const spreadsheetId = 'test-spreadsheet-id';
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		googleSheet = new GoogleSheet(spreadsheetId, mockExecuteFunctions as IExecuteFunctions);
 	});
 
@@ -29,7 +32,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'POST',
-				`/v4/spreadsheets/${spreadsheetId}/values/${range}:clear`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}/values/${range}:clear`),
 				{ spreadsheetId, range },
 			);
 		});
@@ -46,14 +49,14 @@ describe('GoogleSheet', () => {
 				],
 			};
 
-			(apiRequest.call as jest.Mock).mockResolvedValue(mockResponse);
+			(apiRequest.call as Mock).mockResolvedValue(mockResponse);
 
 			const result = await googleSheet.getData(range, valueRenderMode);
 
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				`/v4/spreadsheets/${spreadsheetId}/values/${range}`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}/values/${range}`),
 				{},
 				{
 					valueRenderOption: valueRenderMode,
@@ -239,6 +242,38 @@ describe('GoogleSheet', () => {
 			expect(result).toEqual([{ name: 'John', age: '30', city: 'NY' }]);
 		});
 
+		it('should ignore undefined lookup values without throwing (OR)', async () => {
+			const lookupValues = [{ lookupColumn: 'age', lookupValue: undefined }];
+
+			const result = await googleSheet.lookupValues({
+				inputData,
+				keyRowIndex: 0,
+				dataStartRowIndex: 1,
+				lookupValues,
+				returnAllMatches: true,
+				combineFilters: 'OR',
+				nodeVersion: 4.5,
+			});
+
+			expect(result).toEqual([]);
+		});
+
+		it('should ignore undefined lookup values without throwing (AND)', async () => {
+			const lookupValues = [{ lookupColumn: 'age', lookupValue: undefined }];
+
+			const result = await googleSheet.lookupValues({
+				inputData,
+				keyRowIndex: 0,
+				dataStartRowIndex: 1,
+				lookupValues,
+				returnAllMatches: true,
+				combineFilters: 'AND',
+				nodeVersion: 4.5,
+			});
+
+			expect(result).toEqual([]);
+		});
+
 		it('should throw error for invalid key row', async () => {
 			const lookupValues = [{ lookupColumn: 'age', lookupValue: '30' }];
 
@@ -270,7 +305,7 @@ describe('GoogleSheet', () => {
 					['Jane', '25'],
 				],
 			};
-			(apiRequest.call as jest.Mock).mockResolvedValue(mockAppendResponse);
+			(apiRequest.call as Mock).mockResolvedValue(mockAppendResponse);
 
 			await googleSheet.appendSheetData({
 				inputData,
@@ -284,7 +319,7 @@ describe('GoogleSheet', () => {
 
 		it('should use columnNamesHint instead of calling getData for column names', async () => {
 			const inputData = [{ name: 'John', age: '30' }];
-			(apiRequest.call as jest.Mock).mockResolvedValue({ values: [['John', '30']] });
+			(apiRequest.call as Mock).mockResolvedValue({ values: [['John', '30']] });
 
 			googleSheet.setColumnNamesHint(['name', 'age']);
 
@@ -301,7 +336,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				expect.anything(),
 				'PUT',
-				expect.stringContaining('/values/'),
+				requestTarget(expect.stringContaining('/values/')),
 				expect.anything(),
 				expect.anything(),
 			);
@@ -309,7 +344,7 @@ describe('GoogleSheet', () => {
 
 		it('should clear columnNamesHint after use and fall back to getData on next call', async () => {
 			const inputData = [{ name: 'John', age: '30' }];
-			(apiRequest.call as jest.Mock)
+			(apiRequest.call as Mock)
 				.mockResolvedValueOnce({ values: [['John', '30']] }) // first PUT
 				.mockResolvedValueOnce({ values: [['name', 'age']] }) // second call: GET column names
 				.mockResolvedValueOnce({ values: [['John', '30']] }); // second PUT
@@ -352,7 +387,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'POST',
-				`/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}:batchUpdate`),
 				{
 					requests: [
 						{
@@ -386,7 +421,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				`/v4/spreadsheets/${spreadsheetId}/values/${range}`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}/values/${range}`),
 				{},
 				{
 					valueRenderOption: valueRenderMode,
@@ -405,14 +440,14 @@ describe('GoogleSheet', () => {
 				],
 			};
 
-			(apiRequest.call as jest.Mock).mockResolvedValue(mockResponse);
+			(apiRequest.call as Mock).mockResolvedValue(mockResponse);
 
 			const result = await googleSheet.spreadsheetGetSheets();
 
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				`/v4/spreadsheets/${spreadsheetId}`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}`),
 				{},
 				{ fields: 'sheets.properties' },
 			);
@@ -429,7 +464,7 @@ describe('GoogleSheet', () => {
 		};
 
 		beforeEach(() => {
-			(apiRequest.call as jest.Mock).mockResolvedValue(mockResponse);
+			(apiRequest.call as Mock).mockResolvedValue(mockResponse);
 		});
 
 		it('should find sheet by name', async () => {
@@ -479,14 +514,14 @@ describe('GoogleSheet', () => {
 				],
 			};
 
-			(apiRequest.call as jest.Mock).mockResolvedValue(mockResponse);
+			(apiRequest.call as Mock).mockResolvedValue(mockResponse);
 
 			const result = await googleSheet.getDataRange('123');
 
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				`/v4/spreadsheets/${spreadsheetId}`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}`),
 				{},
 				{ fields: 'sheets.properties' },
 			);
@@ -510,7 +545,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'POST',
-				`/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}:batchUpdate`),
 				{ requests },
 			);
 		});
@@ -533,7 +568,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'POST',
-				`/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}/values:batchUpdate`),
 				{
 					data: updateData,
 					valueInputOption: 'USER_ENTERED',
@@ -545,7 +580,7 @@ describe('GoogleSheet', () => {
 	describe('appendData', () => {
 		beforeEach(() => {
 			// Mock getData to return existing data
-			(apiRequest.call as jest.Mock).mockImplementation(async (_, method, _url) => {
+			(apiRequest.call as Mock).mockImplementation(async (_, method, _url) => {
 				if (method === 'GET') {
 					return { values: [['existing', 'row']] };
 				}
@@ -573,7 +608,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'PUT',
-				expect.stringContaining('Sheet1!5:5'),
+				requestTarget(expect.stringContaining('Sheet1!5:5')),
 				expect.any(Object),
 				expect.any(Object),
 			);
@@ -587,7 +622,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'POST',
-				expect.stringContaining(':append'),
+				requestTarget(expect.stringContaining(':append')),
 				expect.any(Object),
 				expect.any(Object),
 			);
@@ -603,7 +638,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'PUT',
-				`/v4/spreadsheets/${spreadsheetId}/values/Sheet1!2:2`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}/values/Sheet1!2:2`),
 				{
 					range: 'Sheet1!2:2',
 					values: data,
@@ -620,7 +655,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'POST',
-				`/v4/spreadsheets/${spreadsheetId}/values/Sheet1!2:3:append`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}/values/Sheet1!2:3:append`),
 				{
 					range: 'Sheet1!2:3',
 					values: data,
@@ -640,7 +675,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'PUT',
-				`/v4/spreadsheets/${spreadsheetId}/values/Sheet1!2:3`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}/values/Sheet1!2:3`),
 				{
 					range: 'Sheet1!2:3',
 					values: data,
@@ -768,7 +803,7 @@ describe('GoogleSheet', () => {
 
 	describe('getColumnValues', () => {
 		beforeEach(() => {
-			(apiRequest.call as jest.Mock).mockResolvedValue({
+			(apiRequest.call as Mock).mockResolvedValue({
 				values: [['header'], ['value1'], ['value2']],
 			});
 		});
@@ -802,7 +837,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				expect.stringContaining('/values/Sheet1!A1:A10'),
+				requestTarget(expect.stringContaining('/values/Sheet1!A1:A10')),
 				{},
 				{ valueRenderOption: 'UNFORMATTED_VALUE', dateTimeRenderOption: 'FORMATTED_STRING' },
 			);
@@ -810,7 +845,7 @@ describe('GoogleSheet', () => {
 		});
 
 		it('should throw error when column data cannot be retrieved', async () => {
-			(apiRequest.call as jest.Mock).mockResolvedValue({ values: undefined });
+			(apiRequest.call as Mock).mockResolvedValue({ values: undefined });
 
 			await expect(
 				googleSheet.getColumnValues({
@@ -826,18 +861,19 @@ describe('GoogleSheet', () => {
 	describe('prepareDataForUpdateOrUpsert', () => {
 		beforeEach(() => {
 			// Mock getData responses
-			(apiRequest.call as jest.Mock).mockImplementation(
-				(_: unknown, _method: unknown, url: string) => {
-					if (url.includes('/values/Sheet1!A1:C1')) {
-						return { values: [['Name', 'Age', 'City']] };
-					}
-					// Match the actual URL pattern generated by getColumnValues
-					if (url.includes('/values/Sheet1!A1:A10') || url.includes('/values/Sheet1%21A1%3AA10')) {
-						return { values: [['Name'], ['John'], ['Jane']] };
-					}
-					return {};
-				},
-			);
+			(apiRequest.call as Mock).mockImplementation((_: unknown, _method: unknown, url: string) => {
+				if (String(url).includes('/values/Sheet1!A1:C1')) {
+					return { values: [['Name', 'Age', 'City']] };
+				}
+				// Match the actual URL pattern generated by getColumnValues
+				if (
+					String(url).includes('/values/Sheet1!A1:A10') ||
+					String(url).includes('/values/Sheet1%21A1%3AA10')
+				) {
+					return { values: [['Name'], ['John'], ['Jane']] };
+				}
+				return {};
+			});
 		});
 
 		it('should prepare update data for existing records', async () => {
@@ -878,7 +914,7 @@ describe('GoogleSheet', () => {
 		});
 
 		it('should throw error when key row cannot be retrieved', async () => {
-			(apiRequest.call as jest.Mock).mockResolvedValue({ values: undefined });
+			(apiRequest.call as Mock).mockResolvedValue({ values: undefined });
 
 			const inputData = [{ Name: 'John' }];
 
@@ -990,7 +1026,7 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'POST',
-				`/v4/spreadsheets/${spreadsheetId}/values/Sheet%20with%20spaces!A1:B2:clear`,
+				requestTarget(`/v4/spreadsheets/${spreadsheetId}/values/Sheet%20with%20spaces!A1:B2:clear`),
 				{ spreadsheetId, range },
 			);
 		});
@@ -1002,9 +1038,24 @@ describe('GoogleSheet', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'POST',
-				expect.stringContaining(encodeURIComponent("'Sheet with spaces'")),
+				requestTarget(expect.stringContaining(encodeURIComponent("'Sheet with spaces'"))),
 				{ spreadsheetId, range },
 			);
+		});
+
+		it('should encode path values that contain a slash', async () => {
+			const sheet = new GoogleSheet('1kZ8/files', mockExecuteFunctions as IExecuteFunctions);
+			await sheet.clearData('Q3/Orders!A1/B2:C3');
+
+			expect(String(vi.mocked(apiRequest.call).mock.calls[0][2])).toBe(
+				'/v4/spreadsheets/1kZ8%2Ffiles/values/Q3%2FOrders!A1%2FB2:C3:clear',
+			);
+		});
+
+		it('should reject a spreadsheet ID with a dot segment', async () => {
+			const sheet = new GoogleSheet('1kZ8/../files', mockExecuteFunctions as IExecuteFunctions);
+
+			await expect(sheet.clearData('Q3!A1:B2')).rejects.toThrow('Invalid identifier');
 		});
 	});
 });

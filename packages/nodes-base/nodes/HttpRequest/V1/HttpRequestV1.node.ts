@@ -12,9 +12,10 @@ import type {
 import {
 	NodeApiError,
 	NodeOperationError,
-	sleep,
+	READ_ONLY_ANNOTATIONS,
 	removeCircularRefs,
 	NodeConnectionTypes,
+	sleepUnlessExecutionCancelled,
 } from 'n8n-workflow';
 import type { Readable } from 'stream';
 
@@ -22,9 +23,11 @@ import type { IAuthDataSanitizeKeys } from '../GenericFunctions';
 import {
 	getAllowedDomains,
 	getSecrets,
+	removeRequestOptions,
 	replaceNullValues,
 	sanitizeUiMessage,
 } from '../GenericFunctions';
+
 interface OptionData {
 	name: string;
 	displayName: string;
@@ -161,30 +164,37 @@ export class HttpRequestV1 implements INodeType {
 						{
 							name: 'DELETE',
 							value: 'DELETE',
+							annotations: { effect: 'write', destructive: true, idempotent: false },
 						},
 						{
 							name: 'GET',
 							value: 'GET',
+							annotations: READ_ONLY_ANNOTATIONS,
 						},
 						{
 							name: 'HEAD',
 							value: 'HEAD',
+							annotations: READ_ONLY_ANNOTATIONS,
 						},
 						{
 							name: 'OPTIONS',
 							value: 'OPTIONS',
+							annotations: READ_ONLY_ANNOTATIONS,
 						},
 						{
 							name: 'PATCH',
 							value: 'PATCH',
+							annotations: { effect: 'write', destructive: true, idempotent: false },
 						},
 						{
 							name: 'POST',
 							value: 'POST',
+							// POST can run arbitrary actions, so it keeps the restrictive default.
 						},
 						{
 							name: 'PUT',
 							value: 'PUT',
+							annotations: { effect: 'write', destructive: true, idempotent: true },
 						},
 					],
 					default: 'GET',
@@ -627,23 +637,21 @@ export class HttpRequestV1 implements INodeType {
 		let oAuth1Api;
 		let oAuth2Api;
 
+		const authentication = this.getNodeParameter('authentication', 0) as string;
 		try {
-			httpBasicAuth = await this.getCredentials('httpBasicAuth');
-		} catch {}
-		try {
-			httpDigestAuth = await this.getCredentials('httpDigestAuth');
-		} catch {}
-		try {
-			httpHeaderAuth = await this.getCredentials('httpHeaderAuth');
-		} catch {}
-		try {
-			httpQueryAuth = await this.getCredentials('httpQueryAuth');
-		} catch {}
-		try {
-			oAuth1Api = await this.getCredentials('oAuth1Api');
-		} catch {}
-		try {
-			oAuth2Api = await this.getCredentials('oAuth2Api');
+			if (authentication === 'basicAuth') {
+				httpBasicAuth = await this.getCredentials('httpBasicAuth');
+			} else if (authentication === 'digestAuth') {
+				httpDigestAuth = await this.getCredentials('httpDigestAuth');
+			} else if (authentication === 'headerAuth') {
+				httpHeaderAuth = await this.getCredentials('httpHeaderAuth');
+			} else if (authentication === 'queryAuth') {
+				httpQueryAuth = await this.getCredentials('httpQueryAuth');
+			} else if (authentication === 'oAuth1') {
+				oAuth1Api = await this.getCredentials('oAuth1Api');
+			} else if (authentication === 'oAuth2') {
+				oAuth2Api = await this.getCredentials('oAuth2Api');
+			}
 		} catch {}
 
 		const secrets: string[] = [];
@@ -693,7 +701,7 @@ export class HttpRequestV1 implements INodeType {
 			const parametersAreJson = this.getNodeParameter('jsonParameters', itemIndex);
 
 			const options = this.getNodeParameter('options', itemIndex, {});
-			const url = this.getNodeParameter('url', itemIndex);
+			let url = this.getNodeParameter('url', itemIndex);
 
 			if (typeof url !== 'string') {
 				const actualType = url === null ? 'null' : typeof url;
@@ -701,6 +709,12 @@ export class HttpRequestV1 implements INodeType {
 					this.getNode(),
 					`URL parameter must be a string, got ${actualType}`,
 				);
+			}
+
+			url = url.trim();
+
+			if (!url) {
+				throw new NodeOperationError(this.getNode(), 'URL parameter cannot be empty');
 			}
 
 			if (!url.startsWith('http://') && !url.startsWith('https://')) {
@@ -719,7 +733,7 @@ export class HttpRequestV1 implements INodeType {
 				const batchSize: number =
 					(options.batchSize as number) > 0 ? (options.batchSize as number) : 1;
 				if (itemIndex % batchSize === 0) {
-					await sleep(options.batchInterval as number);
+					await sleepUnlessExecutionCancelled(this, options.batchInterval as number);
 				}
 			}
 
@@ -731,6 +745,7 @@ export class HttpRequestV1 implements INodeType {
 				uri: url,
 				gzip: true,
 				rejectUnauthorized: !this.getNodeParameter('allowUnauthorizedCerts', itemIndex, false),
+				sendCredentialsOnCrossOriginRedirect: true,
 			} satisfies IRequestOptions;
 
 			if (fullResponse) {
@@ -929,8 +944,8 @@ export class HttpRequestV1 implements INodeType {
 					}
 				}
 			} else if (options.bodyContentType === 'raw') {
+				// Read the body as text. It is parsed below, and nothing here consumes a stream.
 				requestOptions.json = false;
-				requestOptions.useStream = true;
 			} else {
 				requestOptions.json = true;
 			}
@@ -1022,6 +1037,7 @@ export class HttpRequestV1 implements INodeType {
 					// throw error;
 					throw new NodeApiError(this.getNode(), response as JsonObject, { itemIndex });
 				} else {
+					removeRequestOptions(response.reason);
 					removeCircularRefs(response.reason as JsonObject);
 					// Return the actual reason as error
 					returnItems.push({

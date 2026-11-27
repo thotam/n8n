@@ -20,9 +20,9 @@ import {
 	type ChatSendMessageResponse,
 	type ChatReconnectResponse,
 	ChatReconnectRequest,
-	ALWAYS_BLOCKED_CHAT_HUB_TOOL_TYPES,
-	CHAT_USER_BLOCKED_CHAT_HUB_TOOL_TYPES,
+	isChatHubToolTypeAllowed,
 } from '@n8n/api-types';
+import { ModuleRegistry } from '@n8n/backend-common';
 import { AuthenticatedRequest } from '@n8n/db';
 import {
 	RestController,
@@ -35,22 +35,24 @@ import {
 	Param,
 	Patch,
 	Query,
+	Middleware,
 } from '@n8n/decorators';
 import { Container } from '@n8n/di';
-import { sanitizeFilename } from '@n8n/utils';
-import type { Response } from 'express';
+import { sanitizeFilename } from '@n8n/utils/files/sanitize-filename';
+import type { NextFunction, Request, Response } from 'express';
 import multer from 'multer';
 
+import { BadRequestError, ForbiddenError } from '@n8n/errors';
+import { sendErrorResponse, sendStreamToResponse } from '@/response-helper';
+
 import { ChatHubAgentService } from './chat-hub-agent.service';
-import { ChatHubUploadMiddleware } from './chat-hub-upload.middleware';
-import { ChatHubToolService } from './chat-hub-tool.service';
 import { extractAuthenticationMetadata } from './chat-hub-extractor';
+import { ChatHubToolService } from './chat-hub-tool.service';
+import { ChatHubUploadMiddleware } from './chat-hub-upload.middleware';
 import { ChatHubAttachmentService } from './chat-hub.attachment.service';
 import { ChatHubModelsService } from './chat-hub.models.service';
 import { ChatHubService } from './chat-hub.service';
 import { ChatModelsRequestDto } from './dto/chat-models-request.dto';
-
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
 
 const chatHubUploadMiddleware = Container.get(ChatHubUploadMiddleware);
 
@@ -62,7 +64,21 @@ export class ChatHubController {
 		private readonly chatAgentService: ChatHubAgentService,
 		private readonly chatToolService: ChatHubToolService,
 		private readonly chatAttachmentService: ChatHubAttachmentService,
+		private readonly moduleRegistry: ModuleRegistry,
 	) {}
+
+	@Middleware()
+	checkChatEnabled(_req: Request, res: Response, next: NextFunction) {
+		// Fail closed: block unless Chat Hub is explicitly enabled. Disabled is the
+		// default, and existing installs with usage get an explicit enabled value
+		// via migration, so this only locks out the genuinely-off (or unset) state.
+		// Reads the cached module settings (kept fresh by refreshModuleSettings on toggle).
+		if (this.moduleRegistry.settings.get('chat-hub')?.enabled !== true) {
+			sendErrorResponse(res, new ForbiddenError('Chat Hub is disabled'));
+			return;
+		}
+		next();
+	}
 
 	@Post('/models')
 	@GlobalScope('chatHub:message')
@@ -120,30 +136,29 @@ export class ChatHubController {
 		const [{ mimeType, fileName }, attachmentAsStreamOrBuffer] =
 			await this.chatAttachmentService.getAttachment(sessionId, messageId, attachmentIndex);
 
-		res.setHeader('Content-Type', mimeType);
+		const setHeaders = () => {
+			res.setHeader('Content-Type', mimeType);
 
-		if (attachmentAsStreamOrBuffer.fileSize) {
-			res.setHeader('Content-Length', attachmentAsStreamOrBuffer.fileSize);
-		}
+			if (attachmentAsStreamOrBuffer.fileSize) {
+				res.setHeader('Content-Length', attachmentAsStreamOrBuffer.fileSize);
+			}
 
-		if (!mimeType || !ViewableMimeTypes.includes(mimeType.toLowerCase())) {
-			// Force download if file is not viewable
-			res.setHeader(
-				'Content-Disposition',
-				`attachment${fileName ? `; filename=${sanitizeFilename(fileName)}` : ''}`,
-			);
-		}
+			if (!mimeType || !ViewableMimeTypes.includes(mimeType.toLowerCase())) {
+				// Force download if file is not viewable
+				res.setHeader(
+					'Content-Disposition',
+					`attachment${fileName ? `; filename=${sanitizeFilename(fileName)}` : ''}`,
+				);
+			}
+		};
 
 		if (attachmentAsStreamOrBuffer.type === 'buffer') {
+			setHeaders();
 			res.send(attachmentAsStreamOrBuffer.buffer);
 			return;
 		}
 
-		return await new Promise<void>((resolve, reject) => {
-			attachmentAsStreamOrBuffer.stream.on('end', resolve);
-			attachmentAsStreamOrBuffer.stream.on('error', reject);
-			attachmentAsStreamOrBuffer.stream.pipe(res);
-		});
+		await sendStreamToResponse(res, attachmentAsStreamOrBuffer.stream, setHeaders);
 	}
 
 	@GlobalScope('chatHub:message')
@@ -501,13 +516,10 @@ export class ChatHubController {
 	}
 
 	private assertToolTypeAllowed(type: string, user: AuthenticatedRequest['user']) {
-		if (ALWAYS_BLOCKED_CHAT_HUB_TOOL_TYPES.includes(type)) {
+		if (!isChatHubToolTypeAllowed(type, { isChatUser: false })) {
 			throw new BadRequestError(`Tool type "${type}" is not supported in the Chat Hub`);
 		}
-		if (
-			user.role.slug === 'global:chatUser' &&
-			CHAT_USER_BLOCKED_CHAT_HUB_TOOL_TYPES.includes(type)
-		) {
+		if (!isChatHubToolTypeAllowed(type, { isChatUser: user.role.slug === 'global:chatUser' })) {
 			throw new BadRequestError(`Tool type "${type}" is not available for your role`);
 		}
 	}

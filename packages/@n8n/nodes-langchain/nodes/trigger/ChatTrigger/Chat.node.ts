@@ -18,6 +18,7 @@ import {
 	SEND_AND_WAIT_OPERATION,
 	getHighlightedInputKey,
 	getHighlightedResponseKey,
+	isToolType,
 } from 'n8n-workflow';
 import type {
 	IExecuteFunctions,
@@ -36,11 +37,29 @@ import {
 	getSendAndWaitPropertiesForChatNode,
 } from './util';
 
+function getToolFlowResponse(context: IExecuteFunctions, data: INodeExecutionData) {
+	// context.isToolExecution() doesn't work with ExecuteFunctionContext
+	const isToolExecution = isToolType(context.getNode().type);
+	if (!isToolExecution) return data;
+
+	// strip empty field and add sent: true to clarify the result for LLMs
+	const json: IDataObject = { ...data.json, sent: true };
+	if (json.chatInput === '') {
+		delete json.chatInput;
+	}
+
+	return {
+		...data,
+		json,
+	};
+}
+
 export class Chat implements INodeType {
 	description: INodeTypeDescription = {
 		usableAsTool: true,
 		displayName: 'Chat',
 		name: 'chat',
+		schemaPath: 'trigger/ChatTrigger',
 		icon: 'node:chat-trigger',
 		iconColor: 'black',
 		group: ['input'],
@@ -226,7 +245,7 @@ export class Chat implements INodeType {
 
 		if (!waitForReply) {
 			// return original message instead of input data
-			if (nodeVersion >= 1.3) return [[data]];
+			if (nodeVersion >= 1.3) return [[getToolFlowResponse(context, data)]];
 
 			const inputData = context.getInputData();
 			return [inputData];
@@ -333,16 +352,8 @@ export class Chat implements INodeType {
 		}
 
 		const parameters = chatTrigger.parameters as {
-			mode?: 'hostedChat' | 'webhook';
 			options: { responseMode: 'lastNode' | 'responseNodes' | 'streaming' | 'responseNode' };
 		};
-
-		if (parameters.mode === 'webhook') {
-			throw new NodeOperationError(
-				this.getNode(),
-				'"Embedded chat" is not supported, change the "Mode" in the chat trigger node to the "Hosted Chat"',
-			);
-		}
 
 		if (parameters.options.responseMode !== 'responseNodes') {
 			throw new NodeOperationError(

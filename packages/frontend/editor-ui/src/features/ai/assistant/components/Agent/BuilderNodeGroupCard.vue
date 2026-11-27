@@ -16,6 +16,8 @@ import type {
 import { isCardComplete } from '@/features/setupPanel/setupPanel.utils';
 import type { INodeUi } from '@/Interface';
 import { useWorkflowsStore } from '@/app/stores/workflows.store';
+import { useWorkflowExecutionStateStore } from '@/app/stores/workflowExecutionState.store';
+import { createWorkflowDocumentId } from '@/app/stores/workflowDocument.store';
 import { useCredentialsStore } from '@/features/credentials/credentials.store';
 import { useNodeHelpers } from '@/app/composables/useNodeHelpers';
 import { useTriggerExecution } from '@/features/setupPanel/composables/useTriggerExecution';
@@ -97,7 +99,9 @@ const isAnyCredentialTesting = computed(() =>
 // Notify parent on execution finish
 watch(isActive, (active, wasActive) => {
 	if (wasActive && !active) {
-		const runData = workflowsStore.getWorkflowResultDataByNodeName(props.nodeGroup.parentNode.name);
+		const runData = useWorkflowExecutionStateStore(
+			createWorkflowDocumentId(workflowsStore.workflowId),
+		).getActiveExecutionRunDataByNodeName(props.nodeGroup.parentNode.name);
 		const lastRun = runData?.[runData.length - 1];
 		if (!lastRun?.error) {
 			emit('stepExecuted');
@@ -228,12 +232,18 @@ watch(hoveredSection, (section) => {
 					icon-only
 					:disabled="isPrevDisabled"
 					data-test-id="wizard-card-footer-prev"
-					aria-label="Previous step"
+					:aria-label="i18n.baseText('aiAssistant.builder.setupWizard.prevStep')"
 					@click="emit('goToPrev')"
 				>
 					<N8nIcon icon="chevron-left" size="xsmall" />
 				</N8nButton>
-				<N8nText size="small" color="text-light"> {{ stepIndex + 1 }} of {{ totalCards }} </N8nText>
+				<N8nText size="small" color="text-light">
+					{{
+						i18n.baseText('aiAssistant.builder.setupWizard.stepCounter', {
+							interpolate: { current: stepIndex + 1, total: totalCards },
+						})
+					}}
+				</N8nText>
 				<N8nButton
 					v-if="showArrows"
 					variant="ghost"
@@ -241,7 +251,7 @@ watch(hoveredSection, (section) => {
 					icon-only
 					:disabled="isNextDisabled"
 					data-test-id="wizard-card-footer-next"
-					aria-label="Next step"
+					:aria-label="i18n.baseText('aiAssistant.builder.setupWizard.nextStep')"
 					@click="emit('goToNext')"
 				>
 					<N8nIcon icon="chevron-right" size="xsmall" />
@@ -252,7 +262,6 @@ watch(hoveredSection, (section) => {
 				<N8nButton
 					v-if="showContinue"
 					data-test-id="builder-node-group-card-continue"
-					type="primary"
 					size="small"
 					:class="$style.actionButton"
 					:label="i18n.baseText('aiAssistant.builder.setupWizard.continue' as BaseTextKey)"

@@ -1,20 +1,35 @@
 /**
- * Consolidated task-control tool — update-checklist + cancel-task + correct-task.
+ * Consolidated workflow_builder_task_control tool — update-checklist + cancel-task + correct-task.
  */
-import { createTool } from '@mastra/core/tools';
-import { taskListSchema } from '@n8n/api-types';
+import { Tool } from '@n8n/agents';
+import { getLegacyBuilderToolNames, taskItemSchema } from '@n8n/api-types';
 import { z } from 'zod';
 
 import { sanitizeInputSchema } from '../agent/sanitize-mcp-schemas';
 import type { OrchestrationContext } from '../types';
+import { ORCHESTRATION_TOOL_IDS } from './tool-ids';
 
 // ── Action schemas ──────────────────────────────────────────────────────────
+
+/**
+ * Stricter than the transport `taskItemSchema`: the description is the only
+ * label the checklist row shows, so a blank one renders an empty row. Rejecting
+ * it here returns a correctable error to the model, while the transport schema
+ * stays lenient for checklists persisted before this guard.
+ */
+const checklistItemSchema = taskItemSchema.extend({
+	description: z
+		.string()
+		.trim()
+		.min(1, 'Task description must not be empty — it is the label the user sees')
+		.describe('What this task accomplishes'),
+});
 
 const updateChecklistAction = z.object({
 	action: z
 		.literal('update-checklist')
-		.describe('Write or update a visible task checklist for multi-step work'),
-	tasks: taskListSchema.shape.tasks,
+		.describe('Write or update a lightweight visible checklist for multi-step work.'),
+	tasks: z.array(checklistItemSchema).describe('Ordered list of tasks'),
 });
 
 const cancelTaskAction = z.object({
@@ -92,11 +107,13 @@ async function handleCorrectTask(
 // ── Tool factory ────────────────────────────────────────────────────────────
 
 export function createTaskControlTool(context: OrchestrationContext) {
-	return createTool({
-		id: 'task-control',
-		description: 'Manage tasks and background work.',
-		inputSchema,
-		execute: async (input: Input) => {
+	return new Tool(ORCHESTRATION_TOOL_IDS.TASK_CONTROL)
+		.legacyNames(...getLegacyBuilderToolNames(ORCHESTRATION_TOOL_IDS.TASK_CONTROL))
+		.description(
+			'Manage tasks and background work. Use action="update-checklist" for lightweight visible checklists.',
+		)
+		.input(inputSchema)
+		.handler(async (input: Input) => {
 			switch (input.action) {
 				case 'update-checklist':
 					return await handleUpdateChecklist(context, input);
@@ -105,6 +122,6 @@ export function createTaskControlTool(context: OrchestrationContext) {
 				case 'correct-task':
 					return await handleCorrectTask(context, input);
 			}
-		},
-	});
+		})
+		.build();
 }

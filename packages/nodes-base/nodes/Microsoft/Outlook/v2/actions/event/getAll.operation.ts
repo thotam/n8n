@@ -1,4 +1,5 @@
 import type { IDataObject, IExecuteFunctions, INodeProperties } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import { updateDisplayOptions } from '@utils/utilities';
 
@@ -166,9 +167,16 @@ export async function execute(this: IExecuteFunctions, index: number) {
 	const fromAllCalendars = this.getNodeParameter('fromAllCalendars', index) as boolean;
 
 	if (fromAllCalendars) {
-		const response = await microsoftApiRequest.call(this, 'GET', '/calendars', undefined, {
-			$select: 'id',
-		});
+		const response = await microsoftApiRequest.call(
+			this,
+			'GET',
+			requestPath`/calendars`,
+			index,
+			undefined,
+			{
+				$select: 'id',
+			},
+		);
 		for (const calendar of response.value) {
 			calendars.push(calendar.id as string);
 		}
@@ -183,8 +191,8 @@ export async function execute(this: IExecuteFunctions, index: number) {
 
 	for (const calendarId of calendars) {
 		const endpoint = includeRecurringInstances
-			? `/calendars/${calendarId}/calendarView`
-			: `/calendars/${calendarId}/events`;
+			? requestPath`/calendars/${calendarId}/calendarView`
+			: requestPath`/calendars/${calendarId}/events`;
 
 		if (returnAll) {
 			const response = await microsoftApiRequestAllItems.call(
@@ -192,6 +200,7 @@ export async function execute(this: IExecuteFunctions, index: number) {
 				'value',
 				'GET',
 				endpoint,
+				index,
 				undefined,
 				qs,
 			);
@@ -201,7 +210,7 @@ export async function execute(this: IExecuteFunctions, index: number) {
 
 			if (qs.$top <= 0) break;
 
-			const response = await microsoftApiRequest.call(this, 'GET', endpoint, undefined, qs);
+			const response = await microsoftApiRequest.call(this, 'GET', endpoint, index, undefined, qs);
 			responseData.push(...response.value);
 		}
 	}

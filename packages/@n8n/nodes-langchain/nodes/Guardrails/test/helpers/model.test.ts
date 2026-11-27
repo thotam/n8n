@@ -32,6 +32,7 @@ const {
 
 	class MockStructuredOutputParser {
 		invoke = vi.fn();
+		parse = MockStructuredOutputParser.parse;
 		getFormatInstructions = vi.fn().mockReturnValue('Format instructions');
 		static parse = vi.fn();
 	}
@@ -147,6 +148,26 @@ describe('model helper', () => {
 			expect((result.originalException as GuardrailError).guardrailName).toBe('test-guardrail');
 		});
 
+		it('should return failed GuardrailResult when chain construction throws', async () => {
+			vi.mocked(MockChatPromptTemplate.fromMessages).mockImplementationOnce(() => {
+				throw new Error('Cannot pipe invalid model');
+			});
+
+			const result = await runLLMValidation('test-guardrail', 'Test input', {
+				model: mockModel,
+				prompt: 'Test prompt',
+				threshold: 0.5,
+			});
+
+			expect(result).toEqual({
+				guardrailName: 'test-guardrail',
+				tripwireTriggered: true,
+				executionFailed: true,
+				originalException: expect.any(GuardrailError),
+				info: {},
+			});
+		});
+
 		it('should return failed GuardrailResult when agent does not call tool', async () => {
 			vi.mocked(MockAgentExecutor.invoke).mockImplementation(() => {});
 
@@ -193,6 +214,37 @@ describe('model helper', () => {
 			const callArg = invokeMock.mock.calls[0][0];
 			expect(callArg.system_message).toContain('CUSTOM_RULES');
 			expect(callArg.system_message).not.toContain('Only respond with the json object');
+		});
+
+		it('should not expose raw model output in parser failure details', async () => {
+			const rawModelOutput = 'customer payload in guardrail output';
+			const invokeMock = vi.fn().mockResolvedValue({
+				content: [{ type: 'text', text: rawModelOutput }],
+			});
+			vi.mocked(MockChatPromptTemplate.fromMessages).mockImplementationOnce(
+				() =>
+					({
+						pipe: vi.fn().mockReturnValue({ invoke: invokeMock }),
+					}) as unknown as any,
+			);
+			vi.mocked(MockStructuredOutputParser.parse).mockRejectedValueOnce(
+				new MockOutputParserException(`Failed to parse. Text: "${rawModelOutput}"`),
+			);
+
+			const result = await runLLMValidation('test-guardrail', 'Input text', {
+				model: mockModel,
+				prompt: 'System Prompt',
+				threshold: 0.5,
+			});
+
+			expect(result.originalException).toBeInstanceOf(GuardrailError);
+			expect(result.originalException?.message).toBe('Failed to parse output');
+			expect((result.originalException as GuardrailError).description).toBe(
+				"Model output doesn't fit required format",
+			);
+			expect((result.originalException as GuardrailError).description).not.toContain(
+				rawModelOutput,
+			);
 		});
 	});
 });

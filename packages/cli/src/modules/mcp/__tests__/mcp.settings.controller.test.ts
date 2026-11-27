@@ -1,14 +1,17 @@
 import { Logger, ModuleRegistry } from '@n8n/backend-common';
+import { EventService, Publisher } from '@n8n/backend-services';
 import { InstanceSettingsLoaderConfig } from '@n8n/config';
-import { type ApiKey, type AuthenticatedRequest, User, Role } from '@n8n/db';
+import { type ApiKey, type AuthenticatedRequest, Person, type User, Role } from '@n8n/db';
+import { PubSubMetadata } from '@n8n/decorators';
 import { Container } from '@n8n/di';
 import type { Response } from 'express';
-import { mock, mockDeep } from 'jest-mock-extended';
+import { mock, mockDeep } from 'vitest-mock-extended';
 
-import { ForbiddenError } from '@/errors/response-errors/forbidden.error';
+import { ForbiddenError } from '@n8n/errors';
 import type { ListQuery } from '@/requests';
 import { WorkflowService } from '@/workflows/workflow.service';
 
+import { UpdateAllowedRedirectUrisDto } from '../dto/update-allowed-redirect-uris.dto';
 import { UpdateMcpSettingsDto } from '../dto/update-mcp-settings.dto';
 import { UpdateWorkflowsAvailabilityDto } from '../dto/update-workflows-availability.dto';
 import { McpServerApiKeyService } from '../mcp-api-key.service';
@@ -32,9 +35,9 @@ const createRole = () =>
 		scopes: [],
 	});
 
-const createUser = (overrides: Partial<User> = {}) =>
+const createPerson = (overrides: Partial<Person> = {}) =>
 	Object.assign(
-		new User(),
+		new Person(),
 		{
 			id: 'user-1',
 			email: 'user@example.com',
@@ -82,11 +85,13 @@ describe('McpSettingsController', () => {
 	const mcpServerApiKeyService = mockDeep<McpServerApiKeyService>();
 	const workflowService = mock<WorkflowService>();
 	const instanceSettingsLoaderConfig = mock<InstanceSettingsLoaderConfig>();
+	const eventService = mock<EventService>();
+	const publisher = mock<Publisher>();
 
 	let controller: McpSettingsController;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		instanceSettingsLoaderConfig.mcpManagedByEnv = false;
 		Container.set(Logger, logger);
 		Container.set(McpSettingsService, mcpSettingsService);
@@ -94,18 +99,24 @@ describe('McpSettingsController', () => {
 		Container.set(McpServerApiKeyService, mcpServerApiKeyService);
 		Container.set(WorkflowService, workflowService);
 		Container.set(InstanceSettingsLoaderConfig, instanceSettingsLoaderConfig);
+		Container.set(EventService, eventService);
+		Container.set(Publisher, publisher);
 		controller = Container.get(McpSettingsController);
 	});
 
 	afterEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 	});
 
 	describe('updateSettings', () => {
 		test('disables MCP access correctly', async () => {
-			const req = createReq({ mcpAccessEnabled: false });
+			const user = createPerson();
+			const req = createReq({ mcpAccessEnabled: false }, { user });
 			const dto = new UpdateMcpSettingsDto({ mcpAccessEnabled: false });
 			mcpSettingsService.setEnabled.mockResolvedValue(undefined);
+			mcpSettingsService.setAutoExposeNewWorkflows.mockResolvedValue(undefined);
+			mcpSettingsService.getEnabled.mockResolvedValue(false);
+			mcpSettingsService.getAutoExposeNewWorkflows.mockResolvedValue(false);
 			moduleRegistry.refreshModuleSettings.mockResolvedValue(null);
 
 			const res = createRes();
@@ -113,13 +124,21 @@ describe('McpSettingsController', () => {
 
 			expect(mcpSettingsService.setEnabled).toHaveBeenCalledWith(false);
 			expect(moduleRegistry.refreshModuleSettings).toHaveBeenCalledWith('mcp');
-			expect(result).toEqual({ mcpAccessEnabled: false });
+			expect(eventService.emit).toHaveBeenCalledWith('mcp-access-updated', {
+				user,
+				enabled: false,
+			});
+			expect(mcpSettingsService.setAutoExposeNewWorkflows).not.toHaveBeenCalled();
+			expect(result).toEqual({ mcpAccessEnabled: false, autoExposeNewWorkflows: false });
 		});
 
 		test('enables MCP access correctly', async () => {
-			const req = createReq({ mcpAccessEnabled: true });
+			const user = createPerson();
+			const req = createReq({ mcpAccessEnabled: true }, { user });
 			const dto = new UpdateMcpSettingsDto({ mcpAccessEnabled: true });
 			mcpSettingsService.setEnabled.mockResolvedValue(undefined);
+			mcpSettingsService.getEnabled.mockResolvedValue(true);
+			mcpSettingsService.getAutoExposeNewWorkflows.mockResolvedValue(true);
 			moduleRegistry.refreshModuleSettings.mockResolvedValue(null);
 
 			const res = createRes();
@@ -127,15 +146,72 @@ describe('McpSettingsController', () => {
 
 			expect(mcpSettingsService.setEnabled).toHaveBeenCalledWith(true);
 			expect(moduleRegistry.refreshModuleSettings).toHaveBeenCalledWith('mcp');
-			expect(result).toEqual({ mcpAccessEnabled: true });
+			expect(eventService.emit).toHaveBeenCalledWith('mcp-access-updated', {
+				user,
+				enabled: true,
+			});
+			// The response reflects the persisted state read back via the getters,
+			// surfacing the real stored auto-expose value on enable.
+			expect(result).toEqual({ mcpAccessEnabled: true, autoExposeNewWorkflows: true });
 		});
 
+		test('tells the other mains to reload the MCP settings', async () => {
+			const req = createReq({ mcpAccessEnabled: true }, { user: createPerson() });
+			const dto = new UpdateMcpSettingsDto({ mcpAccessEnabled: true });
+			moduleRegistry.refreshModuleSettings.mockResolvedValue(null);
+
+			await controller.updateSettings(req, createRes(), dto);
+
+			expect(publisher.publishCommand).toHaveBeenCalledWith({ command: 'reload-mcp-settings' });
+		});
+
+		test('keeps the update when the other mains cannot be told', async () => {
+			const req = createReq({ mcpAccessEnabled: true }, { user: createPerson() });
+			const dto = new UpdateMcpSettingsDto({ mcpAccessEnabled: true });
+			mcpSettingsService.getEnabled.mockResolvedValue(true);
+			mcpSettingsService.getAutoExposeNewWorkflows.mockResolvedValue(false);
+			moduleRegistry.refreshModuleSettings.mockResolvedValue(null);
+			publisher.publishCommand.mockRejectedValueOnce(new Error('Redis down'));
+
+			const result = await controller.updateSettings(req, createRes(), dto);
+
+			expect(logger.warn).toHaveBeenCalledWith(
+				'Failed to notify other main processes of the MCP settings',
+				{ cause: 'Redis down' },
+			);
+			expect(result).toEqual({ mcpAccessEnabled: true, autoExposeNewWorkflows: false });
+		});
+
+		test('refreshes the MCP module settings on a reload command from another main', async () => {
+			moduleRegistry.refreshModuleSettings.mockResolvedValue(null);
+
+			await controller.refreshMcpModuleSettings();
+
+			expect(moduleRegistry.refreshModuleSettings).toHaveBeenCalledWith('mcp');
+		});
+
+		test.each(['reload-mcp-settings', 'pubsub-reconnected'])(
+			'refreshes the MCP module settings on %s',
+			(eventName) => {
+				const handlers = Container.get(PubSubMetadata)
+					.getHandlers()
+					.filter(
+						({ eventName: name, eventHandlerClass }) =>
+							name === eventName && eventHandlerClass.name === 'McpSettingsController',
+					);
+
+				expect(handlers.map(({ methodName }) => methodName)).toEqual(['refreshMcpModuleSettings']);
+			},
+		);
+
 		test('handles module registry refresh failure gracefully', async () => {
-			const req = createReq({ mcpAccessEnabled: true });
+			const req = createReq({ mcpAccessEnabled: true }, { user: createPerson() });
 			const dto = new UpdateMcpSettingsDto({ mcpAccessEnabled: true });
 			const error = new Error('Registry sync failed');
 
 			mcpSettingsService.setEnabled.mockResolvedValue(undefined);
+			mcpSettingsService.getEnabled.mockResolvedValue(true);
+			mcpSettingsService.getAutoExposeNewWorkflows.mockResolvedValue(false);
 			moduleRegistry.refreshModuleSettings.mockRejectedValue(error);
 
 			const res = createRes();
@@ -146,7 +222,22 @@ describe('McpSettingsController', () => {
 			expect(logger.warn).toHaveBeenCalledWith('Failed to sync MCP settings to module registry', {
 				cause: 'Registry sync failed',
 			});
-			expect(result).toEqual({ mcpAccessEnabled: true });
+			expect(result).toEqual({ mcpAccessEnabled: true, autoExposeNewWorkflows: false });
+		});
+
+		test('handles a non-Error rejection from the module registry refresh', async () => {
+			const req = createReq({ mcpAccessEnabled: true }, { user: createPerson() });
+			const dto = new UpdateMcpSettingsDto({ mcpAccessEnabled: true });
+
+			mcpSettingsService.setEnabled.mockResolvedValue(undefined);
+			moduleRegistry.refreshModuleSettings.mockRejectedValue('registry unavailable');
+
+			const res = createRes();
+			await controller.updateSettings(req, res, dto);
+
+			expect(logger.warn).toHaveBeenCalledWith('Failed to sync MCP settings to module registry', {
+				cause: 'registry unavailable',
+			});
 		});
 
 		test('rejects updates when MCP settings are managed by env', async () => {
@@ -159,16 +250,88 @@ describe('McpSettingsController', () => {
 			);
 			expect(mcpSettingsService.setEnabled).not.toHaveBeenCalled();
 			expect(moduleRegistry.refreshModuleSettings).not.toHaveBeenCalled();
+			expect(eventService.emit).not.toHaveBeenCalled();
 		});
 
 		test('requires boolean mcpAccessEnabled value', () => {
-			expect(() => new UpdateMcpSettingsDto({} as never)).toThrow();
 			expect(() => new UpdateMcpSettingsDto({ mcpAccessEnabled: 'yes' } as never)).toThrow();
+		});
+
+		test('updates both fields when both are patched', async () => {
+			const user = createPerson();
+			const req = createReq({ mcpAccessEnabled: true, autoExposeNewWorkflows: false }, { user });
+			const dto = UpdateMcpSettingsDto.parse({
+				mcpAccessEnabled: true,
+				autoExposeNewWorkflows: false,
+			});
+			mcpSettingsService.setEnabled.mockResolvedValue(undefined);
+			mcpSettingsService.getEnabled.mockResolvedValue(true);
+			mcpSettingsService.getAutoExposeNewWorkflows.mockResolvedValue(false);
+			moduleRegistry.refreshModuleSettings.mockResolvedValue(null);
+
+			const res = createRes();
+			const result = await controller.updateSettings(req, res, dto);
+
+			expect(mcpSettingsService.setEnabled).toHaveBeenCalledWith(true);
+			expect(mcpSettingsService.setAutoExposeNewWorkflows).toHaveBeenCalledWith(false);
+			expect(result).toEqual({ mcpAccessEnabled: true, autoExposeNewWorkflows: false });
+		});
+
+		test('touches only autoExposeNewWorkflows when mcpAccessEnabled is not patched', async () => {
+			const user = createPerson();
+			const req = createReq({ autoExposeNewWorkflows: true }, { user });
+			const dto = UpdateMcpSettingsDto.parse({ autoExposeNewWorkflows: true });
+			mcpSettingsService.setAutoExposeNewWorkflows.mockResolvedValue(undefined);
+			mcpSettingsService.getEnabled.mockResolvedValue(true);
+			mcpSettingsService.getAutoExposeNewWorkflows.mockResolvedValue(true);
+			moduleRegistry.refreshModuleSettings.mockResolvedValue(null);
+
+			const res = createRes();
+			const result = await controller.updateSettings(req, res, dto);
+
+			expect(mcpSettingsService.setEnabled).not.toHaveBeenCalled();
+			expect(mcpSettingsService.setAutoExposeNewWorkflows).toHaveBeenCalledWith(true);
+			expect(eventService.emit).not.toHaveBeenCalled();
+			expect(result).toEqual({ mcpAccessEnabled: true, autoExposeNewWorkflows: true });
+		});
+
+		test('saves the preferences switch and returns it', async () => {
+			const req = createReq({ preferencesEnabled: false }, { user: createPerson() });
+			const dto = UpdateMcpSettingsDto.parse({ preferencesEnabled: false });
+			mcpSettingsService.getEnabled.mockResolvedValue(true);
+			mcpSettingsService.getAutoExposeNewWorkflows.mockResolvedValue(false);
+			mcpSettingsService.getPreferencesEnabled.mockResolvedValue(false);
+			moduleRegistry.refreshModuleSettings.mockResolvedValue(null);
+
+			const result = await controller.updateSettings(req, createRes(), dto);
+
+			expect(mcpSettingsService.setPreferencesEnabled).toHaveBeenCalledWith(false);
+			expect(mcpSettingsService.setEnabled).not.toHaveBeenCalled();
+			expect(moduleRegistry.refreshModuleSettings).toHaveBeenCalledWith('mcp');
+			expect(publisher.publishCommand).toHaveBeenCalledWith({ command: 'reload-mcp-settings' });
+			expect(result).toEqual({
+				mcpAccessEnabled: true,
+				autoExposeNewWorkflows: false,
+				preferencesEnabled: false,
+			});
+		});
+
+		test('rejects an empty body', () => {
+			const result = UpdateMcpSettingsDto.safeParse({});
+
+			expect(result.success).toBe(false);
+			if (!result.success) {
+				expect(result.error.errors[0].message).toBe(
+					'Provide at least one of mcpAccessEnabled, autoExposeNewWorkflows or preferencesEnabled',
+				);
+			}
+			expect(mcpSettingsService.setEnabled).not.toHaveBeenCalled();
+			expect(mcpSettingsService.setAutoExposeNewWorkflows).not.toHaveBeenCalled();
 		});
 	});
 
 	describe('getApiKeyForMcpServer', () => {
-		const mockUser = createUser({ id: 'user123', email: 'user123@example.com' });
+		const mockUser = createPerson({ id: 'user123', email: 'user123@example.com' });
 		const mockApiKey = {
 			id: 'api-key-123',
 			key: 'mcp-key-abc123',
@@ -188,7 +351,7 @@ describe('McpSettingsController', () => {
 	});
 
 	describe('rotateApiKeyForMcpServer', () => {
-		const mockUser = createUser({ id: 'user123', email: 'user123@example.com' });
+		const mockUser = createPerson({ id: 'user123', email: 'user123@example.com' });
 		const mockApiKey = {
 			id: 'api-key-123',
 			key: 'mcp-key-abc123',
@@ -209,7 +372,7 @@ describe('McpSettingsController', () => {
 	});
 
 	describe('getMcpEligibleWorkflows', () => {
-		const user = createUser();
+		const user = createPerson();
 
 		test('calls workflowService.getMany with correct filter options', async () => {
 			const req = createListQueryReq(user);
@@ -228,10 +391,7 @@ describe('McpSettingsController', () => {
 						availableInMCP: false,
 					}),
 				}),
-				false, // includeScopes
-				false, // includeFolders
-				false, // onlySharedWithMe
-				['workflow:update'], // requiredScopes
+				{ requiredScopes: ['workflow:update'] },
 			);
 		});
 
@@ -281,10 +441,7 @@ describe('McpSettingsController', () => {
 					take: 10,
 					skip: 5,
 				}),
-				false,
-				false,
-				false,
-				['workflow:update'],
+				{ requiredScopes: ['workflow:update'] },
 			);
 		});
 
@@ -310,16 +467,13 @@ describe('McpSettingsController', () => {
 						availableInMCP: false,
 					}),
 				}),
-				false,
-				false,
-				false,
-				['workflow:update'],
+				{ requiredScopes: ['workflow:update'] },
 			);
 		});
 	});
 
 	describe('toggleWorkflowsMCPAccess', () => {
-		const user = createUser();
+		const user = createPerson();
 
 		test('delegates to mcpSettingsService.bulkSetAvailableInMCP and returns its result', async () => {
 			const dto = new UpdateWorkflowsAvailabilityDto({
@@ -329,6 +483,8 @@ describe('McpSettingsController', () => {
 			const bulkResult = {
 				updatedCount: 2,
 				updatedIds: ['wf-1', 'wf-2'],
+				unchangedCount: 0,
+				unchangedIds: [],
 				skippedCount: 0,
 				failedCount: 0,
 				changedWorkflows: [
@@ -357,9 +513,140 @@ describe('McpSettingsController', () => {
 			expect(result).toEqual({
 				updatedCount: 2,
 				updatedIds: ['wf-1', 'wf-2'],
+				unchangedCount: 0,
+				unchangedIds: [],
 				skippedCount: 0,
 				failedCount: 0,
 			});
+			expect(moduleRegistry.refreshModuleSettings).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('getAllowedRedirectUris', () => {
+		test('returns allowed redirect URIs', async () => {
+			const mockUris = ['https://example.com/callback', 'http://localhost:3000/callback'];
+			mcpSettingsService.getAllowedRedirectUris.mockResolvedValue(mockUris);
+
+			const result = await controller.getAllowedRedirectUris();
+
+			expect(mcpSettingsService.getAllowedRedirectUris).toHaveBeenCalled();
+			expect(result).toEqual({ uris: mockUris });
+		});
+
+		test('returns empty array when no URIs configured', async () => {
+			mcpSettingsService.getAllowedRedirectUris.mockResolvedValue([]);
+
+			const result = await controller.getAllowedRedirectUris();
+
+			expect(result).toEqual({ uris: [] });
+		});
+	});
+
+	describe('updateAllowedRedirectUris', () => {
+		test('updates allowed redirect URIs successfully', async () => {
+			const uris = ['https://example.com/callback', 'http://localhost:3000/callback'];
+			const dto = new UpdateAllowedRedirectUrisDto({ uris });
+			mcpSettingsService.setAllowedRedirectUris.mockResolvedValue(undefined);
+
+			const result = await controller.updateAllowedRedirectUris(createReq({}), createRes(), dto);
+
+			expect(mcpSettingsService.setAllowedRedirectUris).toHaveBeenCalledWith(uris);
+			expect(result).toEqual({ success: true });
+		});
+
+		test('propagates storage errors instead of mapping them to a client error', async () => {
+			const uris = ['https://example.com/callback'];
+			const dto = new UpdateAllowedRedirectUrisDto({ uris });
+			const dbError = new Error('Database connection failed');
+			mcpSettingsService.setAllowedRedirectUris.mockRejectedValue(dbError);
+
+			await expect(
+				controller.updateAllowedRedirectUris(createReq({}), createRes(), dto),
+			).rejects.toThrow(dbError);
+		});
+
+		test('accepts empty array', async () => {
+			const dto = new UpdateAllowedRedirectUrisDto({ uris: [] });
+			mcpSettingsService.setAllowedRedirectUris.mockResolvedValue(undefined);
+
+			const result = await controller.updateAllowedRedirectUris(createReq({}), createRes(), dto);
+
+			expect(mcpSettingsService.setAllowedRedirectUris).toHaveBeenCalledWith([]);
+			expect(result).toEqual({ success: true });
+		});
+	});
+
+	describe('UpdateAllowedRedirectUrisDto', () => {
+		test('accepts valid http and https URIs', () => {
+			const dto = new UpdateAllowedRedirectUrisDto({
+				uris: ['https://example.com/callback', 'http://localhost:3000/callback'],
+			});
+
+			expect(dto.uris).toEqual(['https://example.com/callback', 'http://localhost:3000/callback']);
+		});
+
+		test('trims whitespace and filters out empty entries', () => {
+			const dto = new UpdateAllowedRedirectUrisDto({
+				uris: ['  https://example.com/callback  ', '', '   '],
+			});
+
+			expect(dto.uris).toEqual(['https://example.com/callback']);
+		});
+
+		test('rejects malformed URLs', () => {
+			expect(() => new UpdateAllowedRedirectUrisDto({ uris: ['not-a-url'] })).toThrow();
+		});
+
+		test('rejects non-http/https protocols', () => {
+			expect(
+				() => new UpdateAllowedRedirectUrisDto({ uris: ['ftp://example.com/callback'] }),
+			).toThrow();
+		});
+
+		test('requires HTTPS for non-localhost URIs outside development', () => {
+			const originalEnv = process.env.NODE_ENV;
+			process.env.NODE_ENV = 'production';
+
+			try {
+				expect(
+					() => new UpdateAllowedRedirectUrisDto({ uris: ['http://example.com/callback'] }),
+				).toThrow();
+			} finally {
+				process.env.NODE_ENV = originalEnv;
+			}
+		});
+
+		test('allows http for localhost outside development', () => {
+			const originalEnv = process.env.NODE_ENV;
+			process.env.NODE_ENV = 'production';
+
+			try {
+				const dto = new UpdateAllowedRedirectUrisDto({
+					uris: ['http://localhost:3000/callback', 'http://127.0.0.1:3000/callback'],
+				});
+
+				expect(dto.uris).toEqual([
+					'http://localhost:3000/callback',
+					'http://127.0.0.1:3000/callback',
+				]);
+			} finally {
+				process.env.NODE_ENV = originalEnv;
+			}
+		});
+
+		test('allows http for IPv6 loopback [::1] outside development', () => {
+			const originalEnv = process.env.NODE_ENV;
+			process.env.NODE_ENV = 'production';
+
+			try {
+				const dto = new UpdateAllowedRedirectUrisDto({
+					uris: ['http://[::1]:3000/callback'],
+				});
+
+				expect(dto.uris).toEqual(['http://[::1]:3000/callback']);
+			} finally {
+				process.env.NODE_ENV = originalEnv;
+			}
 		});
 	});
 

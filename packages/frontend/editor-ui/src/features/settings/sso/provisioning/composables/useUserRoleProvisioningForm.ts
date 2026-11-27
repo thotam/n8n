@@ -1,5 +1,5 @@
 import { computed, ref } from 'vue';
-import type { ProvisioningModeFlags } from '@n8n/api-types';
+import { ROLE, type ProvisioningModeFlags } from '@n8n/api-types';
 import { useUserRoleProvisioningStore } from './userRoleProvisioning.store';
 import type { ProvisioningConfig } from '@n8n/rest-api-client/api/provisioning';
 import { useRoleMappingRulesApi } from './useRoleMappingRulesApi';
@@ -8,8 +8,9 @@ import type {
 	RoleMappingMethodSetting,
 } from '../components/UserRoleProvisioningDropdown.vue';
 import { type SupportedProtocolType } from '../../sso.store';
-import { useTelemetry } from '@/app/composables/useTelemetry';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
 import { useRootStore } from '@n8n/stores/useRootStore';
+import { TELEMETRY_EVENT } from '@n8n/telemetry';
 import type { RoleMappingRulesSaveResult } from './useRoleMappingRules';
 
 type TelemetryAssignmentMethod = 'disabled' | 'instance_role' | 'instance_and_project_roles';
@@ -23,6 +24,8 @@ type DropdownValues = {
 	mappingMethod: RoleMappingMethodSetting;
 };
 const DEFAULTS: DropdownValues = { roleAssignment: 'manual', mappingMethod: 'idp' };
+// Fallback default condition when the provisioning config never set one.
+const DEFAULT_INSTANCE_ROLE = ROLE.Member;
 
 function getDropdownValuesFromConfig(
 	config?: ProvisioningConfig,
@@ -86,16 +89,25 @@ export function useUserRoleProvisioningForm(protocol: SupportedProtocolType) {
 
 	const roleAssignment = ref<RoleAssignmentSetting>('manual');
 	const mappingMethod = ref<RoleMappingMethodSetting>('idp');
+	const defaultInstanceRole = ref<string>(DEFAULT_INSTANCE_ROLE);
 	const storedHasProjectRules = ref(false);
 
 	const storedValues = computed(() =>
 		getDropdownValuesFromConfig(provisioningStore.provisioningConfig, storedHasProjectRules.value),
 	);
 
+	// Unset in config preserves legacy behavior; the UI shows Member without
+	// persisting anything until the admin explicitly changes the default.
+	const storedDefaultInstanceRole = computed(
+		() => provisioningStore.provisioningConfig?.defaultInstanceRole ?? DEFAULT_INSTANCE_ROLE,
+	);
+
 	const isUserRoleProvisioningChanged = computed<boolean>(() => {
 		const stored = storedValues.value;
 		return (
-			stored.roleAssignment !== roleAssignment.value || stored.mappingMethod !== mappingMethod.value
+			stored.roleAssignment !== roleAssignment.value ||
+			stored.mappingMethod !== mappingMethod.value ||
+			storedDefaultInstanceRole.value !== defaultInstanceRole.value
 		);
 	});
 
@@ -108,7 +120,7 @@ export function useUserRoleProvisioningForm(protocol: SupportedProtocolType) {
 
 		if (!provisioningResult.configChanged && !rulesChanged) return;
 
-		telemetry.track('User updated provisioning settings', {
+		telemetry.track(TELEMETRY_EVENT.PROVISIONING.USER_UPDATED_PROVISIONING_SETTINGS, {
 			instance_id: useRootStore().instanceId,
 			authentication_method: protocol,
 			assignment_method: getTelemetryAssignmentMethod(roleAssignment.value),
@@ -127,6 +139,7 @@ export function useUserRoleProvisioningForm(protocol: SupportedProtocolType) {
 		const effectiveMappingMethod: RoleMappingMethodSetting = isDisablingSso
 			? 'idp'
 			: mappingMethod.value;
+		const effectiveDefaultInstanceRole = defaultInstanceRole.value;
 
 		// Whenever the effective assignment isn't 'instance_and_project', any project
 		// mapping rules on the server are stale and must be cleaned up. We send this
@@ -135,9 +148,12 @@ export function useUserRoleProvisioningForm(protocol: SupportedProtocolType) {
 		const shouldDeleteProjectRules = effectiveRoleAssignment !== 'instance_and_project';
 
 		const stored = storedValues.value;
+		const defaultInstanceRoleChanged =
+			effectiveDefaultInstanceRole !== storedDefaultInstanceRole.value;
 		const configChanged =
 			effectiveRoleAssignment !== stored.roleAssignment ||
-			effectiveMappingMethod !== stored.mappingMethod;
+			effectiveMappingMethod !== stored.mappingMethod ||
+			defaultInstanceRoleChanged;
 
 		if (!configChanged && !shouldDeleteProjectRules) {
 			return { configChanged: false };
@@ -145,11 +161,17 @@ export function useUserRoleProvisioningForm(protocol: SupportedProtocolType) {
 
 		await provisioningStore.saveProvisioningConfig({
 			...getProvisioningConfigFromDropdowns(effectiveRoleAssignment, effectiveMappingMethod),
+			// Omit when unchanged: for a legacy config where this field was never
+			// set, always sending it would silently persist the UI-only
+			// 'global:member' fallback, turning "skip" (direct-claim's unset
+			// behavior) into an explicit grant on the next unrelated save.
+			...(defaultInstanceRoleChanged ? { defaultInstanceRole: effectiveDefaultInstanceRole } : {}),
 			...(shouldDeleteProjectRules ? { deleteProjectRules: true } : {}),
 		});
 
 		roleAssignment.value = effectiveRoleAssignment;
 		mappingMethod.value = effectiveMappingMethod;
+		defaultInstanceRole.value = effectiveDefaultInstanceRole;
 
 		if (shouldDeleteProjectRules) {
 			storedHasProjectRules.value = false;
@@ -190,6 +212,7 @@ export function useUserRoleProvisioningForm(protocol: SupportedProtocolType) {
 		const stored = storedValues.value;
 		roleAssignment.value = stored.roleAssignment;
 		mappingMethod.value = stored.mappingMethod;
+		defaultInstanceRole.value = storedDefaultInstanceRole.value;
 	};
 
 	const initFormValue = () => {
@@ -207,6 +230,7 @@ export function useUserRoleProvisioningForm(protocol: SupportedProtocolType) {
 			const values = getDropdownValuesFromConfig(config, hasProjectRules);
 			roleAssignment.value = values.roleAssignment;
 			mappingMethod.value = values.mappingMethod;
+			defaultInstanceRole.value = config?.defaultInstanceRole ?? DEFAULT_INSTANCE_ROLE;
 		});
 	};
 
@@ -215,6 +239,7 @@ export function useUserRoleProvisioningForm(protocol: SupportedProtocolType) {
 	return {
 		roleAssignment,
 		mappingMethod,
+		defaultInstanceRole,
 		isUserRoleProvisioningChanged,
 		saveProvisioningConfig,
 		trackProvisioningChange,

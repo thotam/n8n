@@ -1,3 +1,18 @@
+// The root barrel pulls workflow types into the bundled client declarations.
+import type { ExportPackageRequestDto } from '@n8n/api-types/dist/dto/packages/export-package-request.dto';
+import type {
+	ImportPackageRequestDto,
+	ImportPackageSelectionRequestDto,
+} from '@n8n/api-types/dist/dto/packages/import-package-request.dto';
+import type { ImportResultDto } from '@n8n/api-types/dist/dto/packages/import-result.dto';
+import type { PromotionMissingProject } from '@n8n/api-types/dist/dto/promotions/promotion-apply-check.dto';
+import type {
+	PromotionInstanceApplyPreview,
+	PromotionPreview,
+} from '@n8n/api-types/dist/dto/promotions/promotion-preview.dto';
+import type { CreateProjectPublicDto } from '@n8n/api-types/dist/dto/project/project-public.dto';
+import { N8N_CLIENT_HEADER, N8N_CLIENT_N8N_CLI } from '@n8n/constants';
+
 export interface PaginatedResponse<T> {
 	data: T[];
 	nextCursor?: string;
@@ -9,11 +24,196 @@ export interface ClientOptions {
 	debug?: (message: string) => void;
 }
 
+export type ImportPackageFields = Pick<ImportPackageRequestDto, 'conflictPolicy'> &
+	Partial<Omit<ImportPackageRequestDto, 'package' | 'conflictPolicy' | 'bindings'>> & {
+		/** Multipart bindings remain JSON text until the API validates them. */
+		bindings?: string;
+	};
+
+export type ImportPackageSelectionFields = Pick<
+	ImportPackageSelectionRequestDto,
+	'selectedProjectId' | 'selectedWorkflowIds'
+> &
+	Partial<
+		Omit<ImportPackageSelectionRequestDto, 'package' | 'selectedProjectId' | 'selectedWorkflowIds'>
+	>;
+
+export type ExportPackageFields = Partial<ExportPackageRequestDto>;
+
+/** True per-entity counts of what ended up in an exported package. */
+export interface ExportPackageCounts {
+	/** Older servers can omit Agent and project counts. */
+	agents?: number;
+	projects?: number;
+	workflows: number;
+	folders: number;
+	credentials: number;
+	dataTables: number;
+	variables: number;
+	/** Absent when the server predates tag export. */
+	tags?: number;
+}
+
+export interface ExportPackageResult {
+	archive: Buffer;
+	/** Undefined when talking to an older server that doesn't send the counts header. */
+	counts?: ExportPackageCounts;
+}
+
+export interface ImportPackageCounts {
+	projects: { created: number; updated: number; skipped: number; deleted: number };
+	folders: {
+		created: number;
+		updated: number;
+		skipped: number;
+		/** Part of `updated`: folders that Apply moved under another parent of their project. */
+		moved: number;
+		/** Part of `updated`: folders that Apply gave the name on the branch. */
+		renamed: number;
+		removed: number;
+	};
+	workflows: {
+		created: number;
+		updated: number;
+		skipped: number;
+		/** Part of `updated`: workflows that Apply also moved to another folder of their project. */
+		moved: number;
+		archived: number;
+		deleted: number;
+		publishing: {
+			published: number;
+			unpublished: number;
+			unchanged: number;
+			blocked: number;
+			failed: number;
+		};
+	};
+	credentials: { matched: number; stubbed: number };
+	dataTables: { matched: number; created: number; updated: number };
+	variables: {
+		matched: number;
+		created: number;
+		updated: number;
+		stubbed: number;
+		missing: number;
+	};
+	tags: { matched: number; created: number; renamed: number; reconciled: number; skipped: number };
+}
+
+/** The direction a promotion environment, checkout, or operation works in. */
+export type PromotionDirection = 'apply' | 'promote';
+
+/** The Git part of a promotion operation result. */
+export interface PromotionGitResult {
+	commitSha: string;
+	/** For Promote the branch it pushed to, for Apply the branch the package came from. */
+	branchName: string;
+}
+
+/** Outcome of promoting the team projects through an environment. */
+export type PromotePackageResult = {
+	environmentId: string;
+	counts: ExportPackageCounts;
+	git: PromotionGitResult;
+};
+
+/** Outcome of promoting a selection of a project. Only `promoted` pushed anything. */
+export type PromoteSelectionResult =
+	| (PromotePackageResult & { status: 'promoted' })
+	| { status: 'preview-changed'; environmentId: string };
+
+/** The reviewed source that Apply must still match. Any mismatch reports `source-changed`. */
+export interface PromotionExpectedSource {
+	environmentId: string;
+	branchName: string;
+	commitSha: string;
+}
+
+/**
+ * A project Promote or Apply always includes the project itself, so an empty selection covers
+ * only the project.
+ */
+export interface PromotionSelection {
+	workflowIds?: string[];
+	folderIds?: string[];
+}
+
+/** References in a package that must be set up on this instance before Apply can import it. */
+export interface PromotionApplyCheck {
+	missingProjects: Array<Record<string, unknown>>;
+	missingBindings: Array<Record<string, unknown>>;
+	accessRequirements: Array<Record<string, unknown>>;
+	conflicts: Array<Record<string, unknown>>;
+	warnings: Array<Record<string, unknown>>;
+}
+
+/** A team project that a full Apply deletes, because the package does not hold it. */
+export type PromotionProjectDeletion = {
+	kind: 'project';
+	code: 'project-deletion';
+	project: { id: string; name: string };
+};
+
+type ApplyPackageIdentity = {
+	environmentId: string;
+	git: PromotionGitResult;
+};
+
+/** Outcome of applying a package to the instance. Only `applied` imported anything. */
+export type ApplyPackageResult =
+	| (ApplyPackageIdentity & {
+			status: 'applied';
+			counts: ImportPackageCounts;
+			warnings: Array<Record<string, unknown>>;
+	  })
+	| (ApplyPackageIdentity & { status: 'blocked'; check: PromotionApplyCheck })
+	| (ApplyPackageIdentity & { status: 'source-changed' })
+	| (ApplyPackageIdentity & { status: 'preview-changed' });
+
+export type { PromotionInstanceApplyPreview, PromotionPreview };
+
+/** A repository that the token of a Git host provider can access. */
+export interface PromotionRepository {
+	id: string;
+	name: string;
+	fullPath: string;
+	remoteUrl: string;
+	defaultBranch: string | null;
+}
+
+/** A branch of a Git host repository. */
+export interface PromotionBranch {
+	name: string;
+	isDefault: boolean;
+}
+
+/** State of an environment's local checkout, after a connect or a disconnect. */
+export type PromotionCheckoutResult = {
+	environmentId: string;
+	direction: PromotionDirection;
+	branchName: string;
+	hasCheckout: boolean;
+};
+
+/** Apply package projects whose IDs do not exist on the instance. */
+export type PromotionMissingProjectList = {
+	environmentId: string;
+	git: { commitSha: string; branchName: string } | null;
+	data: PromotionMissingProject[];
+};
+
+/** A new provider, with the generated public key for SSH providers. */
+export type PromotionProviderCreatedResult = {
+	provider: Record<string, unknown>;
+	publicKey: string | null;
+};
+
 export class ApiError extends Error {
 	constructor(
 		readonly statusCode: number,
 		message: string,
 		readonly hint?: string,
+		readonly details?: unknown,
 	) {
 		super(message);
 		this.name = 'ApiError';
@@ -38,6 +238,7 @@ export class N8nClient {
 			'Content-Type': 'application/json',
 			Accept: 'application/json',
 			'User-Agent': 'n8n-cli',
+			[N8N_CLIENT_HEADER]: N8N_CLIENT_N8N_CLI,
 		});
 		this.debug = options.debug;
 	}
@@ -47,7 +248,13 @@ export class N8nClient {
 	private async request<T>(
 		method: string,
 		path: string,
-		options: { body?: unknown; query?: Record<string, string> } = {},
+		options: {
+			body?: unknown;
+			query?: Record<string, string>;
+			formData?: FormData;
+			responseType?: 'json' | 'binary';
+			onResponse?: (response: Response) => void;
+		} = {},
 	): Promise<T> {
 		const url = new URL(`${this.baseUrl}${path}`);
 		if (options.query) {
@@ -59,13 +266,18 @@ export class N8nClient {
 		this.debug?.(`→ ${method} ${url}`);
 		const start = Date.now();
 
+		const headers = new Headers(this.headers);
+		let body: BodyInit | undefined;
+		if (options.formData) {
+			headers.delete('Content-Type');
+			body = options.formData;
+		} else if (options.body !== undefined) {
+			body = JSON.stringify(options.body);
+		}
+
 		let response: Response;
 		try {
-			response = await fetch(url.toString(), {
-				method,
-				headers: this.headers,
-				body: options.body ? JSON.stringify(options.body) : undefined,
-			});
+			response = await fetch(url.toString(), { method, headers, body });
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
 			this.debug?.(`✗ Connection failed (${Date.now() - start}ms): ${msg}`);
@@ -78,18 +290,11 @@ export class N8nClient {
 
 		this.debug?.(`← ${response.status} ${response.statusText} (${Date.now() - start}ms)`);
 
-		if (response.status === 204) {
-			return undefined as T;
-		}
-
-		const contentType = response.headers.get('content-type') ?? '';
-		const isJson = contentType.includes('application/json');
-		const data: unknown = isJson ? await response.json() : await response.text();
-
 		if (!response.ok) {
+			const errorBody = await this.readBody(response);
 			const message =
-				typeof data === 'object' && data !== null && 'message' in data
-					? String((data as Record<string, unknown>).message)
+				typeof errorBody === 'object' && errorBody !== null && 'message' in errorBody
+					? String((errorBody as Record<string, unknown>).message)
 					: `Request failed (${response.status})`;
 			const hint =
 				response.status === 401
@@ -97,10 +302,25 @@ export class N8nClient {
 					: response.status === 404
 						? 'Resource not found. Verify the ID is correct.'
 						: undefined;
-			throw new ApiError(response.status, message, hint);
+			throw new ApiError(response.status, message, hint, errorBody);
 		}
 
-		return data as T;
+		options.onResponse?.(response);
+
+		if (response.status === 204) {
+			return undefined as T;
+		}
+
+		if (options.responseType === 'binary') {
+			return Buffer.from(await response.arrayBuffer()) as T;
+		}
+
+		return (await this.readBody(response)) as T;
+	}
+
+	private async readBody(response: Response): Promise<unknown> {
+		const contentType = response.headers.get('content-type') ?? '';
+		return contentType.includes('application/json') ? await response.json() : await response.text();
 	}
 
 	private async get<T>(path: string, query?: Record<string, string>): Promise<T> {
@@ -143,6 +363,208 @@ export class N8nClient {
 		} while (cursor && (limit === undefined || results.length < limit));
 
 		return limit !== undefined ? results.slice(0, limit) : results;
+	}
+
+	// ─── Promotion providers ───────────────────────────────────────
+
+	async listPromotionProviders(limit?: number) {
+		return await this.paginate<Record<string, unknown>>('/promotions/providers', {}, limit);
+	}
+
+	async getPromotionSettings() {
+		return await this.get<Record<string, unknown>>('/promotions/settings');
+	}
+
+	async updatePromotionSettings(body: unknown) {
+		return await this.patch<Record<string, unknown>>('/promotions/settings', body);
+	}
+
+	async getPromotionProvider(id: string) {
+		return await this.get<Record<string, unknown>>(`/promotions/providers/${id}`);
+	}
+
+	async createPromotionProvider(body: unknown) {
+		return await this.post<PromotionProviderCreatedResult>('/promotions/providers', body);
+	}
+
+	async updatePromotionProvider(id: string, body: unknown) {
+		return await this.put<Record<string, unknown>>(`/promotions/providers/${id}`, body);
+	}
+
+	async deletePromotionProvider(id: string) {
+		return await this.del<undefined>(`/promotions/providers/${id}`);
+	}
+
+	async listPromotionProviderRepositories(id: string, search?: string, limit?: number) {
+		return await this.paginate<PromotionRepository>(
+			`/promotions/providers/${id}/repositories`,
+			search ? { search } : {},
+			limit,
+		);
+	}
+
+	/**
+	 * `repositoryId` is a plain full path such as `group/repo`, or a Git host
+	 * project ID. A full path contains slashes, so it is encoded into one path
+	 * segment here.
+	 */
+	async listPromotionProviderBranches(
+		id: string,
+		repositoryId: string,
+		search?: string,
+		limit?: number,
+	) {
+		return await this.paginate<PromotionBranch>(
+			`/promotions/providers/${id}/repositories/${encodeURIComponent(repositoryId)}/branches`,
+			search ? { search } : {},
+			limit,
+		);
+	}
+
+	// ─── Promotion environments ────────────────────────────────────
+
+	async listPromotionEnvironments(query: Record<string, string> = {}, limit?: number) {
+		return await this.paginate<Record<string, unknown>>('/promotions/environments', query, limit);
+	}
+
+	async getPromotionEnvironment(id: string) {
+		return await this.get<Record<string, unknown>>(`/promotions/environments/${id}`);
+	}
+
+	async createPromotionEnvironment(body: unknown) {
+		return await this.post<Record<string, unknown>>('/promotions/environments', body);
+	}
+
+	async updatePromotionEnvironment(id: string, body: unknown) {
+		return await this.put<Record<string, unknown>>(`/promotions/environments/${id}`, body);
+	}
+
+	async deletePromotionEnvironment(id: string) {
+		return await this.del<undefined>(`/promotions/environments/${id}`);
+	}
+
+	async connectPromotionCheckout(id: string) {
+		return await this.post<PromotionCheckoutResult>(`/promotions/environments/${id}/connect`);
+	}
+
+	async disconnectPromotionCheckout(id: string) {
+		return await this.post<PromotionCheckoutResult>(`/promotions/environments/${id}/disconnect`);
+	}
+
+	async listPromotionEnvironmentProjects(id: string) {
+		return await this.get<{ projectIds: string[] }>(`/promotions/environments/${id}/projects`);
+	}
+
+	async listMissingPromotionProjects(id: string) {
+		return await this.get<PromotionMissingProjectList>(
+			`/promotions/environments/${id}/missing-projects`,
+		);
+	}
+
+	async addProjectToPromotionEnvironment(id: string, projectId: string) {
+		return await this.post<{ environmentId: string; projectId: string }>(
+			`/promotions/environments/${id}/projects/${projectId}`,
+		);
+	}
+
+	async removeProjectFromPromotionEnvironment(id: string, projectId: string) {
+		return await this.del<undefined>(`/promotions/environments/${id}/projects/${projectId}`);
+	}
+
+	async promotePackage(id: string, body: { commitMessage?: string; force?: boolean }) {
+		return await this.post<PromotePackageResult>(`/promotions/environments/${id}/promote`, body);
+	}
+
+	async listInstanceApplyChanges(id: string) {
+		return await this.get<PromotionInstanceApplyPreview>(`/promotions/environments/${id}/changes`);
+	}
+
+	async applyPackage(
+		id: string,
+		expectedSource?: PromotionExpectedSource,
+		expectedPreviewRevision?: string,
+	) {
+		return await this.post<ApplyPackageResult>(`/promotions/environments/${id}/apply`, {
+			// Dropped by JSON serialization when undefined, so the branch tip is applied.
+			expectedSource,
+			expectedPreviewRevision,
+		});
+	}
+
+	async continueApplyPackage(
+		id: string,
+		expectedSource: PromotionExpectedSource,
+		confirmDestructiveChanges?: boolean,
+		expectedPreviewRevision?: string,
+	) {
+		return await this.post<ApplyPackageResult>(`/promotions/environments/${id}/apply/continue`, {
+			expectedSource,
+			confirmDestructiveChanges,
+			expectedPreviewRevision,
+		});
+	}
+
+	async listProjectPromotionChanges(projectId: string, direction: PromotionDirection) {
+		return await this.get<PromotionPreview>(
+			`/promotions/projects/${projectId}/changes/${direction}`,
+		);
+	}
+
+	async promoteProjectSelection(
+		projectId: string,
+		selection: PromotionSelection,
+		commitMessage?: string,
+		expectedPreviewRevision?: string,
+	) {
+		return await this.post<PromoteSelectionResult>(`/promotions/projects/${projectId}/promote`, {
+			...selection,
+			// Dropped by JSON serialization when undefined, so the server defaults apply.
+			commitMessage,
+			expectedPreviewRevision,
+		});
+	}
+
+	async applyProjectSelection(
+		projectId: string,
+		selection: PromotionSelection,
+		expectedSource?: PromotionExpectedSource,
+		expectedPreviewRevision?: string,
+	) {
+		return await this.post<ApplyPackageResult>(`/promotions/projects/${projectId}/apply`, {
+			...selection,
+			// Dropped by JSON serialization when undefined, so the branch tip is applied.
+			expectedSource,
+			expectedPreviewRevision,
+		});
+	}
+
+	async continueApplyProjectSelection(
+		projectId: string,
+		selection: PromotionSelection,
+		expectedSource: PromotionExpectedSource,
+		confirmDestructiveChanges?: boolean,
+		expectedPreviewRevision?: string,
+	) {
+		return await this.post<ApplyPackageResult>(`/promotions/projects/${projectId}/apply/continue`, {
+			...selection,
+			expectedSource,
+			confirmDestructiveChanges,
+			expectedPreviewRevision,
+		});
+	}
+
+	// ─── Promotion reviews ─────────────────────────────────────────
+
+	async listPromotionReviews(state?: 'open' | 'closed', limit?: number) {
+		return await this.paginate<Record<string, unknown>>(
+			'/promotions/reviews',
+			state ? { state } : {},
+			limit,
+		);
+	}
+
+	async getPromotionReview(id: string) {
+		return await this.get<Record<string, unknown>>(`/promotions/reviews/${id}`);
 	}
 
 	// ─── Workflows ─────────────────────────────────────────────────
@@ -271,8 +693,8 @@ export class N8nClient {
 		return await this.get<Record<string, unknown>>(`/projects/${id}`);
 	}
 
-	async createProject(name: string) {
-		return await this.post<Record<string, unknown>>('/projects', { name });
+	async createProject(project: CreateProjectPublicDto) {
+		return await this.post<Record<string, unknown>>('/projects', project);
 	}
 
 	async updateProject(id: string, name: string) {
@@ -390,6 +812,85 @@ export class N8nClient {
 	async sourceControlPull(options: { force?: boolean } = {}) {
 		return await this.post<Record<string, unknown>>('/source-control/pull', {
 			force: options.force ?? false,
+		});
+	}
+
+	// ─── Packages (beta) ───────────────────────────────────────────
+
+	async exportPackage(fields: ExportPackageFields): Promise<ExportPackageResult> {
+		// Empty collections are dropped so the API's per-field "at least one" rule isn't tripped.
+		const body: ExportPackageFields = {};
+		if (fields.agentIds?.length) body.agentIds = fields.agentIds;
+		if (fields.workflowIds?.length) body.workflowIds = fields.workflowIds;
+		if (fields.folderIds?.length) body.folderIds = fields.folderIds;
+		if (fields.projectIds?.length) body.projectIds = fields.projectIds;
+		// `undefined` is dropped by JSON serialization, so the API's default applies.
+		body.includeVariableValues = fields.includeVariableValues;
+		body.includeTags = fields.includeTags;
+		if (fields.dependencyPolicy) body.dependencyPolicy = fields.dependencyPolicy;
+		if (fields.versionPolicy) body.versionPolicy = fields.versionPolicy;
+		// Only sent when set, so an older server without this field in its schema never sees it.
+		if (fields.credentialExportPolicy) body.credentialExportPolicy = fields.credentialExportPolicy;
+		if (fields.includeArchived) body.includeArchived = true;
+
+		let counts: ExportPackageCounts | undefined;
+		const archive = await this.request<Buffer>('POST', '/n8n-packages/export', {
+			body,
+			responseType: 'binary',
+			// Older servers omit this header; counts then stays undefined.
+			onResponse: (response) => {
+				const header = response.headers.get('X-N8n-Export-Counts');
+				if (header) counts = this.parseExportCounts(header);
+			},
+		});
+
+		return { archive, counts };
+	}
+
+	private parseExportCounts(header: string): ExportPackageCounts | undefined {
+		try {
+			return JSON.parse(header) as ExportPackageCounts;
+		} catch {
+			return undefined;
+		}
+	}
+
+	async importPackage(
+		file: { buffer: Buffer; filename: string },
+		fields: ImportPackageFields,
+	): Promise<ImportResultDto> {
+		const form = new FormData();
+		form.append('package', new Blob([new Uint8Array(file.buffer)]), file.filename);
+		for (const [key, value] of Object.entries(fields)) {
+			if (typeof value === 'string' && value !== '') form.append(key, value);
+		}
+		return await this.request<ImportResultDto>('POST', '/n8n-packages/import', {
+			formData: form,
+		});
+	}
+
+	async importPackageSelection(
+		file: { buffer: Buffer; filename: string },
+		fields: ImportPackageSelectionFields,
+	): Promise<ImportResultDto> {
+		const form = new FormData();
+		form.append('package', new Blob([new Uint8Array(file.buffer)]), file.filename);
+		const stringFields: Record<string, string | undefined> = {
+			selectedProjectId: fields.selectedProjectId,
+			conflictPolicy: fields.conflictPolicy,
+			idPolicy: fields.idPolicy,
+			overwriteDeletionPolicy: fields.overwriteDeletionPolicy,
+		};
+		for (const [key, value] of Object.entries(stringFields)) {
+			if (typeof value === 'string' && value !== '') form.append(key, value);
+		}
+		// The endpoint expects ID arrays encoded as JSON in multipart text fields.
+		form.append('selectedWorkflowIds', JSON.stringify(fields.selectedWorkflowIds));
+		if (fields.deletedWorkflowIds !== undefined) {
+			form.append('deletedWorkflowIds', JSON.stringify(fields.deletedWorkflowIds));
+		}
+		return await this.request<ImportResultDto>('POST', '/n8n-packages/import-selection', {
+			formData: form,
 		});
 	}
 

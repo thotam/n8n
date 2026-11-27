@@ -12,7 +12,7 @@ import type {
 	INodeInputConfiguration,
 	INodeTypeDescription,
 } from 'n8n-workflow';
-import { useDebounce } from '@/app/composables/useDebounce';
+import { useDebounce } from '@n8n/composables/useDebounce';
 import { OnClickOutside } from '@vueuse/components';
 import { useI18n } from '@n8n/i18n';
 import { injectNDVStore } from '@/features/ndv/shared/ndv.store';
@@ -75,7 +75,6 @@ const nodeInputIssues = computed(() => {
 				'typeUnknown',
 				'parameters',
 				'credentials',
-				'execution',
 			])
 		: undefined;
 	return issues?.input ?? {};
@@ -256,7 +255,7 @@ function showNodeInputsIssues() {
 }
 
 watch(
-	[nodeData, ndvStore.activeNode],
+	[nodeData, () => ndvStore.value.activeNode],
 	debounce(
 		() =>
 			setTimeout(() => {
@@ -336,7 +335,7 @@ defineExpose({
 										</template>
 									</template>
 									<N8nIconButton
-										variant="subtle"
+										variant="outline"
 										size="medium"
 										icon="plus"
 										:data-test-id="`add-subnode-${getConnectionKey(connection, index)}`"

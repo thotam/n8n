@@ -1,17 +1,35 @@
+import type { GenAiAttributes } from '@n8n/ai-utilities/gen-ai';
 import type { ExecutionStatus, WorkflowExecuteMode, INode } from 'n8n-workflow';
 
+import type { CrashDetector } from '@/events/maps/relay.event-map';
+
+import type { ExecutionIdentity } from './execution-identity';
 import type { TracingContext } from './tracing-context';
+
+export type CustomAttributes = Record<string, string>;
+export type ProjectContext = {
+	id: string;
+	name?: string;
+	customAttributes?: CustomAttributes;
+};
+type WorkflowContext = {
+	id: string;
+	name: string;
+	versionId?: string;
+	nodeCount: number;
+	customAttributes?: CustomAttributes;
+};
 
 export type StartWorkflowParams = {
 	executionId: string;
-	/** Parent context — incoming webhook traceparent or parent sub-workflow span. */
+	/** Parent context — webhook traceparent, parent sub-workflow span, or the parked span on a resume. */
 	tracingContext?: TracingContext;
-	/**
-	 * Link this workflow to a different workflow. Used by `workflowExecuteResume` when a
-	 * workflow is resumed after a pause.
-	 */
+	/** Adds a `n8n.continuation.reason` link. Set alongside `tracingContext` on a resume. */
 	linkTo?: TracingContext;
-	workflow: { id: string; name: string; versionId?: string; nodeCount: number };
+	savedIdentity?: ExecutionIdentity;
+	workflow: WorkflowContext;
+	project?: ProjectContext;
+	emitStartSpan?: boolean;
 };
 
 export type EndWorkflowParams = {
@@ -23,14 +41,36 @@ export type EndWorkflowParams = {
 	retryOf?: string;
 };
 
+export type EndCrashedWorkflowParams = {
+	executionId: string;
+	workflowId: string;
+	workflowName?: string;
+	workflowVersionId?: string;
+	mode: WorkflowExecuteMode;
+	retryOf?: string;
+	detector: CrashDetector;
+	startedAt?: Date;
+	stoppedAt: Date;
+	tracingContext?: TracingContext;
+	workflow?: { customAttributes?: CustomAttributes };
+	project?: ProjectContext;
+};
+
 type NodeTracingParams = Pick<INode, 'id' | 'name' | 'type' | 'typeVersion'>;
 
 export type StartNodeParams = {
 	executionId: string;
 	node: NodeTracingParams;
+	emitStartSpan?: boolean;
 };
 
-type EndNodeError = { message: string; constructor: { name: string }; stack?: string };
+type EndNodeError = {
+	message: string;
+	constructor: { name: string };
+	stack?: string;
+	name?: string;
+	description?: string | null;
+};
 
 export function isEndNodeError(error: unknown): error is EndNodeError {
 	if (typeof error !== 'object' || error === null) return false;
@@ -53,4 +93,5 @@ export type EndNodeParams = {
 	outputItemCount: number;
 	error?: EndNodeError;
 	customAttributes?: Record<string, string>;
+	genAiAttributes?: GenAiAttributes;
 };

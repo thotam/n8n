@@ -1,11 +1,13 @@
 import { computed } from 'vue';
-import type { IMenuItem } from '@n8n/design-system/types';
+import type { IMenuItem } from '@n8n/design-system';
 import { VIEWS } from '@/app/constants';
 import { useFavoritesStore } from '@/app/stores/favorites.store';
 import { useProjectsStore } from '../projects.store';
+import { DEFAULT_PROJECT_ICON } from '../projects.constants';
 import type { Project } from '../projects.types';
 import { DATA_TABLE_DETAILS } from '@/features/core/dataTable/constants';
 import type { FavoriteResourceType } from '@/app/api/favorites';
+import { AGENT_BUILDER_VIEW, PROJECT_AGENTS } from '@/features/agents/constants';
 
 export type FavoriteGroupItem = {
 	menuItem: IMenuItem;
@@ -46,7 +48,7 @@ export function useFavoriteNavItems() {
 					menuItem: {
 						id: f.resourceId,
 						label: f.resourceName,
-						icon: (project?.icon as IMenuItem['icon']) ?? ('layers' as IMenuItem['icon']),
+						icon: (project?.icon ?? DEFAULT_PROJECT_ICON) as IMenuItem['icon'],
 						route: { to: { name: VIEWS.PROJECTS_WORKFLOWS, params: { projectId: f.resourceId } } },
 					},
 					resourceId: f.resourceId,
@@ -85,13 +87,41 @@ export function useFavoriteNavItems() {
 					icon: 'folder' as IMenuItem['icon'],
 					route: {
 						to: {
-							name: VIEWS.PROJECTS_FOLDERS,
-							params: { projectId: f.resourceProjectId, folderId: f.resourceId },
+							...(f.folderResourceType === 'agent'
+								? {
+										name: PROJECT_AGENTS,
+										params: { projectId: f.resourceProjectId },
+										query: { folderId: f.resourceId },
+									}
+								: {
+										name: VIEWS.PROJECTS_FOLDERS,
+										params: { projectId: f.resourceProjectId, folderId: f.resourceId },
+									}),
 						},
 					},
 				},
 				resourceId: f.resourceId,
 				resourceType: 'folder',
+			})),
+	);
+
+	const favoriteAgentItems = computed<FavoriteGroupItem[]>(() =>
+		favoritesStore.favorites
+			.filter((f) => f.resourceType === 'agent' && f.resourceProjectId)
+			.map((f) => ({
+				menuItem: {
+					id: `favorite-agent-${f.resourceId}`,
+					label: f.resourceName,
+					icon: 'robot' as IMenuItem['icon'],
+					route: {
+						to: {
+							name: AGENT_BUILDER_VIEW,
+							params: { projectId: f.resourceProjectId, agentId: f.resourceId },
+						},
+					},
+				},
+				resourceId: f.resourceId,
+				resourceType: 'agent',
 			})),
 	);
 
@@ -119,6 +149,12 @@ export function useFavoriteNavItems() {
 			groups.push({
 				type: 'dataTable',
 				items: favoriteDataTableItems.value,
+			});
+		}
+		if (favoriteAgentItems.value.length > 0) {
+			groups.push({
+				type: 'agent',
+				items: favoriteAgentItems.value,
 			});
 		}
 		return groups;
@@ -149,6 +185,7 @@ export function useFavoriteNavItems() {
 		favoriteProjectItems,
 		favoriteDataTableItems,
 		favoriteFolderItems,
+		favoriteAgentItems,
 		favoriteGroups,
 		activeTabId,
 		onFavoriteProjectClick,

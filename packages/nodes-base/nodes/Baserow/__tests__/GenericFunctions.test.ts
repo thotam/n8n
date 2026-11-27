@@ -1,10 +1,12 @@
 /* eslint-disable n8n-nodes-base/node-param-display-name-miscased */
-import { NodeApiError } from 'n8n-workflow';
+import { NodeApiError, requestPath, requestUrl } from 'n8n-workflow';
 
 import {
 	baserowApiRequest,
 	baserowApiRequestAllItems,
+	formatBaserowFilterValue,
 	getFieldNamesAndIds,
+	normalizeFilterFieldId,
 	toOptions,
 	TableFieldMapper,
 } from '../GenericFunctions';
@@ -12,17 +14,17 @@ import {
 describe('Baserow > GenericFunctions', () => {
 	const mockExecuteFunctions: any = {
 		helpers: {
-			requestWithAuthentication: jest.fn(),
+			requestWithAuthentication: vi.fn(),
 		},
-		getCredentials: jest.fn().mockResolvedValue({
+		getCredentials: vi.fn().mockResolvedValue({
 			host: 'https://api.baserow.io',
 		}),
-		getNodeParameter: jest.fn(),
-		getNode: jest.fn(),
+		getNodeParameter: vi.fn(),
+		getNode: vi.fn(),
 	};
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		mockExecuteFunctions.getCredentials.mockResolvedValue({
 			host: 'https://api.baserow.io',
 		});
@@ -36,7 +38,7 @@ describe('Baserow > GenericFunctions', () => {
 			const result = await baserowApiRequest.call(
 				mockExecuteFunctions,
 				'GET',
-				'/endpoint',
+				requestPath`/endpoint`,
 				'baserowApi',
 			);
 			expect(result).toEqual({ success: true });
@@ -44,7 +46,7 @@ describe('Baserow > GenericFunctions', () => {
 				'baserowApi',
 				expect.objectContaining({
 					method: 'GET',
-					uri: 'https://api.baserow.io/endpoint',
+					uri: requestUrl`https://api.baserow.io/endpoint`,
 				}),
 			);
 		});
@@ -54,7 +56,7 @@ describe('Baserow > GenericFunctions', () => {
 				error: 'fail',
 			});
 			await expect(
-				baserowApiRequest.call(mockExecuteFunctions, 'GET', '/endpoint', 'baserowApi'),
+				baserowApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/endpoint`, 'baserowApi'),
 			).rejects.toThrow(NodeApiError);
 		});
 	});
@@ -71,7 +73,7 @@ describe('Baserow > GenericFunctions', () => {
 			const result = await baserowApiRequestAllItems.call(
 				mockExecuteFunctions,
 				'GET',
-				'/endpoint',
+				requestPath`/endpoint`,
 				'baserowApi',
 				{},
 				{},
@@ -92,6 +94,24 @@ describe('Baserow > GenericFunctions', () => {
 				names: ['field1', 'field2'],
 				ids: ['field_1', 'field_2'],
 			});
+		});
+
+		it('should encode the table ID in the request URL', async () => {
+			mockExecuteFunctions.helpers.requestWithAuthentication.mockResolvedValue([]);
+			await getFieldNamesAndIds.call(mockExecuteFunctions, '1/rows', 'baserowApi');
+			expect(mockExecuteFunctions.helpers.requestWithAuthentication).toHaveBeenCalledWith(
+				'baserowApi',
+				expect.objectContaining({
+					uri: requestUrl`https://api.baserow.io/api/database/fields/table/1%2Frows/`,
+				}),
+			);
+		});
+
+		it('should reject a table ID of ".." without a request', async () => {
+			await expect(
+				getFieldNamesAndIds.call(mockExecuteFunctions, '..', 'baserowApi'),
+			).rejects.toThrow();
+			expect(mockExecuteFunctions.helpers.requestWithAuthentication).not.toHaveBeenCalled();
 		});
 	});
 
@@ -123,6 +143,85 @@ describe('Baserow > GenericFunctions', () => {
 				field_1: 'field1',
 				field_2: 'field2',
 			});
+		});
+	});
+
+	describe('formatBaserowFilterValue', () => {
+		it('should format plain ISO date for date_is_after', () => {
+			expect(formatBaserowFilterValue('date_is_after', '2026-06-17')).toBe(
+				'UTC?2026-06-17?exact_date',
+			);
+		});
+
+		it('should use custom timezone for plain ISO date', () => {
+			expect(formatBaserowFilterValue('date_is_before', '2026-06-17', 'Europe/Berlin')).toBe(
+				'Europe/Berlin?2026-06-17?exact_date',
+			);
+		});
+
+		it('should pass through already formatted 3-part values', () => {
+			const value = 'UTC?2026-06-17?exact_date';
+			expect(formatBaserowFilterValue('date_is_after', value)).toBe(value);
+		});
+
+		it('should fix malformed UTC??YYYY-MM-DD values', () => {
+			expect(formatBaserowFilterValue('date_is_after', 'UTC??2026-06-17')).toBe(
+				'UTC?2026-06-17?exact_date',
+			);
+		});
+
+		it('should format relative date tokens', () => {
+			expect(formatBaserowFilterValue('date_is_after', 'today')).toBe('UTC??today');
+		});
+
+		it('should format date_is_within with numeric days', () => {
+			expect(formatBaserowFilterValue('date_is_within', '30')).toBe('UTC?30?nr_days_from_now');
+		});
+
+		it('should pass plain ISO for deprecated date_after_or_equal', () => {
+			expect(formatBaserowFilterValue('date_after_or_equal', '2026-06-17')).toBe('2026-06-17');
+		});
+
+		it('should use timezone only for deprecated date_equals_today', () => {
+			expect(formatBaserowFilterValue('date_equals_today', '')).toBe('UTC');
+			expect(formatBaserowFilterValue('date_equals_today', 'Europe/Berlin')).toBe('Europe/Berlin');
+		});
+
+		it('should format deprecated date_within_days as timezone?number', () => {
+			expect(formatBaserowFilterValue('date_within_days', '1', 'Asia/Calcutta')).toBe(
+				'Asia/Calcutta?1',
+			);
+		});
+
+		it('should pass number only for deprecated date_after_days_ago', () => {
+			expect(formatBaserowFilterValue('date_after_days_ago', '20')).toBe('20');
+		});
+
+		// date_equals_day_of_month expects a raw day number (1-31), not a multi-step value
+		it('should pass date_equals_day_of_month as a raw number', () => {
+			expect(formatBaserowFilterValue('date_equals_day_of_month', '15')).toBe('15');
+		});
+
+		it('should leave non-date operators unchanged', () => {
+			expect(formatBaserowFilterValue('equal', 'foo')).toBe('foo');
+		});
+
+		it('should treat a missing value as empty', () => {
+			expect(formatBaserowFilterValue('equal', undefined)).toBe('');
+		});
+
+		it('should stringify non-string values', () => {
+			expect(formatBaserowFilterValue('equal', 2026)).toBe('2026');
+		});
+	});
+
+	describe('normalizeFilterFieldId', () => {
+		it('should strip field_ prefix', () => {
+			expect(normalizeFilterFieldId('field_3799030')).toBe('3799030');
+		});
+
+		it('should return numeric ids as string', () => {
+			expect(normalizeFilterFieldId(3799030)).toBe('3799030');
 		});
 	});
 });

@@ -1,12 +1,14 @@
 import { createHmac } from 'crypto';
+import { requestPath } from 'n8n-workflow';
 
 import * as utils from '../GenericFunctions';
+import type * as _importType0 from 'n8n-workflow';
 
-jest.mock('n8n-workflow', () => {
-	const original = jest.requireActual('n8n-workflow');
+vi.mock('n8n-workflow', async () => {
+	const original = await vi.importActual<typeof _importType0>('n8n-workflow');
 	return {
 		...original,
-		NodeApiError: jest.fn().mockImplementation(function (
+		NodeApiError: vi.fn().mockImplementation(function (
 			this: { node: unknown; error: unknown },
 			node: unknown,
 			error: unknown,
@@ -23,15 +25,15 @@ describe('Facebook GenericFunctions', () => {
 	let mockExecuteFunctions: any;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 
 		mockExecuteFunctions = {
-			getNode: jest.fn().mockReturnValue({
+			getNode: vi.fn().mockReturnValue({
 				name: 'Facebook',
 				typeVersion: 1,
 			}),
-			getNodeParameter: jest.fn().mockReturnValue('accessToken'),
-			getCredentials: jest.fn().mockImplementation(async (type) => {
+			getNodeParameter: vi.fn().mockReturnValue('accessToken'),
+			getCredentials: vi.fn().mockImplementation(async (type) => {
 				if (type === 'facebookGraphApi') {
 					return { accessToken: 'test-access-token' };
 				} else if (type === 'facebookGraphAppApi') {
@@ -43,8 +45,8 @@ describe('Facebook GenericFunctions', () => {
 				}
 			}),
 			helpers: {
-				request: jest.fn(),
-				requestWithAuthentication: jest.fn(),
+				request: vi.fn(),
+				requestWithAuthentication: vi.fn(),
 			},
 		};
 	});
@@ -56,7 +58,7 @@ describe('Facebook GenericFunctions', () => {
 			await utils.facebookApiRequest.call(
 				mockExecuteFunctions,
 				'GET',
-				'/me',
+				requestPath`/me`,
 				{},
 				{ fields: 'id,name' },
 			);
@@ -68,16 +70,19 @@ describe('Facebook GenericFunctions', () => {
 				qs: { access_token: 'test-access-token', fields: 'id,name' },
 				body: {},
 				gzip: true,
-				uri: 'https://graph.facebook.com/v23.0/me',
+				uri: expect.anything(),
 				json: true,
 			});
+			expect(String(mockExecuteFunctions.helpers.request.mock.calls[0][0].uri)).toBe(
+				'https://graph.facebook.com/v23.0/me',
+			);
 		});
 
 		it('should use app credentials for trigger nodes', async () => {
 			mockExecuteFunctions.getNode.mockReturnValue({ name: 'Facebook Trigger' });
 			mockExecuteFunctions.helpers.request.mockResolvedValue({ success: true });
 
-			await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', '/app', {}, {});
+			await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/app`, {}, {});
 
 			expect(mockExecuteFunctions.getCredentials).toHaveBeenCalledWith('facebookGraphAppApi');
 			expect(mockExecuteFunctions.helpers.request).toHaveBeenCalledWith(
@@ -89,7 +94,7 @@ describe('Facebook GenericFunctions', () => {
 
 		it('should include appsecret_proof and appsecret_time when appSecret is set', async () => {
 			const fixedTime = 1700000000;
-			jest.spyOn(Date, 'now').mockReturnValue(fixedTime * 1000);
+			vi.spyOn(Date, 'now').mockReturnValue(fixedTime * 1000);
 
 			mockExecuteFunctions.getNode.mockReturnValue({ name: 'Facebook Trigger' });
 			mockExecuteFunctions.getCredentials.mockResolvedValue({
@@ -98,7 +103,7 @@ describe('Facebook GenericFunctions', () => {
 			});
 			mockExecuteFunctions.helpers.request.mockResolvedValue({ success: true });
 
-			await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', '/app', {}, {});
+			await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/app`, {}, {});
 
 			const expectedProof = createHmac('sha256', 'test-app-secret')
 				.update(`test-app-access-token|${fixedTime}`)
@@ -114,7 +119,7 @@ describe('Facebook GenericFunctions', () => {
 				}),
 			);
 
-			jest.restoreAllMocks();
+			vi.restoreAllMocks();
 		});
 
 		it('should not include appsecret_proof when appSecret is empty', async () => {
@@ -125,7 +130,7 @@ describe('Facebook GenericFunctions', () => {
 			});
 			mockExecuteFunctions.helpers.request.mockResolvedValue({ success: true });
 
-			await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', '/app', {}, {});
+			await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/app`, {}, {});
 
 			const requestCall = mockExecuteFunctions.helpers.request.mock.calls[0][0];
 			expect(requestCall.qs).not.toHaveProperty('appsecret_proof');
@@ -138,28 +143,26 @@ describe('Facebook GenericFunctions', () => {
 			});
 			mockExecuteFunctions.helpers.request.mockResolvedValue({ success: true });
 
-			await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', '/me', {}, {});
+			await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/me`, {}, {});
 
 			const requestCall = mockExecuteFunctions.helpers.request.mock.calls[0][0];
 			expect(requestCall.qs).not.toHaveProperty('appsecret_proof');
 			expect(requestCall.qs).not.toHaveProperty('appsecret_time');
 		});
 
-		it('should allow custom URI', async () => {
+		it('should encode path values as a single segment', async () => {
 			mockExecuteFunctions.helpers.request.mockResolvedValue({ success: true });
-			const customUri = 'https://graph.facebook.com/v23.0/me/feed';
+			const appId = '123/subscriptions?x=1';
 
 			await utils.facebookApiRequest.call(
 				mockExecuteFunctions,
-				'POST',
-				'',
-				{ message: 'Hello' },
+				'GET',
+				requestPath`/${appId}/subscriptions`,
 				{},
-				customUri,
 			);
 
-			expect(mockExecuteFunctions.helpers.request).toHaveBeenCalledWith(
-				expect.objectContaining({ uri: customUri }),
+			expect(String(mockExecuteFunctions.helpers.request.mock.calls[0][0].uri)).toBe(
+				'https://graph.facebook.com/v23.0/123%2Fsubscriptions%3Fx=1/subscriptions',
 			);
 		});
 
@@ -172,25 +175,25 @@ describe('Facebook GenericFunctions', () => {
 			});
 
 			it('should use OAuth2 credential for regular nodes', async () => {
-				await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', '/me', {}, {});
+				await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/me`, {}, {});
 
 				expect(mockExecuteFunctions.getCredentials).toHaveBeenCalledWith(
 					'facebookGraphApiOAuth2Api',
 				);
 				expect(mockExecuteFunctions.helpers.requestWithAuthentication).toHaveBeenCalledWith(
 					'facebookGraphApiOAuth2Api',
-					expect.objectContaining({
-						method: 'GET',
-						uri: 'https://graph.facebook.com/v23.0/me',
-					}),
+					expect.objectContaining({ method: 'GET' }),
 				);
+				expect(
+					String(mockExecuteFunctions.helpers.requestWithAuthentication.mock.calls[0][1].uri),
+				).toBe('https://graph.facebook.com/v23.0/me');
 				expect(mockExecuteFunctions.helpers.request).not.toHaveBeenCalled();
 			});
 
 			it('should use OAuth2 app credential for trigger nodes', async () => {
 				mockExecuteFunctions.getNode.mockReturnValue({ name: 'Facebook Trigger' });
 
-				await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', '/app', {}, {});
+				await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/app`, {}, {});
 
 				expect(mockExecuteFunctions.getCredentials).toHaveBeenCalledWith(
 					'facebookGraphAppOAuth2Api',
@@ -202,7 +205,7 @@ describe('Facebook GenericFunctions', () => {
 			});
 
 			it('should not include access_token in qs when using OAuth2', async () => {
-				await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', '/me', {}, {});
+				await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/me`, {}, {});
 
 				expect(mockExecuteFunctions.helpers.requestWithAuthentication).toHaveBeenCalledWith(
 					'facebookGraphApiOAuth2Api',
@@ -216,7 +219,7 @@ describe('Facebook GenericFunctions', () => {
 				mockExecuteFunctions.getNode.mockReturnValue({ name: 'Facebook Trigger' });
 				mockExecuteFunctions.getCredentials.mockResolvedValue({ appSecret: 'some-secret' });
 
-				await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', '/app', {}, {});
+				await utils.facebookApiRequest.call(mockExecuteFunctions, 'GET', requestPath`/app`, {}, {});
 
 				expect(mockExecuteFunctions.helpers.requestWithAuthentication).toHaveBeenCalledWith(
 					'facebookGraphAppOAuth2Api',

@@ -1,9 +1,11 @@
 import { testDb } from '@n8n/backend-test-utils';
-import { AuthIdentityRepository, ProjectRepository, UserRepository } from '@n8n/db';
+import { AuthIdentityRepository, PersonRepository, ProjectRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
 import { generateKeyPairSync, randomUUID } from 'crypto';
 import jwt from 'jsonwebtoken';
+import { InstanceSettings } from 'n8n-core';
 
+import { qualifiedProviderId } from '@/modules/token-exchange/services/identity-resolution.service';
 import { TrustedKeyService } from '@/modules/token-exchange/services/trusted-key.service';
 import { TokenExchangeConfig } from '@/modules/token-exchange/token-exchange.config';
 import { TOKEN_EXCHANGE_GRANT_TYPE } from '@/modules/token-exchange/token-exchange.schemas';
@@ -12,8 +14,7 @@ import {
 	type IssuedJwtPayload,
 	type TokenExchangeSuccessResponse,
 } from '@/modules/token-exchange/token-exchange.types';
-import { JwtService } from '@/services/jwt.service';
-import { InstanceSettings } from 'n8n-core';
+import { JwtService } from '@n8n/backend-services';
 
 import { createUser } from '../shared/db/users';
 import * as utils from '../shared/utils';
@@ -30,6 +31,10 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', {
 const ISSUER = 'https://issuer.test';
 const KID = 'test-kid';
 
+// A second trusted issuer signed by the same key pair under a distinct kid.
+const ISSUER_B = 'https://issuer-b.test';
+const KID_B = 'test-kid-b';
+
 function makeExternalJwt(
 	overrides: Partial<{
 		sub: string;
@@ -38,10 +43,12 @@ function makeExternalJwt(
 		exp: number;
 		jti: string;
 		email: string;
+		email_verified: boolean;
 		given_name: string;
 		family_name: string;
 		role: string;
 	}> = {},
+	kid: string = KID,
 ): string {
 	const now = Math.floor(Date.now() / 1000);
 	return jwt.sign(
@@ -52,10 +59,11 @@ function makeExternalJwt(
 			iat: now,
 			exp: now + 300,
 			jti: randomUUID(),
+			email_verified: true,
 			...overrides,
 		},
 		privateKey,
-		{ algorithm: 'RS256', keyid: KID },
+		{ algorithm: 'RS256', keyid: kid },
 	);
 }
 
@@ -85,6 +93,15 @@ beforeAll(async () => {
 			expectedAudience: 'n8n',
 			allowedRoles: ['global:member', 'global:admin'],
 		},
+		{
+			type: 'static',
+			kid: KID_B,
+			algorithms: ['RS256'],
+			key: publicKey,
+			issuer: ISSUER_B,
+			expectedAudience: 'n8n',
+			allowedRoles: ['global:member', 'global:admin'],
+		},
 	]);
 
 	await Container.get(TrustedKeyService).initialize();
@@ -107,10 +124,6 @@ beforeEach(async () => {
 
 	// Re-initialize keys after truncation clears the trusted key tables.
 	await Container.get(TrustedKeyService).initialize();
-});
-
-afterEach(() => {
-	Container.get(TrustedKeyService).stopRefresh();
 });
 
 const postToken = (body: Record<string, string>) =>
@@ -145,7 +158,7 @@ describe('POST /auth/oauth/token', () => {
 		);
 
 		// Issued token is valid and has correct claims
-		const decoded = jwtService.verify<IssuedJwtPayload>(body.access_token);
+		const decoded = jwtService.verify<IssuedJwtPayload>('tokenExchange', body.access_token);
 		expect(decoded.iss).toBe(TOKEN_EXCHANGE_ISSUER);
 		expect(decoded.sub).toEqual(expect.any(String));
 		expect(decoded.act).toBeUndefined();
@@ -153,27 +166,72 @@ describe('POST /auth/oauth/token', () => {
 		expect(decoded.resource).toBeUndefined();
 
 		// User provisioned in DB with correct fields
-		const userRepo = Container.get(UserRepository);
-		const user = await userRepo.findOne({
-			where: { email },
-			relations: ['role'],
-		});
-		expect(user).not.toBeNull();
-		expect(user!.firstName).toBe('Jane');
-		expect(user!.lastName).toBe('Doe');
-		expect(user!.role.slug).toBe('global:admin');
-		expect(decoded.sub).toBe(user!.id);
+		const person = await Container.get(PersonRepository).findByEmailWithAuthIdentities(email);
+		expect(person).not.toBeNull();
+		expect(person!.firstName).toBe('Jane');
+		expect(person!.lastName).toBe('Doe');
+		expect(person!.role.slug).toBe('global:admin');
+		expect(decoded.sub).toBe(person!.id);
 
 		// AuthIdentity linked
 		const identity = await Container.get(AuthIdentityRepository).findOne({
-			where: { providerId: 'ext-jit-1', providerType: 'token-exchange' },
+			where: {
+				providerId: qualifiedProviderId(ISSUER, 'ext-jit-1'),
+				providerType: 'token-exchange',
+			},
 		});
 		expect(identity).not.toBeNull();
-		expect(identity!.userId).toBe(user!.id);
+		expect(identity!.userId).toBe(person!.id);
 
 		// Personal project created
-		const project = await Container.get(ProjectRepository).getPersonalProjectForUser(user!.id);
+		const project = await Container.get(ProjectRepository).getPersonalProjectForUser(person!.id);
 		expect(project).toBeDefined();
+	});
+
+	it('keeps an identical subject from two issuers on separate accounts', async () => {
+		const sharedSub = 'ext-shared';
+
+		const tokenA = makeExternalJwt({ sub: sharedSub, iss: ISSUER, email: 'a@example.com' }, KID);
+		const tokenB = makeExternalJwt(
+			{ sub: sharedSub, iss: ISSUER_B, email: 'b@example.com' },
+			KID_B,
+		);
+
+		const responseA = await postToken({
+			grant_type: TOKEN_EXCHANGE_GRANT_TYPE,
+			subject_token: tokenA,
+		}).expect(200);
+		const responseB = await postToken({
+			grant_type: TOKEN_EXCHANGE_GRANT_TYPE,
+			subject_token: tokenB,
+		}).expect(200);
+
+		const decodedA = jwtService.verify<IssuedJwtPayload>(
+			'tokenExchange',
+			(responseA.body as TokenExchangeSuccessResponse).access_token,
+		);
+		const decodedB = jwtService.verify<IssuedJwtPayload>(
+			'tokenExchange',
+			(responseB.body as TokenExchangeSuccessResponse).access_token,
+		);
+
+		// Each issuer resolves to its own local user despite the shared subject.
+		expect(decodedB.sub).not.toBe(decodedA.sub);
+
+		const identityRepo = Container.get(AuthIdentityRepository);
+		expect(await identityRepo.countBy({ providerType: 'token-exchange' })).toBe(2);
+		expect(
+			await identityRepo.findOneBy({
+				providerId: qualifiedProviderId(ISSUER, sharedSub),
+				providerType: 'token-exchange',
+			}),
+		).not.toBeNull();
+		expect(
+			await identityRepo.findOneBy({
+				providerId: qualifiedProviderId(ISSUER_B, sharedSub),
+				providerType: 'token-exchange',
+			}),
+		).not.toBeNull();
 	});
 
 	it('should exchange subject + actor tokens and include act claim in issued token', async () => {
@@ -196,6 +254,7 @@ describe('POST /auth/oauth/token', () => {
 		}).expect(200);
 
 		const decoded = jwtService.verify<IssuedJwtPayload>(
+			'tokenExchange',
 			(response.body as TokenExchangeSuccessResponse).access_token,
 		);
 
@@ -208,10 +267,9 @@ describe('POST /auth/oauth/token', () => {
 		expect(decoded.act!.sub).not.toBe(decoded.sub);
 
 		// Both users exist in DB
-		const userRepo = Container.get(UserRepository);
-		const actorUser = await userRepo.findOneBy({ id: decoded.act!.sub });
-		expect(actorUser).not.toBeNull();
-		expect(actorUser!.email).toBe('actor@example.com');
+		const actorPerson = await Container.get(PersonRepository).findById(decoded.act!.sub);
+		expect(actorPerson).not.toBeNull();
+		expect(actorPerson!.email).toBe('actor@example.com');
 	});
 
 	it('should pass through scope and split resource into array in issued token', async () => {
@@ -228,6 +286,7 @@ describe('POST /auth/oauth/token', () => {
 		}).expect(200);
 
 		const decoded = jwtService.verify<IssuedJwtPayload>(
+			'tokenExchange',
 			(response.body as TokenExchangeSuccessResponse).access_token,
 		);
 		expect(decoded.scope).toBe('workflow:read');

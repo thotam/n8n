@@ -3,28 +3,41 @@
  */
 
 import type { WorkflowJSON } from '@n8n/workflow-sdk';
-import { parseWorkflowCodeToBuilder, validateWorkflow, workflow } from '@n8n/workflow-sdk';
+import {
+	connectRequiredSubnodeInputs,
+	describeAddedSubnodeConnection,
+	parseWorkflowCodeToBuilder,
+	validateWorkflow,
+	workflow,
+} from '@n8n/workflow-sdk';
+import type { INodeTypes } from 'n8n-workflow';
+import type { Mock } from 'vitest';
 
 import { ParseValidateHandler } from '../parse-validate-handler';
 
 // Mock the workflow-sdk module
-jest.mock('@n8n/workflow-sdk', () => ({
-	parseWorkflowCodeToBuilder: jest.fn(),
-	validateWorkflow: jest.fn(),
-	workflow: { fromJSON: jest.fn() },
-	stripImportStatements: jest.fn((code: string) => code),
+vi.mock('@n8n/workflow-sdk', () => ({
+	parseWorkflowCodeToBuilder: vi.fn(),
+	resolveNodePorts: vi.fn(),
+	validateWorkflow: vi.fn(),
+	workflow: { fromJSON: vi.fn() },
+	stripImportStatements: vi.fn((code: string) => code),
+	connectRequiredSubnodeInputs: vi.fn(() => []),
+	describeAddedSubnodeConnection: vi.fn(),
 }));
 
 // Typed mock references
-const mockParseWorkflowCodeToBuilder = parseWorkflowCodeToBuilder as jest.Mock;
-const mockValidateWorkflow = validateWorkflow as jest.Mock;
-const mockFromJSON = workflow.fromJSON as jest.Mock;
+const mockParseWorkflowCodeToBuilder = parseWorkflowCodeToBuilder as Mock;
+const mockValidateWorkflow = validateWorkflow as Mock;
+const mockFromJSON = workflow.fromJSON as Mock;
+const mockConnectRequiredSubnodeInputs = connectRequiredSubnodeInputs as Mock;
+const mockDescribeAddedSubnodeConnection = describeAddedSubnodeConnection as Mock;
 
 describe('ParseValidateHandler', () => {
 	let handler: ParseValidateHandler;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 
 		handler = new ParseValidateHandler({});
 	});
@@ -39,10 +52,10 @@ describe('ParseValidateHandler', () => {
 			};
 
 			const mockBuilder = {
-				regenerateNodeIds: jest.fn(),
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
-				generatePinData: jest.fn(),
-				toJSON: jest.fn().mockReturnValue(mockWorkflow),
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue(mockWorkflow),
 			};
 
 			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
@@ -56,6 +69,81 @@ describe('ParseValidateHandler', () => {
 			expect(mockBuilder.validate).toHaveBeenCalled();
 		});
 
+		it('completes required subnode inputs on the returned workflow and reports them', async () => {
+			// The helper itself is covered in required-subnode-connections.test.ts.
+			// What is untested here is the handler around it: that it runs against
+			// the serialized workflow with the provider, and surfaces what it added.
+			const nodeTypesProvider = { getByNameAndVersion: vi.fn() } as unknown as INodeTypes;
+			const mockWorkflow = {
+				id: 'test',
+				name: 'Test',
+				nodes: [{ id: 'parser', name: 'Parser', type: 'parser' }],
+				connections: {},
+			};
+			const mockBuilder = {
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue(mockWorkflow),
+			};
+			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
+			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
+			mockConnectRequiredSubnodeInputs.mockReturnValue([
+				{ nodeName: 'Parser', connectionType: 'ai_languageModel', sourceNode: 'Model' },
+			]);
+			mockDescribeAddedSubnodeConnection.mockReturnValue({
+				code: 'REQUIRED_SUBNODE_CONNECTED',
+				message: 'Connected Model to Parser',
+				severity: 'info',
+			});
+
+			const result = await new ParseValidateHandler({ nodeTypesProvider }).parseAndValidate(
+				'const workflow = {}',
+			);
+
+			expect(mockConnectRequiredSubnodeInputs).toHaveBeenCalledWith(
+				mockWorkflow,
+				nodeTypesProvider,
+			);
+			expect(result.workflow).toBe(mockWorkflow);
+			expect(result.warnings.map((warning) => warning.code)).toContain(
+				'REQUIRED_SUBNODE_CONNECTED',
+			);
+		});
+
+		it('leaves the workflow alone when no node-type provider is configured', async () => {
+			const mockBuilder = {
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue({ id: 'test', name: 'Test', nodes: [], connections: {} }),
+			};
+			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
+			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
+
+			await handler.parseAndValidate('const workflow = {}');
+
+			expect(mockConnectRequiredSubnodeInputs).not.toHaveBeenCalled();
+		});
+
+		it('skips structural checks in JSON validation that the graph pass already covers', async () => {
+			const mockBuilder = {
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue({ id: 'test', name: 'Test', nodes: [], connections: {} }),
+			};
+			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
+			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
+
+			await handler.parseAndValidate('const workflow = {}');
+
+			expect(mockValidateWorkflow).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ allowDisconnectedNodes: true, allowNoTrigger: true }),
+			);
+		});
+
 		it('should collect errors from graph validation as warnings for agent self-correction', async () => {
 			const mockWorkflow = {
 				id: 'test',
@@ -65,14 +153,14 @@ describe('ParseValidateHandler', () => {
 			};
 
 			const mockBuilder = {
-				regenerateNodeIds: jest.fn(),
-				validate: jest.fn().mockReturnValue({
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({
 					valid: false,
 					errors: [{ code: 'ERR001', message: 'Graph error', nodeName: 'TestNode' }],
 					warnings: [],
 				}),
-				generatePinData: jest.fn(),
-				toJSON: jest.fn().mockReturnValue(mockWorkflow),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue(mockWorkflow),
 			};
 
 			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
@@ -96,14 +184,14 @@ describe('ParseValidateHandler', () => {
 			};
 
 			const mockBuilder = {
-				regenerateNodeIds: jest.fn(),
-				validate: jest.fn().mockReturnValue({
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({
 					valid: true,
 					errors: [],
 					warnings: [{ code: 'WARN001', message: 'Graph warning', nodeName: 'Node1' }],
 				}),
-				generatePinData: jest.fn(),
-				toJSON: jest.fn().mockReturnValue(mockWorkflow),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue(mockWorkflow),
 			};
 
 			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
@@ -124,10 +212,10 @@ describe('ParseValidateHandler', () => {
 			};
 
 			const mockBuilder = {
-				regenerateNodeIds: jest.fn(),
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
-				generatePinData: jest.fn(),
-				toJSON: jest.fn().mockReturnValue(mockWorkflow),
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue(mockWorkflow),
 			};
 
 			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
@@ -152,10 +240,10 @@ describe('ParseValidateHandler', () => {
 			};
 
 			const mockBuilder = {
-				regenerateNodeIds: jest.fn(),
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
-				generatePinData: jest.fn(),
-				toJSON: jest.fn().mockReturnValue(mockWorkflow),
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue(mockWorkflow),
 			};
 
 			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
@@ -183,10 +271,10 @@ describe('ParseValidateHandler', () => {
 			};
 
 			const mockBuilder = {
-				regenerateNodeIds: jest.fn(),
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
-				generatePinData: jest.fn(),
-				toJSON: jest.fn().mockReturnValue(mockWorkflow),
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue(mockWorkflow),
 			};
 
 			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
@@ -214,10 +302,10 @@ describe('ParseValidateHandler', () => {
 			};
 
 			const mockBuilder = {
-				regenerateNodeIds: jest.fn(),
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
-				generatePinData: jest.fn(),
-				toJSON: jest.fn().mockReturnValue(mockWorkflow),
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue(mockWorkflow),
 			};
 
 			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
@@ -226,6 +314,87 @@ describe('ParseValidateHandler', () => {
 			await handler.parseAndValidate('code', currentWorkflow);
 
 			expect(mockBuilder.generatePinData).toHaveBeenCalledWith({ beforeWorkflow: currentWorkflow });
+		});
+
+		it('should preserve existing node IDs (matched by name) when regenerating', async () => {
+			const currentWorkflow = {
+				id: 'current',
+				name: 'Current',
+				nodes: [
+					{ id: 'manual-id-1', name: 'Set A', type: 'n8n-nodes-base.set' },
+					{ id: 'manual-id-2', name: 'Set B', type: 'n8n-nodes-base.set' },
+				],
+				connections: {},
+			} as unknown as WorkflowJSON;
+
+			const mockBuilder = {
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue({ id: 'test', name: 'Test', nodes: [], connections: {} }),
+			};
+
+			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
+			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
+
+			await handler.parseAndValidate('code', currentWorkflow);
+
+			expect(mockBuilder.regenerateNodeIds).toHaveBeenCalledWith(
+				new Map([
+					['Set A', 'manual-id-1'],
+					['Set B', 'manual-id-2'],
+				]),
+			);
+		});
+
+		it('should regenerate with an empty name map when no currentWorkflow is provided', async () => {
+			const mockBuilder = {
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue({ id: 'test', name: 'Test', nodes: [], connections: {} }),
+			};
+
+			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
+			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
+
+			await handler.parseAndValidate('code');
+
+			expect(mockBuilder.regenerateNodeIds).toHaveBeenCalledWith(new Map());
+		});
+
+		it('should preserve existing group IDs (matched by name) when serializing', async () => {
+			const currentWorkflow = {
+				id: 'current',
+				name: 'Current',
+				nodes: [],
+				connections: {},
+				nodeGroups: [
+					{ id: 'group-random-1', name: 'Ingestion', nodeIds: [] },
+					{ id: 'group-random-2', name: 'Processing', nodeIds: [] },
+				],
+			} as unknown as WorkflowJSON;
+
+			const mockBuilder = {
+				regenerateNodeIds: vi.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				generatePinData: vi.fn(),
+				toJSON: vi.fn().mockReturnValue({ id: 'test', name: 'Test', nodes: [], connections: {} }),
+			};
+
+			mockParseWorkflowCodeToBuilder.mockReturnValue(mockBuilder);
+			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
+
+			await handler.parseAndValidate('code', currentWorkflow);
+
+			expect(mockBuilder.toJSON).toHaveBeenCalledWith({
+				tidyUp: true,
+				nodePorts: undefined,
+				existingGroupIdsByName: new Map([
+					['Ingestion', 'group-random-1'],
+					['Processing', 'group-random-2'],
+				]),
+			});
 		});
 
 		it('should throw on parse error', async () => {
@@ -325,7 +494,7 @@ describe('ParseValidateHandler', () => {
 
 		it('should return graph warnings from an existing workflow JSON', () => {
 			const mockBuilder = {
-				validate: jest.fn().mockReturnValue({
+				validate: vi.fn().mockReturnValue({
 					valid: true,
 					errors: [],
 					warnings: [{ code: 'WARN001', message: 'Existing warning', nodeName: 'Node1' }],
@@ -348,7 +517,7 @@ describe('ParseValidateHandler', () => {
 
 		it('should return empty array when no warnings', () => {
 			const mockBuilder = {
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
 			};
 
 			mockFromJSON.mockReturnValue(mockBuilder);
@@ -360,7 +529,7 @@ describe('ParseValidateHandler', () => {
 
 		it('should collect both graph errors and warnings', () => {
 			const mockBuilder = {
-				validate: jest.fn().mockReturnValue({
+				validate: vi.fn().mockReturnValue({
 					valid: false,
 					errors: [{ code: 'GRAPH_ERR', message: 'Graph error' }],
 					warnings: [{ code: 'GRAPH_WARN', message: 'Graph warning' }],
@@ -386,8 +555,8 @@ describe('ParseValidateHandler', () => {
 
 		it('should not call toJSON or validateWorkflow', () => {
 			const mockBuilder = {
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
-				toJSON: jest.fn(),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				toJSON: vi.fn(),
 			};
 
 			mockFromJSON.mockReturnValue(mockBuilder);
@@ -419,7 +588,7 @@ describe('ParseValidateHandler', () => {
 
 		it('should return empty array when no graph or JSON issues', () => {
 			const mockBuilder = {
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
 			};
 			mockFromJSON.mockReturnValue(mockBuilder);
 			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
@@ -429,9 +598,37 @@ describe('ParseValidateHandler', () => {
 			expect(result).toHaveLength(0);
 		});
 
+		it('skips structural checks in JSON validation that the graph pass already covers', () => {
+			const mockBuilder = {
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+			};
+			mockFromJSON.mockReturnValue(mockBuilder);
+			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
+
+			handler.validateJSON(nonEmptyJson);
+
+			expect(mockValidateWorkflow).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ allowDisconnectedNodes: true, allowNoTrigger: true }),
+			);
+		});
+
+		it('passes the node-type provider to the graph pass, so type-gated validators run', () => {
+			const nodeTypesProvider = { getByNameAndVersion: vi.fn() } as unknown as INodeTypes;
+			const mockBuilder = {
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+			};
+			mockFromJSON.mockReturnValue(mockBuilder);
+			mockValidateWorkflow.mockReturnValue({ valid: true, errors: [], warnings: [] });
+
+			new ParseValidateHandler({ nodeTypesProvider }).validateJSON(nonEmptyJson);
+
+			expect(mockBuilder.validate).toHaveBeenCalledWith({ nodeTypesProvider });
+		});
+
 		it('should collect graph errors and warnings', () => {
 			const mockBuilder = {
-				validate: jest.fn().mockReturnValue({
+				validate: vi.fn().mockReturnValue({
 					valid: false,
 					errors: [{ code: 'GRAPH_ERR', message: 'Graph error', nodeName: 'A' }],
 					warnings: [{ code: 'GRAPH_WARN', message: 'Graph warning' }],
@@ -447,7 +644,7 @@ describe('ParseValidateHandler', () => {
 
 		it('should collect JSON errors and warnings', () => {
 			const mockBuilder = {
-				validate: jest.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
+				validate: vi.fn().mockReturnValue({ valid: true, errors: [], warnings: [] }),
 			};
 			mockFromJSON.mockReturnValue(mockBuilder);
 			mockValidateWorkflow.mockReturnValue({
@@ -463,7 +660,7 @@ describe('ParseValidateHandler', () => {
 
 		it('should combine graph and JSON validation issues into a single warnings array', () => {
 			const mockBuilder = {
-				validate: jest.fn().mockReturnValue({
+				validate: vi.fn().mockReturnValue({
 					valid: false,
 					errors: [{ code: 'GRAPH_ERR', message: 'Graph error' }],
 					warnings: [],
@@ -480,7 +677,11 @@ describe('ParseValidateHandler', () => {
 
 			expect(result.map((w) => w.code)).toEqual(['GRAPH_ERR', 'JSON_ERR']);
 			expect(mockFromJSON).toHaveBeenCalledWith(nonEmptyJson);
-			expect(mockValidateWorkflow).toHaveBeenCalledWith(nonEmptyJson);
+			expect(mockValidateWorkflow).toHaveBeenCalledWith(nonEmptyJson, {
+				nodeTypesProvider: undefined,
+				allowDisconnectedNodes: true,
+				allowNoTrigger: true,
+			});
 		});
 	});
 });

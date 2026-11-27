@@ -5,7 +5,8 @@ import type { ObjectLiteral } from '@n8n/typeorm';
 import type { QueryRunner } from '@n8n/typeorm/query-runner/QueryRunner';
 import { readFileSync, rmSync } from 'fs';
 import { InstanceSettings } from 'n8n-core';
-import { jsonParse, UnexpectedError } from 'n8n-workflow';
+import { jsonParse } from 'n8n-workflow';
+import { UnexpectedError } from '@n8n/errors';
 
 import { createSchemaBuilder } from './dsl';
 import type { BaseMigration, Migration, MigrationContext, MigrationFn } from './migration-types';
@@ -149,6 +150,8 @@ const createContext = (queryRunner: QueryRunner, migration: Migration): Migratio
 		columnName: (name) => queryRunner.connection.driver.escape(name),
 		tableName: (name) => queryRunner.connection.driver.escape(`${tablePrefix}${name}`),
 		indexName: (name) => queryRunner.connection.driver.escape(`IDX_${tablePrefix}${name}`),
+		triggerName: (name) => queryRunner.connection.driver.escape(`${tablePrefix}${name}`),
+		functionName: (name) => queryRunner.connection.driver.escape(`${tablePrefix}${name}`),
 	},
 	runQuery: async <T>(sql: string, namedParameters?: ObjectLiteral) => {
 		if (namedParameters) {

@@ -7,7 +7,8 @@ import {
 import { createComponentRenderer } from '@/__tests__/render';
 import VirtualSchema from './VirtualSchema.vue';
 import * as nodeHelpers from '@/app/composables/useNodeHelpers';
-import { useTelemetry } from '@/app/composables/useTelemetry';
+import * as dataSchema from '@/app/composables/useDataSchema';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
 import * as calloutHelpers from '@/app/composables/useCalloutHelpers';
 import {
 	IF_NODE_TYPE,
@@ -26,20 +27,26 @@ import { createTestingPinia } from '@pinia/testing';
 import { fireEvent } from '@testing-library/dom';
 import { userEvent } from '@testing-library/user-event';
 import { cleanup, waitFor } from '@testing-library/vue';
-import { computed, shallowRef } from 'vue';
+import { computed, reactive, shallowRef } from 'vue';
 import { WorkflowDocumentStoreKey } from '@/app/constants/injectionKeys';
-import {
-	createResultOk,
-	NodeConnectionTypes,
-	type IBinaryData,
-	type INodeExecutionData,
-} from 'n8n-workflow';
+import { createResultOk } from '@n8n/utils/result';
+import { NodeConnectionTypes, type IBinaryData, type INodeExecutionData } from 'n8n-workflow';
 import { setActivePinia } from 'pinia';
 import { mock } from 'vitest-mock-extended';
-import { defaultSettings } from '@/__tests__/defaults';
+import { defaultSettings } from '@n8n/frontend-test-utils';
 import { usePostHog } from '@/app/stores/posthog.store';
 import { useSchemaPreviewStore } from '@/features/ndv/runData/schemaPreview.store';
-import { useSettingsStore } from '@/app/stores/settings.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+
+// Instantiates a store that derives the workflow id from the route. These tests run
+// without a router, so resolve the id directly.
+vi.mock('@/app/composables/useWorkflowId', async () => {
+	const { computed } = await import('vue');
+	return {
+		useWorkflowId: () => computed(() => ''),
+		useRouteWorkflowId: () => computed(() => ''),
+	};
+});
 
 const mockNode1 = createTestNode({
 	name: 'Manual Trigger',
@@ -171,7 +178,8 @@ async function setupStore() {
 	const workflowsStore = useWorkflowsStore();
 	const nodeTypesStore = useNodeTypesStore();
 	const settingsStore = useSettingsStore();
-	const ndvStore = useNDVStore();
+	workflowsStore.setWorkflowId(workflow.id);
+	const ndvStore = useNDVStore(createWorkflowDocumentId(workflow.id));
 	settingsStore.setSettings(defaultSettings);
 
 	nodeTypesStore.setNodeTypes([
@@ -201,7 +209,6 @@ async function setupStore() {
 			outputs: [NodeConnectionTypes.Main],
 		}),
 	]);
-	workflowsStore.setWorkflowId(workflow.id);
 	const workflowDocumentStore = useWorkflowDocumentStore(createWorkflowDocumentId(workflow.id));
 	workflowDocumentStore.hydrate(workflow);
 	ndvStore.setActiveNodeName('Test Node Name', 'other');
@@ -215,6 +222,31 @@ function pinData(node: { name: string }, data: INodeExecutionData[]) {
 		createWorkflowDocumentId(workflowsStore.workflowId),
 	);
 	workflowDocumentStore.pinNodeData(node.name, data);
+}
+
+function spyOnGetSchemaForExecutionData() {
+	const originalUseDataSchema = dataSchema.useDataSchema;
+	const spy = vi.fn();
+	vi.spyOn(dataSchema, 'useDataSchema').mockImplementation(() => {
+		const original = originalUseDataSchema();
+		spy.mockImplementation(original.getSchemaForExecutionData);
+		return { ...original, getSchemaForExecutionData: spy };
+	});
+	return spy;
+}
+
+function mockReactiveNodeOutputData(outputDataByNodeName: Record<string, INodeExecutionData[]>) {
+	const originalNodeHelpers = nodeHelpers.useNodeHelpers();
+	vi.spyOn(nodeHelpers, 'useNodeHelpers').mockImplementation(() => {
+		return {
+			...originalNodeHelpers,
+			getLastRunIndexWithData: vi.fn((nodeName: string) =>
+				outputDataByNodeName[nodeName] ? 0 : -1,
+			),
+			hasNodeExecuted: vi.fn((nodeName: string) => Boolean(outputDataByNodeName[nodeName])),
+			getNodeInputData: vi.fn((node) => outputDataByNodeName[node.name] ?? []),
+		};
+	});
 }
 
 function mockNodeOutputData(nodeName: string, data: INodeExecutionData[], outputIndex = 0) {
@@ -281,7 +313,6 @@ describe('VirtualSchema.vue', () => {
 			isCalloutDismissed: vi.fn(() => false),
 			dismissCallout: vi.fn(),
 			openSampleWorkflowTemplate: vi.fn(),
-			getTutorialTemplatesNodeCreatorItems: vi.fn(() => []),
 			isRagStarterCalloutVisible: computed(() => false),
 		});
 
@@ -584,7 +615,7 @@ describe('VirtualSchema.vue', () => {
 	});
 
 	it('should show connections', async () => {
-		const ndvStore = useNDVStore();
+		const ndvStore = useNDVStore(createWorkflowDocumentId('123'));
 		vi.spyOn(ndvStore, 'ndvNodeInputNumber', 'get').mockReturnValue({
 			[defaultNodes[0].name]: [0],
 			[defaultNodes[1].name]: [0, 1, 2],
@@ -602,7 +633,7 @@ describe('VirtualSchema.vue', () => {
 
 	describe('telemetry', () => {
 		function dragDropPill(pill: HTMLElement) {
-			const ndvStore = useNDVStore();
+			const ndvStore = useNDVStore(createWorkflowDocumentId('123'));
 			const reset = vi.spyOn(ndvStore, 'resetMappingTelemetry');
 			fireEvent(
 				pill,
@@ -735,6 +766,101 @@ describe('VirtualSchema.vue', () => {
 
 		expect(getAllByTestId('run-data-schema-item').length).toBe(2);
 		expect(container).toMatchSnapshot();
+	});
+
+	it('should not build the output pane schema again when the search changes', async () => {
+		const getSchemaForExecutionDataSpy = spyOnGetSchemaForExecutionData();
+
+		const { getAllByTestId, rerender } = renderComponent({
+			props: {
+				nodes: [],
+				paneType: 'output',
+				node: mockNode1,
+				data: [{ name: 'John', age: 22 }],
+			},
+		});
+
+		await waitFor(() => expect(getAllByTestId('run-data-schema-item')).toHaveLength(2));
+		const callCount = getSchemaForExecutionDataSpy.mock.calls.length;
+		expect(callCount).toBeGreaterThan(0);
+
+		await rerender({ search: 'John' });
+		await waitFor(() => expect(getAllByTestId('run-data-schema-item')).toHaveLength(1));
+		await rerender({ search: 'age' });
+		await waitFor(() =>
+			expect(getAllByTestId('run-data-schema-item')[0]).toHaveTextContent('age22'),
+		);
+
+		expect(getSchemaForExecutionDataSpy).toHaveBeenCalledTimes(callCount);
+	});
+
+	it('should not build the input pane schemas again when the search changes', async () => {
+		const getSchemaForExecutionDataSpy = spyOnGetSchemaForExecutionData();
+		pinData(mockNode1, [{ json: { name: 'John' } }]);
+		pinData(mockNode2, [{ json: { city: 'Berlin' } }]);
+
+		const { getAllByTestId, rerender } = renderComponent();
+
+		await waitFor(() => expect(getAllByTestId('run-data-schema-header')).toHaveLength(3));
+		const callCount = getSchemaForExecutionDataSpy.mock.calls.length;
+		expect(callCount).toBeGreaterThan(0);
+
+		await rerender({ search: 'John' });
+		await rerender({ search: 'Berlin' });
+		await waitFor(() =>
+			expect(getAllByTestId('run-data-schema-item')[0]).toHaveTextContent('cityBerlin'),
+		);
+
+		expect(getSchemaForExecutionDataSpy).toHaveBeenCalledTimes(callCount);
+	});
+
+	it('should leave out an input node without a search match', async () => {
+		pinData(mockNode1, [{ json: { name: 'John' } }]);
+		pinData(mockNode2, [{ json: { city: 'Berlin' } }]);
+
+		const { getAllByTestId, rerender } = renderComponent();
+
+		await waitFor(() => expect(getAllByTestId('run-data-schema-header')).toHaveLength(3));
+
+		await rerender({ search: 'Berlin' });
+
+		await waitFor(() => {
+			const headers = getAllByTestId('run-data-schema-header');
+			expect(headers.some((header) => header.textContent?.includes('Set2'))).toBe(true);
+			expect(headers.some((header) => header.textContent?.includes('Manual Trigger'))).toBe(false);
+		});
+	});
+
+	it('should build the input pane schema again when run data of a later node changes', async () => {
+		const outputDataByNodeName = reactive<Record<string, INodeExecutionData[]>>({
+			[mockNode1.name]: [{ json: { name: 'John' } }],
+			[mockNode2.name]: [{ json: { city: 'Berlin' } }],
+		});
+		mockReactiveNodeOutputData(outputDataByNodeName);
+
+		const { getAllByTestId } = renderComponent();
+
+		await waitFor(() => expect(getAllByTestId('run-data-schema-header')).toHaveLength(3));
+		const set2Header = getAllByTestId('run-data-schema-header')[1];
+		expect(set2Header).toHaveTextContent('Set2');
+		await userEvent.click(set2Header);
+		await waitFor(() =>
+			expect(
+				getAllByTestId('run-data-schema-item').some((item) =>
+					item.textContent?.includes('cityBerlin'),
+				),
+			).toBe(true),
+		);
+
+		outputDataByNodeName[mockNode2.name] = [{ json: { country: 'Germany' } }];
+
+		await waitFor(() =>
+			expect(
+				getAllByTestId('run-data-schema-item').some((item) =>
+					item.textContent?.includes('countryGermany'),
+				),
+			).toBe(true),
+		);
 	});
 
 	it('renders preview schema when enabled and available', async () => {
@@ -1327,7 +1453,6 @@ describe('VirtualSchema.vue', () => {
 				isCalloutDismissed: vi.fn((id: string) => id === 'Merge-mergeNotice'),
 				dismissCallout: dismissMock,
 				openSampleWorkflowTemplate: vi.fn(),
-				getTutorialTemplatesNodeCreatorItems: vi.fn(() => []),
 				isRagStarterCalloutVisible: computed(() => false),
 			});
 

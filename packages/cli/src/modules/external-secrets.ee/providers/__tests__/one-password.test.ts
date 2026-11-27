@@ -1,15 +1,18 @@
-import { UserError } from 'n8n-workflow';
-import { mock } from 'jest-mock-extended';
+import { Logger } from '@n8n/backend-common';
+import { mockInstance } from '@n8n/backend-test-utils';
+import get from 'lodash/get';
+import toPath from 'lodash/toPath';
+import { UserError } from '@n8n/errors';
+import { mock } from 'vitest-mock-extended';
 
-import { OnePasswordProvider } from '../one-password';
-import type { OnePasswordContext } from '../one-password';
+import { OnePasswordProvider, type OnePasswordContext } from '../one-password';
 
-const mockListVaults = jest.fn();
-const mockListItems = jest.fn();
-const mockGetItemById = jest.fn();
+const mockListVaults = vi.fn();
+const mockListItems = vi.fn();
+const mockGetItemById = vi.fn();
 
-jest.mock('@1password/connect', () => ({
-	OnePasswordConnect: jest.fn(() => ({
+vi.mock('@1password/connect', () => ({
+	OnePasswordConnect: vi.fn(() => ({
 		listVaults: mockListVaults,
 		listItems: mockListItems,
 		getItemById: mockGetItemById,
@@ -17,10 +20,14 @@ jest.mock('@1password/connect', () => ({
 }));
 
 describe('OnePasswordProvider', () => {
-	const provider = new OnePasswordProvider();
+	const logger = mockInstance(Logger);
+	logger.scoped.mockReturnValue(logger);
+	let provider: OnePasswordProvider;
 
-	afterEach(() => {
-		jest.clearAllMocks();
+	beforeEach(() => {
+		vi.clearAllMocks();
+		logger.scoped.mockReturnValue(logger);
+		provider = new OnePasswordProvider(logger);
 	});
 
 	describe('init validation', () => {
@@ -28,6 +35,15 @@ describe('OnePasswordProvider', () => {
 			const settings = { serverUrl: '', accessToken: 'test-token' };
 			await expect(provider.init(mock<OnePasswordContext>({ settings }))).rejects.toThrow(
 				UserError,
+			);
+			expect(logger.warn).toHaveBeenCalledWith(
+				'Failed to initialize 1Password provider',
+				expect.objectContaining({
+					providerName: 'onePassword',
+					providerDisplayName: '1Password',
+					operation: 'initialize',
+					errorName: expect.any(String),
+				}),
 			);
 		});
 
@@ -80,11 +96,26 @@ describe('OnePasswordProvider', () => {
 				}),
 			);
 
-			mockListVaults.mockRejectedValue(new Error('Unauthorized'));
+			mockListVaults.mockRejectedValue(
+				Object.assign(new Error('Unauthorized'), {
+					response: { status: 401 },
+				}),
+			);
 
 			await provider.connect();
 
 			expect(provider.state).toBe('error');
+			expect(logger.warn).toHaveBeenCalledWith(
+				'Failed to connect 1Password provider',
+				expect.objectContaining({
+					providerName: 'onePassword',
+					providerDisplayName: '1Password',
+					operation: 'connect',
+					errorName: 'Error',
+					statusCode: 401,
+					serverUrl: 'http://localhost:8080',
+				}),
+			);
 		});
 	});
 
@@ -115,10 +146,24 @@ describe('OnePasswordProvider', () => {
 			mockListVaults.mockResolvedValue([]);
 			await provider.connect();
 
-			mockListVaults.mockRejectedValue(new Error('Connection refused'));
+			mockListVaults.mockRejectedValue(
+				Object.assign(new Error('Connection refused'), { code: 'ECONNREFUSED' }),
+			);
 			const result = await provider.test();
 
 			expect(result).toEqual([false, 'Connection refused']);
+			expect(logger.warn).toHaveBeenCalledWith(
+				'1Password provider test failed',
+				expect.objectContaining({
+					providerName: 'onePassword',
+					providerDisplayName: '1Password',
+					operation: 'test',
+					errorName: 'Error',
+					errorCode: 'ECONNREFUSED',
+					endpoint: 'vaults',
+					serverUrl: 'http://localhost:8080',
+				}),
+			);
 		});
 	});
 
@@ -176,7 +221,27 @@ describe('OnePasswordProvider', () => {
 			});
 			expect(provider.getSecret('API Key')).toEqual({ key: 'sk-abc123' });
 			expect(provider.getSecret('SSH Key')).toEqual({ private_key: 'ssh-rsa AAAA...' });
-			expect(provider.getSecretNames()).toHaveLength(3);
+			expect(provider.getSecretNames()).toEqual([
+				'Database Credentials.username',
+				'Database Credentials.password',
+				'API Key.key',
+				'SSH Key.private_key',
+			]);
+		});
+
+		it('should preserve dots in item titles and field labels during discovery', async () => {
+			mockListVaults.mockResolvedValue([{ id: 'vault-1' }]);
+			mockListItems.mockResolvedValue([{ id: 'item-1', title: 'app.production' }]);
+			mockGetItemById.mockResolvedValue({
+				fields: [{ label: 'test.1', value: 'literal-value' }],
+			});
+
+			await provider.update();
+
+			const [name] = provider.getSecretNames();
+			const path = toPath(name);
+			expect(path).toEqual(['app.production', 'test.1']);
+			expect(get(provider.getSecret(path[0]), path.slice(1))).toBe('literal-value');
 		});
 
 		it('should skip items without fields', async () => {
@@ -271,6 +336,24 @@ describe('OnePasswordProvider', () => {
 
 			expect(provider.hasSecret('Empty Fields')).toBe(false);
 		});
+
+		it('should log and rethrow update failures', async () => {
+			mockListVaults.mockRejectedValue(new Error('Service unavailable'));
+
+			await expect(provider.update()).rejects.toThrow('Service unavailable');
+
+			expect(logger.warn).toHaveBeenCalledWith(
+				'Failed to update 1Password provider secrets',
+				expect.objectContaining({
+					providerName: 'onePassword',
+					providerDisplayName: '1Password',
+					operation: 'update',
+					errorName: 'Error',
+					endpoint: 'secrets',
+					serverUrl: 'http://localhost:8080',
+				}),
+			);
+		});
 	});
 
 	describe('getSecret / hasSecret / getSecretNames', () => {
@@ -280,6 +363,10 @@ describe('OnePasswordProvider', () => {
 
 		it('should return false for non-existent secrets', () => {
 			expect(provider.hasSecret('non-existent')).toBe(false);
+		});
+
+		it('should return no field names before secrets are loaded', () => {
+			expect(provider.getSecretNames()).toEqual([]);
 		});
 	});
 });

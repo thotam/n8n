@@ -2,12 +2,18 @@ import {
 	createTestNode,
 	createTestTaskData,
 	createTestWorkflowObject,
+	createTestWorkflowExecutionResponse,
 	defaultNodeDescriptions,
 } from '@/__tests__/mocks';
 import { createTestLogEntry } from '../__test__/mocks';
 import { fireEvent, render, waitFor } from '@testing-library/vue';
-import { computed } from 'vue';
-import { WorkflowIdKey } from '@/app/constants/injectionKeys';
+import { computed, defineComponent, h, shallowRef } from 'vue';
+import { runDataDisplayModeRegistry } from '@n8n/frontend-module-sdk';
+import { WorkflowDocumentStoreKey, WorkflowIdKey } from '@/app/constants/injectionKeys';
+import {
+	createWorkflowDocumentId,
+	useWorkflowDocumentStore,
+} from '@/app/stores/workflowDocument.store';
 import userEvent from '@testing-library/user-event';
 import LogsViewRunData from './LogsViewRunData.vue';
 import { createTestingPinia, type TestingPinia } from '@pinia/testing';
@@ -15,6 +21,19 @@ import { createRunExecutionData, NodeApiError, NodeConnectionTypes } from 'n8n-w
 import { AGENT_NODE_TYPE, OPEN_AI_CHAT_MODEL_NODE_TYPE } from '@/app/constants';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { mockedStore } from '@/__tests__/utils';
+import { useWorkflowExecutionStateStore } from '@/app/stores/workflowExecutionState.store';
+import { i18nInstance, useI18n } from '@n8n/i18n';
+import { flushPromises } from '@vue/test-utils';
+
+// Instantiates a store that derives the workflow id from the route. These tests run
+// without a router, so resolve the id directly.
+vi.mock('@/app/composables/useWorkflowId', async () => {
+	const { computed } = await import('vue');
+	return {
+		useWorkflowId: () => computed(() => ''),
+		useRouteWorkflowId: () => computed(() => ''),
+	};
+});
 
 describe('LogsViewRunData', () => {
 	let pinia: TestingPinia;
@@ -42,11 +61,94 @@ describe('LogsViewRunData', () => {
 		nodeTypesStore.setNodeTypes(defaultNodeDescriptions);
 	});
 
+	afterEach(async () => {
+		// RunData loads its views lazily. Finish their imports before cleanup
+		// so they cannot continue after the test environment is torn down.
+		await flushPromises();
+		await vi.dynamicImportSettled();
+		runDataDisplayModeRegistry.clear();
+	});
+
+	it('shows the credential cause without a sharing action', () => {
+		const documentId = createWorkflowDocumentId('test-workflow-id');
+		const redactedExecution = createRunExecutionData({
+			resultData: { runData: { B: [createTestTaskData({ data: { main: [[]] } })] } },
+			redactionInfo: {
+				isRedacted: true,
+				reason: 'credential_inaccessible',
+				canReveal: false,
+				credentialIds: ['gmail-credential'],
+			},
+		});
+		useWorkflowExecutionStateStore(documentId).setWorkflowExecutionData(
+			createTestWorkflowExecutionResponse({ data: redactedExecution }),
+		);
+		const rendered = render(LogsViewRunData, {
+			global: {
+				provide: {
+					[WorkflowIdKey as symbol]: computed(() => 'test-workflow-id'),
+					[WorkflowDocumentStoreKey as symbol]: shallowRef(useWorkflowDocumentStore(documentId)),
+				},
+				plugins: [pinia, i18nInstance],
+			},
+			props: {
+				title: '',
+				logEntry: { ...logEntry, execution: redactedExecution },
+				collapsingTableColumnName: null,
+				paneType: 'output',
+			},
+		});
+
+		expect(rendered.getByTestId('ndv-data-redacted')).toHaveTextContent(
+			useI18n().baseText('ndv.redacted.shareCredential.description'),
+		);
+		expect(rendered.queryByTestId('redacted-data-share-credential')).not.toBeInTheDocument();
+		expect(rendered.queryByTestId('ndv-reveal-redacted-data')).not.toBeInTheDocument();
+	});
+
+	it('falls back to a built-in view when the selected registered mode is unregistered', async () => {
+		runDataDisplayModeRegistry.register({
+			id: 'map',
+			label: () => 'Map',
+			icon: 'globe',
+			component: defineComponent({ render: () => h('div', { 'data-test-id': 'fake-map-view' }) }),
+			canRender: () => true,
+		});
+		const rendered = render(LogsViewRunData, {
+			global: {
+				provide: {
+					[WorkflowIdKey as unknown as string]: computed(() => 'test-workflow-id'),
+					[WorkflowDocumentStoreKey as symbol]: shallowRef(
+						useWorkflowDocumentStore(createWorkflowDocumentId('test-workflow-id')),
+					),
+				},
+				plugins: [pinia, i18nInstance],
+			},
+			props: { title: '', logEntry, collapsingTableColumnName: null, paneType: 'output' },
+		});
+
+		await fireEvent.click(await rendered.findByTestId('radio-button-map'));
+		expect(await rendered.findByTestId('fake-map-view')).toBeInTheDocument();
+
+		runDataDisplayModeRegistry.unregister('map');
+
+		await waitFor(() =>
+			expect(rendered.getByTestId('radio-button-table')).toHaveAttribute('aria-checked', 'true'),
+		);
+		expect(rendered.queryByTestId('fake-map-view')).not.toBeInTheDocument();
+		expect(rendered.queryByTestId('radio-button-map')).not.toBeInTheDocument();
+	});
+
 	it('should display item count', async () => {
 		const rendered = render(LogsViewRunData, {
 			global: {
-				provide: { [WorkflowIdKey as unknown as string]: computed(() => 'test-workflow-id') },
-				plugins: [pinia],
+				provide: {
+					[WorkflowIdKey as unknown as string]: computed(() => 'test-workflow-id'),
+					[WorkflowDocumentStoreKey as symbol]: shallowRef(
+						useWorkflowDocumentStore(createWorkflowDocumentId('test-workflow-id')),
+					),
+				},
+				plugins: [pinia, i18nInstance],
 			},
 			props: { title: '', logEntry, collapsingTableColumnName: null, paneType: 'output' },
 		});
@@ -57,8 +159,13 @@ describe('LogsViewRunData', () => {
 	it('should display matched and total item count unless display mode is schema', async () => {
 		const rendered = render(LogsViewRunData, {
 			global: {
-				provide: { [WorkflowIdKey as unknown as string]: computed(() => 'test-workflow-id') },
-				plugins: [pinia],
+				provide: {
+					[WorkflowIdKey as unknown as string]: computed(() => 'test-workflow-id'),
+					[WorkflowDocumentStoreKey as symbol]: shallowRef(
+						useWorkflowDocumentStore(createWorkflowDocumentId('test-workflow-id')),
+					),
+				},
+				plugins: [pinia, i18nInstance],
 			},
 			props: { title: '', logEntry, collapsingTableColumnName: null, paneType: 'output' },
 		});
@@ -110,8 +217,13 @@ describe('LogsViewRunData', () => {
 		});
 		const rendered = render(LogsViewRunData, {
 			global: {
-				provide: { [WorkflowIdKey as unknown as string]: computed(() => 'test-workflow-id') },
-				plugins: [pinia],
+				provide: {
+					[WorkflowIdKey as unknown as string]: computed(() => 'test-workflow-id'),
+					[WorkflowDocumentStoreKey as symbol]: shallowRef(
+						useWorkflowDocumentStore(createWorkflowDocumentId('test-workflow-id')),
+					),
+				},
+				plugins: [pinia, i18nInstance],
 			},
 			props: {
 				title: '',
@@ -134,6 +246,9 @@ describe('LogsViewRunData', () => {
 			},
 		});
 
+		// Wait for the lazy AI view before starting the text query.
+		await flushPromises();
+		await vi.dynamicImportSettled();
 		await rendered.findByText(/hello/);
 	});
 });

@@ -1,8 +1,13 @@
-import { createWorkflow, testDb } from '@n8n/backend-test-utils';
-import { ExecutionDataRepository, ExecutionRepository } from '@n8n/db';
+import { createTeamProject, createWorkflow, testDb } from '@n8n/backend-test-utils';
+import type { WorkflowEntity } from '@n8n/db';
+import { ExecutionData, ExecutionRepository, ProjectRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
+import { DataSource } from '@n8n/typeorm';
 import { stringify } from 'flatted';
-import type { IRunExecutionData, IRunExecutionDataAll } from 'n8n-workflow';
+import type { ExecutionStatus, IRunExecutionData, IRunExecutionDataAll } from 'n8n-workflow';
+import { WAIT_FOR_SUB_EXECUTION, WAIT_INDEFINITELY } from 'n8n-workflow';
+
+import type { TracingContext } from '@/modules/otel/tracing-context';
 
 describe('ExecutionRepository', () => {
 	beforeAll(async () => {
@@ -10,7 +15,7 @@ describe('ExecutionRepository', () => {
 	});
 
 	beforeEach(async () => {
-		await testDb.truncate(['WorkflowEntity', 'ExecutionEntity']);
+		await testDb.truncate(['SharedWorkflow', 'WorkflowEntity', 'ExecutionEntity']);
 	});
 
 	afterAll(async () => {
@@ -20,7 +25,7 @@ describe('ExecutionRepository', () => {
 	describe('run execution data migration', () => {
 		it('should automatically migrate IRunExecutionDataV0 to V1 when reading', async () => {
 			const executionRepo = Container.get(ExecutionRepository);
-			const executionDataRepo = Container.get(ExecutionDataRepository);
+			const executionDataRepo = Container.get(DataSource).getRepository(ExecutionData);
 			const workflow = await createWorkflow({ settings: { executionOrder: 'v1' } });
 
 			// Create V0 data with string destinationNode
@@ -182,6 +187,376 @@ describe('ExecutionRepository', () => {
 			});
 
 			expect(executions).toHaveLength(2);
+		});
+	});
+
+	describe('markAsCrashed', () => {
+		const createExecution = async (
+			status: ExecutionStatus,
+			extra: {
+				waitTill?: Date;
+				tracingContext?: TracingContext;
+				workflowVersionId?: string;
+				retryOf?: string;
+			} = {},
+			existingWorkflow?: WorkflowEntity,
+		) => {
+			const workflow = existingWorkflow ?? (await createWorkflow());
+			const startedAt = new Date();
+			const { identifiers } = await Container.get(ExecutionRepository).insert({
+				workflowId: workflow.id,
+				mode: 'manual',
+				startedAt,
+				status,
+				finished: status === 'success',
+				createdAt: new Date(),
+				...extra,
+			});
+			// Postgres returns the inserted id as a number, SQLite as a string.
+			return { id: String(identifiers[0].id), workflow, startedAt };
+		};
+
+		it('should crash in-progress and indeterminate executions', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const { id: newId } = await createExecution('new');
+			const { id: runningId } = await createExecution('running');
+			const { id: unknownId } = await createExecution('unknown');
+
+			await executionRepo.markAsCrashed([newId, runningId, unknownId]);
+
+			const [newExec, runningExec, unknownExec] = await Promise.all([
+				executionRepo.findOneBy({ id: newId }),
+				executionRepo.findOneBy({ id: runningId }),
+				executionRepo.findOneBy({ id: unknownId }),
+			]);
+
+			expect(newExec?.status).toBe('crashed');
+			expect(runningExec?.status).toBe('crashed');
+			expect(unknownExec?.status).toBe('crashed');
+		});
+
+		it('should not overwrite a waiting execution or clear its waitTill', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const waitTill = new Date(Date.now() + 1000 * 60 * 60);
+			const { id: waitingId } = await createExecution('waiting', { waitTill });
+
+			await executionRepo.markAsCrashed([waitingId]);
+
+			const waitingExec = await executionRepo.findOneBy({ id: waitingId });
+			expect(waitingExec?.status).toBe('waiting');
+			expect(waitingExec?.waitTill?.getTime()).toBe(waitTill.getTime());
+		});
+
+		it('should not overwrite executions in a terminal status', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const { id: successId } = await createExecution('success');
+			const { id: errorId } = await createExecution('error');
+			const { id: canceledId } = await createExecution('canceled');
+			const { id: crashedId } = await createExecution('crashed');
+
+			await executionRepo.markAsCrashed([successId, errorId, canceledId, crashedId]);
+
+			const [successExec, errorExec, canceledExec, crashedExec] = await Promise.all([
+				executionRepo.findOneBy({ id: successId }),
+				executionRepo.findOneBy({ id: errorId }),
+				executionRepo.findOneBy({ id: canceledId }),
+				executionRepo.findOneBy({ id: crashedId }),
+			]);
+
+			expect(successExec?.status).toBe('success');
+			expect(errorExec?.status).toBe('error');
+			expect(canceledExec?.status).toBe('canceled');
+			expect(crashedExec?.status).toBe('crashed');
+		});
+
+		it('should crash only the crashable executions in a mixed batch', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const waitTill = new Date(Date.now() + 1000 * 60 * 60);
+			const { id: runningId } = await createExecution('running');
+			const { id: waitingId } = await createExecution('waiting', { waitTill });
+			const { id: successId } = await createExecution('success');
+
+			await executionRepo.markAsCrashed([runningId, waitingId, successId]);
+
+			const [runningExec, waitingExec, successExec] = await Promise.all([
+				executionRepo.findOneBy({ id: runningId }),
+				executionRepo.findOneBy({ id: waitingId }),
+				executionRepo.findOneBy({ id: successId }),
+			]);
+
+			// the running execution is crashed, with its lifecycle fields updated
+			expect(runningExec?.status).toBe('crashed');
+			expect(runningExec?.stoppedAt).toBeInstanceOf(Date);
+			expect(runningExec?.waitTill).toBeNull();
+
+			// the waiting and terminal executions in the same batch are left untouched
+			expect(waitingExec?.status).toBe('waiting');
+			expect(waitingExec?.waitTill?.getTime()).toBe(waitTill.getTime());
+			expect(successExec?.status).toBe('success');
+		});
+
+		it('should crash a soft-deleted in-progress execution', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const { id: runningId, workflow, startedAt } = await createExecution('running');
+			await executionRepo.softDelete(runningId);
+
+			const crashed = await executionRepo.markAsCrashed([runningId]);
+
+			const runningExec = await executionRepo.findOne({
+				where: { id: runningId },
+				withDeleted: true,
+			});
+			expect(runningExec?.status).toBe('crashed');
+			expect(crashed).toEqual([
+				{
+					id: runningId,
+					workflowId: workflow.id,
+					workflowName: workflow.name,
+					mode: 'manual',
+					startedAt,
+					stoppedAt: expect.any(Date),
+				},
+			]);
+		});
+
+		it('should report the trace context stored on the execution', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const tracingContext = {
+				traceparent: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+				identity: { 'n8n.execution.id': 'exec-1' },
+			};
+			const { id: runningId } = await createExecution('running', { tracingContext });
+
+			const crashed = await executionRepo.markAsCrashed([runningId]);
+
+			expect(crashed).toEqual([expect.objectContaining({ id: runningId, tracingContext })]);
+		});
+
+		it('should report the version id, retry source, workflow tags and owner project', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const projectTags = [{ key: 'team', value: 'platform' }];
+			const project = await createTeamProject();
+			await Container.get(ProjectRepository).update(project.id, {
+				customTelemetryTags: projectTags,
+			});
+			const customTelemetryTags = [{ key: 'workflowTag', value: 'checkout' }];
+			const workflow = await createWorkflow({ settings: { customTelemetryTags } }, project);
+			const { id: runningId } = await createExecution(
+				'running',
+				{ workflowVersionId: 'version-1', retryOf: '9' },
+				workflow,
+			);
+
+			const crashed = await executionRepo.markAsCrashed([runningId]);
+
+			expect(crashed).toEqual([
+				expect.objectContaining({
+					id: runningId,
+					workflowId: workflow.id,
+					workflowName: workflow.name,
+					workflowVersionId: 'version-1',
+					retryOf: '9',
+					workflowCustomTelemetryTags: customTelemetryTags,
+					project: { id: project.id, customTelemetryTags: projectTags },
+				}),
+			]);
+		});
+	});
+
+	describe('markAsCanceled', () => {
+		const createExecution = async (status: ExecutionStatus, extra: { waitTill?: Date } = {}) => {
+			const workflow = await createWorkflow();
+			const { identifiers } = await Container.get(ExecutionRepository).insert({
+				workflowId: workflow.id,
+				mode: 'manual',
+				startedAt: new Date(),
+				status,
+				finished: status === 'success',
+				createdAt: new Date(),
+				...extra,
+			});
+			return String(identifiers[0].id);
+		};
+
+		it('should cancel a running execution and clear its waitTill', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const runningId = await createExecution('running', {
+				waitTill: new Date(Date.now() + 1000 * 60 * 60),
+			});
+
+			const canceled = await executionRepo.markAsCanceled([runningId], ['running']);
+
+			const runningExec = await executionRepo.findOneBy({ id: runningId });
+			expect(canceled).toEqual([expect.objectContaining({ id: runningId })]);
+			expect(runningExec?.status).toBe('canceled');
+			expect(runningExec?.stoppedAt).toBeInstanceOf(Date);
+			expect(runningExec?.waitTill).toBeNull();
+		});
+
+		it('should not overwrite executions in a terminal status', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const successId = await createExecution('success');
+			const errorId = await createExecution('error');
+			const crashedId = await createExecution('crashed');
+
+			const canceled = await executionRepo.markAsCanceled([successId, errorId, crashedId]);
+
+			const [successExec, errorExec, crashedExec] = await Promise.all([
+				executionRepo.findOneBy({ id: successId }),
+				executionRepo.findOneBy({ id: errorId }),
+				executionRepo.findOneBy({ id: crashedId }),
+			]);
+
+			expect(canceled).toEqual([]);
+			expect(successExec?.status).toBe('success');
+			expect(errorExec?.status).toBe('error');
+			expect(crashedExec?.status).toBe('crashed');
+		});
+
+		it('should cancel every unfinished status by default and return the changed rows', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const ids = await Promise.all(
+				(['new', 'running', 'unknown', 'waiting'] as const).map(
+					async (status) => await createExecution(status),
+				),
+			);
+			const successId = await createExecution('success');
+
+			const canceled = await executionRepo.markAsCanceled([...ids, successId]);
+
+			expect(canceled.map(({ id }) => id).sort()).toEqual([...ids].sort());
+			expect((await executionRepo.findOneBy({ id: successId }))?.status).toBe('success');
+		});
+
+		it('should return a row once when two cancels race', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const runningId = await createExecution('running');
+
+			const [first, second] = await Promise.all([
+				executionRepo.markAsCanceled([runningId]),
+				executionRepo.markAsCanceled([runningId]),
+			]);
+
+			expect(first.length + second.length).toBe(1);
+		});
+
+		it('should cancel only the running executions in a mixed batch', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const waitTill = new Date(Date.now() + 1000 * 60 * 60);
+			const runningId = await createExecution('running');
+			const waitingId = await createExecution('waiting', { waitTill });
+			const successId = await createExecution('success');
+
+			await executionRepo.markAsCanceled([runningId, waitingId, successId], ['running']);
+
+			const [runningExec, waitingExec, successExec] = await Promise.all([
+				executionRepo.findOneBy({ id: runningId }),
+				executionRepo.findOneBy({ id: waitingId }),
+				executionRepo.findOneBy({ id: successId }),
+			]);
+
+			expect(runningExec?.status).toBe('canceled');
+			expect(waitingExec?.status).toBe('waiting');
+			expect(waitingExec?.waitTill?.getTime()).toBe(waitTill.getTime());
+			expect(successExec?.status).toBe('success');
+		});
+	});
+
+	describe('findParkedOnSubExecution', () => {
+		const createExecution = async (status: ExecutionStatus, waitTill: Date | null) => {
+			const workflow = await createWorkflow();
+			const { identifiers } = await Container.get(ExecutionRepository).insert({
+				workflowId: workflow.id,
+				mode: 'manual',
+				startedAt: new Date(),
+				status,
+				finished: false,
+				createdAt: new Date(),
+				waitTill,
+			});
+			return String(identifiers[0].id);
+		};
+
+		it('returns only waiting executions parked on a sub-execution', async () => {
+			const parkedOnChild = await createExecution('waiting', WAIT_FOR_SUB_EXECUTION);
+			await createExecution('waiting', WAIT_INDEFINITELY);
+			await createExecution('waiting', new Date(Date.now() + 60_000));
+			await createExecution('running', WAIT_FOR_SUB_EXECUTION);
+			await createExecution('success', WAIT_FOR_SUB_EXECUTION);
+
+			const ids = await Container.get(ExecutionRepository).findParkedOnSubExecution();
+
+			expect(ids).toEqual([parkedOnChild]);
+		});
+	});
+
+	describe('getWorkflowIdsWithExecutionsSince', () => {
+		const insertExecution = async (workflowId: string, startedAt: Date) =>
+			await Container.get(ExecutionRepository).insert({
+				workflowId,
+				mode: 'manual',
+				startedAt,
+				status: 'success',
+				finished: true,
+				createdAt: startedAt,
+			});
+
+		it('should return distinct workflow ids for executions started at or after the date', async () => {
+			const executionRepository = Container.get(ExecutionRepository);
+			const [workflow1, workflow2] = await Promise.all([createWorkflow(), createWorkflow()]);
+			const since = new Date('2024-01-01T00:00:00.000Z');
+
+			await insertExecution(workflow1.id, since); // inclusive boundary
+			await insertExecution(workflow1.id, new Date('2024-06-01T00:00:00.000Z')); // same workflow again
+			await insertExecution(workflow2.id, new Date('2024-03-01T00:00:00.000Z'));
+
+			const result = await executionRepository.getWorkflowIdsWithExecutionsSince(since);
+
+			expect(result).toHaveLength(2);
+			expect(result).toEqual(expect.arrayContaining([workflow1.id, workflow2.id]));
+		});
+
+		it('should exclude workflows whose executions all started before the date', async () => {
+			const executionRepository = Container.get(ExecutionRepository);
+			const workflow = await createWorkflow();
+
+			await insertExecution(workflow.id, new Date('2023-12-31T23:59:59.000Z'));
+
+			const result = await executionRepository.getWorkflowIdsWithExecutionsSince(
+				new Date('2024-01-01T00:00:00.000Z'),
+			);
+
+			expect(result).toEqual([]);
+		});
+	});
+
+	describe('hasWorkflowExecutionAmong', () => {
+		const insertExecution = async (workflowId: string, deletedAt?: Date) => {
+			const { identifiers } = await Container.get(ExecutionRepository).insert({
+				workflowId,
+				mode: 'manual',
+				startedAt: new Date(),
+				status: 'success',
+				finished: true,
+				createdAt: new Date(),
+				...(deletedAt ? { deletedAt } : {}),
+			});
+			// Postgres returns the inserted id as a number, SQLite as a string.
+			return String(identifiers[0].id);
+		};
+
+		it('finds only executions of the given workflow, including soft-deleted ones', async () => {
+			const executionRepo = Container.get(ExecutionRepository);
+			const workflow = await createWorkflow();
+			const other = await createWorkflow();
+			const softDeleted = await insertExecution(workflow.id, new Date());
+			const otherId = await insertExecution(other.id);
+
+			expect(await executionRepo.hasWorkflowExecutionAmong(workflow.id, [otherId])).toBe(false);
+			expect(
+				await executionRepo.hasWorkflowExecutionAmong(workflow.id, [otherId, softDeleted]),
+			).toBe(true);
+			expect(await executionRepo.hasWorkflowExecutionAmong(workflow.id, [])).toBe(false);
 		});
 	});
 });

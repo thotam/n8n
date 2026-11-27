@@ -4,7 +4,7 @@ import type { IResourceLocatorResultExpanded, IUpdateInformation } from '@/Inter
 import DraggableTarget from '@/app/components/DraggableTarget.vue';
 import ExpressionParameterInput from '../ExpressionParameterInput.vue';
 import ParameterIssues from '../ParameterIssues.vue';
-import { useDebounce } from '@/app/composables/useDebounce';
+import { useDebounce } from '@n8n/composables/useDebounce';
 import { useI18n } from '@n8n/i18n';
 import type { BaseTextKey } from '@n8n/i18n';
 import { useWorkflowHelpers } from '@/app/composables/useWorkflowHelpers';
@@ -13,7 +13,6 @@ import { injectNDVStore } from '@/features/ndv/shared/ndv.store';
 import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
 import { useRootStore } from '@n8n/stores/useRootStore';
 import { useUIStore } from '@/app/stores/ui.store';
-import { useWorkflowsStore } from '@/app/stores/workflows.store';
 import {
 	getAppNameFromNodeName,
 	getMainAuthField,
@@ -22,7 +21,9 @@ import {
 import stringify from 'fast-json-stable-stringify';
 import type { EventBus } from '@n8n/utils/event-bus';
 import { createEventBus } from '@n8n/utils/event-bus';
+import { extractPlaceholderLabels, isPlaceholderValue } from '@n8n/utils/placeholder';
 import {
+	DATA_TABLE_NODE_TYPES,
 	isResourceLocatorValue,
 	type INode,
 	type INodeListSearchItems,
@@ -45,7 +46,7 @@ import {
 	watch,
 } from 'vue';
 import ResourceLocatorDropdown from './ResourceLocatorDropdown.vue';
-import { useTelemetry } from '@/app/composables/useTelemetry';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
 import { computedAsync, onClickOutside, type VueInstance } from '@vueuse/core';
 import {
 	buildValueFromOverride,
@@ -54,9 +55,13 @@ import {
 	updateFromAIOverrideValues,
 	type FromAIOverride,
 } from '../../utils/fromAIOverride.utils';
-import { completeExpressionSyntax } from '@/app/utils/expressions';
+import { completeExpressionSyntax, shouldConvertToExpression } from '@/app/utils/expressions';
+import { openSafeUrl } from '@/app/utils/htmlUtils';
 import { DEBOUNCE_TIME, ExpressionLocalResolveContextSymbol } from '@/app/constants';
 import { useProjectsStore } from '@/features/collaboration/projects/projects.store';
+import { useDataTableStore } from '@/features/core/dataTable/dataTable.store';
+import { DATA_TABLE_DETAILS } from '@/features/core/dataTable/constants';
+import { useRouter } from 'vue-router';
 import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
 import FromAiOverrideButton from '../ParameterInputOverrides/FromAiOverrideButton.vue';
 import FromAiOverrideField from '../ParameterInputOverrides/FromAiOverrideField.vue';
@@ -87,7 +92,7 @@ const NODE_API_AUTH_ERROR_MESSAGES = [
 
 interface IResourceLocatorQuery {
 	results: INodeListSearchItems[];
-	nextPageToken: unknown;
+	nextPageToken: string | null;
 	error: boolean;
 	errorDetails?: {
 		message?: string;
@@ -156,12 +161,18 @@ const dropdownRef = ref<InstanceType<typeof ResourceLocatorDropdown>>();
 const showSlowLoadNotice = ref(false);
 const longLoadingTimer = ref<NodeJS.Timeout | null>(null);
 
+// Leaving the dropdown's search field does not blur the locator input again.
+watch(resourceDropdownVisible, (visible) => {
+	if (!visible) emit('blur');
+});
+
 const nodeTypesStore = useNodeTypesStore();
 const ndvStore = injectNDVStore();
 const rootStore = useRootStore();
 const uiStore = useUIStore();
-const workflowsStore = useWorkflowsStore();
 const projectsStore = useProjectsStore();
+const dataTableStore = useDataTableStore();
+const router = useRouter();
 const workflowDocumentStore = injectWorkflowDocumentStore();
 const expressionLocalResolveCtx = inject(ExpressionLocalResolveContextSymbol, undefined);
 
@@ -188,6 +199,15 @@ const selectedMode = computed(() => {
 });
 
 const isListMode = computed(() => selectedMode.value === 'list');
+
+// Same rule the backend uses to find data table references: the node types that
+// carry a `dataTableId` resource locator (Data table and Evaluation nodes).
+const isDataTableParameter = computed(
+	() =>
+		!!props.node &&
+		DATA_TABLE_NODE_TYPES.includes(props.node.type) &&
+		props.parameter.name === 'dataTableId',
+);
 
 /**
  * Check if the current response contains an error that indicates a credential issue.
@@ -219,7 +239,20 @@ const credentialsRequiredAndNotSet = computed(() => {
 	return false;
 });
 
+const resourceValue = computed(() =>
+	isResourceLocatorValue(props.modelValue) ? props.modelValue.value : props.modelValue,
+);
+const isValueEmpty = computed(
+	() =>
+		resourceValue.value === '' ||
+		resourceValue.value === null ||
+		resourceValue.value === undefined ||
+		isPlaceholderValue(resourceValue.value),
+);
+
 const inputPlaceholder = computed(() => {
+	const label = extractPlaceholderLabels(resourceValue.value)[0];
+	if (label) return label;
 	if (currentMode.value.placeholder) {
 		return currentMode.value.placeholder;
 	}
@@ -242,6 +275,7 @@ const hasMultipleModes = computed(() => {
 
 const hasOnlyListMode = computed(() => hasOnlyListModeUtil(props.parameter));
 const valueToDisplay = computed<INodeParameterResourceLocator['value']>(() => {
+	if (isValueEmpty.value) return '';
 	if (typeof props.modelValue !== 'object') {
 		return `${props.modelValue}`;
 	}
@@ -254,8 +288,12 @@ const valueToDisplay = computed<INodeParameterResourceLocator['value']>(() => {
 });
 
 const urlValue = computedAsync(async () => {
+	if (isValueEmpty.value) return null;
 	if (isListMode.value && typeof props.modelValue === 'object') {
-		return props.modelValue?.cachedResultUrl ?? null;
+		const cachedResultUrl = props.modelValue?.cachedResultUrl;
+		// A data table value set outside the dropdown (import, template, AI builder)
+		// has no cached url, so fall through to the lookup by id below.
+		if (cachedResultUrl || !isDataTableParameter.value) return cachedResultUrl ?? null;
 	}
 
 	if (selectedMode.value === 'url') {
@@ -272,9 +310,38 @@ const urlValue = computedAsync(async () => {
 		}
 	}
 
+	// Data table parameters have no url template, so resolve a link from the id by
+	// looking the table up — only link it when it actually exists for the user.
+	if (isDataTableParameter.value && (selectedMode.value === 'id' || isListMode.value)) {
+		// Use the resolved value for expressions, but only if it's a concrete id —
+		// an unresolved template (still containing `{{ }}`) can't identify a table.
+		// In list mode `valueToDisplay` holds the table name, so read the raw value.
+		const raw = props.isValueExpression
+			? props.expressionComputedValue
+			: isListMode.value && typeof props.modelValue === 'object'
+				? props.modelValue?.value
+				: valueToDisplay.value;
+		const id = typeof raw === 'string' ? raw.trim() : '';
+		if (!id || id.includes('{{') || id.includes('}}')) return null;
+		// Reuse a table the store already holds before asking the API. A failed
+		// request only means there is no link to show.
+		const table =
+			dataTableStore.dataTables.find((dataTable) => dataTable.id === id) ??
+			(await dataTableStore.fetchDataTableById(id).catch(() => null));
+		// Resolve via the router so the link honours the configured base path (N8N_PATH).
+		return table
+			? router.resolve({
+					name: DATA_TABLE_DETAILS,
+					params: { projectId: table.projectId, id: table.id },
+				}).href
+			: null;
+	}
+
 	if (currentMode.value.url) {
 		const value = props.isValueExpression ? props.expressionComputedValue : valueToDisplay.value;
-		if (typeof value === 'string') {
+		// The value is spliced into the mode's url expression template and resolved,
+		// so only build a link from a literal value, never one carrying `{{ }}`.
+		if (typeof value === 'string' && !value.includes('{{') && !value.includes('}}')) {
 			const expression = currentMode.value.url.replace(/\{\{\$value\}\}/g, value);
 			const resolved = await workflowHelpers.resolveExpression(
 				expression,
@@ -295,7 +362,7 @@ const currentRequestParams = computed(() => {
 		credentials: props.node?.credentials ?? {},
 		filter: searchFilter.value,
 		projectId: projectsStore.currentProjectId,
-		workflowId: workflowsStore.workflowId,
+		workflowId: workflowDocumentStore.value.workflowId,
 	};
 });
 
@@ -414,9 +481,10 @@ const handleAddResourceClick = async () => {
 		let resolvedUrl = redirectUrl;
 
 		if (resolvedUrl.includes('{{$projectId}}')) {
+			// Create the resource where the workflow runs.
 			const projectId =
+				workflowDocumentStore.value.homeProject?.id ??
 				projectsStore.currentProjectId ??
-				workflowDocumentStore?.value?.homeProject?.id ??
 				projectsStore.personalProject?.id ??
 				'';
 			resolvedUrl = resolvedUrl.replace(/\{\{\$projectId\}\}/g, projectId);
@@ -431,6 +499,7 @@ const handleAddResourceClick = async () => {
 	const resolvedNodeParameters = await workflowHelpers.resolveRequiredParameters(
 		props.parameter,
 		currentRequestParams.value.parameters,
+		workflowDocumentStore.value.documentId,
 		expressionLocalResolveCtx?.value ?? {},
 	);
 
@@ -543,23 +612,48 @@ watch(
 
 watch(
 	() => stringify(props.node?.credentials ?? {}),
-	(currentValue, oldValue) => {
+	async (currentValue, oldValue) => {
 		const emptyCredentials = stringify({});
 		const isUpdated =
 			oldValue !== undefined && oldValue !== emptyCredentials && currentValue !== oldValue;
 		if (
-			isUpdated &&
-			props.modelValue &&
-			isResourceLocatorValue(props.modelValue) &&
-			props.modelValue.value !== ''
+			!isUpdated ||
+			!props.modelValue ||
+			!isResourceLocatorValue(props.modelValue) ||
+			props.modelValue.value === '' ||
+			// Manual (id/url) mode: keep the user-entered value.
+			!isListMode.value
 		) {
+			return;
+		}
+
+		// Validate against the full current list: reset any stale search filter and clear the cache
+		// directly (skipping refreshList()'s "user refreshed" telemetry).
+		searchFilter.value = '';
+		cachedResponses.value = {};
+		await loadResources();
+
+		// Credentials changed again while loading — a newer run will validate the fresh results.
+		if (stringify(props.node?.credentials ?? {}) !== currentValue) return;
+
+		const selected = props.modelValue.value;
+		const match = currentQueryResults.value.find((result) => result.value === selected);
+		if (match) {
 			emit('update:modelValue', {
 				...props.modelValue,
-				cachedResultName: '',
-				cachedResultUrl: '',
-				value: '',
+				cachedResultName: match.name ?? '',
+				cachedResultUrl: match.url ?? '',
 			});
+			return;
 		}
+
+		const mayExistElsewhere = currentQueryHasMore.value || requiresSearchFilter.value;
+		emit('update:modelValue', {
+			...props.modelValue,
+			cachedResultName: '',
+			cachedResultUrl: '',
+			...(mayExistElsewhere ? {} : { value: '' }),
+		});
 	},
 );
 
@@ -567,7 +661,7 @@ onMounted(() => {
 	props.eventBus.on('refreshList', refreshList);
 	window.addEventListener('resize', setWidth);
 
-	ndvStore.$subscribe(() => {
+	ndvStore.value.$subscribe(() => {
 		// Update the width when main panel dimension change
 		setWidth();
 	});
@@ -585,7 +679,12 @@ onBeforeUnmount(() => {
 	}
 });
 
-onClickOutside(dropdownRef as Ref<VueInstance>, hideResourceDropdown);
+onClickOutside(dropdownRef as Ref<VueInstance>, (event) => {
+	if (event.target instanceof HTMLElement && dropdownRef.value?.isWithinDropdown(event.target)) {
+		return;
+	}
+	hideResourceDropdown();
+});
 
 function setWidth() {
 	if (containerRef.value) {
@@ -616,7 +715,7 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 function openResource(url: string) {
-	window.open(url, '_blank');
+	openSafeUrl(url);
 	trackEvent('User clicked resource locator link');
 }
 
@@ -628,7 +727,7 @@ function getPropertyArgument<T extends keyof INodePropertyModeTypeOptions>(
 }
 
 function openCredential(): void {
-	const node = ndvStore.activeNode;
+	const node = ndvStore.value.activeNode;
 	if (!node?.credentials) {
 		return;
 	}
@@ -690,7 +789,9 @@ function onInputChange(value: INodeParameterResourceLocator['value']): void {
 			params.cachedResultUrl = resource.url;
 		}
 	} else {
-		params.value = completeExpressionSyntax(value);
+		// A literal `{{ }}` is never a valid id or url, so a pasted expression
+		// always switches to expression mode, even when it replaces a stored value.
+		params.value = shouldConvertToExpression(value) ? '=' + value : completeExpressionSyntax(value);
 	}
 	emit('update:modelValue', params);
 }
@@ -729,7 +830,7 @@ function onModeSelected(value: string): void {
 function trackEvent(event: string, params?: { [key: string]: string }): void {
 	telemetry.track(event, {
 		instance_id: rootStore.instanceId,
-		workflow_id: workflowsStore.workflowId,
+		workflow_id: workflowDocumentStore.value.workflowId,
 		node_type: props.node?.type,
 		resource: props.node?.parameters.resource,
 		operation: props.node?.parameters.operation,
@@ -800,7 +901,7 @@ async function loadResources() {
 
 	try {
 		if (cachedResponse) {
-			const nextPageToken = cachedResponse.nextPageToken as string;
+			const nextPageToken = cachedResponse.nextPageToken;
 			if (nextPageToken) {
 				paginationToken = nextPageToken;
 				setResponse(paramsKey, { loading: true });
@@ -821,6 +922,7 @@ async function loadResources() {
 		const resolvedNodeParameters = (await workflowHelpers.resolveRequiredParameters(
 			props.parameter,
 			params.parameters,
+			workflowDocumentStore.value.documentId,
 			expressionLocalResolveCtx?.value ?? {},
 		)) as INodeParameters;
 		const loadOptionsMethod = getPropertyArgument(currentMode.value, 'searchListMethod') as string;
@@ -835,7 +937,7 @@ async function loadResources() {
 			currentNodeParameters: resolvedNodeParameters,
 			credentials: props.node.credentials,
 			projectId: projectsStore.currentProjectId,
-			workflowId: workflowsStore.workflowId,
+			workflowId: workflowDocumentStore.value.workflowId,
 		};
 
 		if (params.filter) {
@@ -1021,8 +1123,8 @@ function removeOverride() {
 	>
 		<ResourceLocatorDropdown
 			ref="dropdownRef"
-			:model-value="modelValue"
 			:show="resourceDropdownVisible"
+			:model-value="modelValue"
 			:filterable="isSearchable"
 			:filter-required="requiresSearchFilter"
 			:resources="currentQueryResults"
@@ -1036,6 +1138,7 @@ function removeOverride() {
 			:slow-load-notice="slowLoadNoticeMessage"
 			:show-slow-load-notice="showSlowLoadNotice"
 			@update:model-value="onListItemSelected"
+			@update:show="!$event && hideResourceDropdown()"
 			@filter="onSearchFilter"
 			@load-more="loadResourcesDebounced"
 			@add-resource-click="onAddResourceClicked"
@@ -1195,7 +1298,10 @@ function removeOverride() {
 									</template>
 								</N8nInput>
 								<div v-if="showOverrideButton" :class="$style.overrideButtonInline">
-									<FromAiOverrideButton @click="applyOverride" />
+									<FromAiOverrideButton
+										:size="isValueExpression || forceShowExpression ? 'medium' : 'small'"
+										@click="applyOverride"
+									/>
 								</div>
 							</div>
 						</template>
@@ -1206,7 +1312,11 @@ function removeOverride() {
 						:class="$style['parameter-issues']"
 					/>
 					<div v-else-if="urlValue" :class="$style.openResourceLink">
-						<N8nLink theme="text" @click.stop="openResource(urlValue)">
+						<N8nLink
+							theme="text"
+							data-test-id="rlc-open-resource-link"
+							@click.stop="openResource(urlValue)"
+						>
 							<N8nIcon icon="external-link" :title="getLinkAlt(valueToDisplay)" />
 						</N8nLink>
 					</div>

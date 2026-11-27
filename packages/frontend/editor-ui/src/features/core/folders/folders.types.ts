@@ -1,4 +1,4 @@
-import type { PathItem } from '@n8n/design-system/components/N8nBreadcrumbs/Breadcrumbs.vue';
+import type { PathItem } from '@n8n/design-system';
 import type { ITag } from '@n8n/rest-api-client';
 import type { ProjectSharingData } from 'n8n-workflow';
 import type { BaseResource } from '@/Interface';
@@ -24,6 +24,7 @@ export type FolderShortInfo = {
 };
 
 export type BaseFolderItem = BaseResource & {
+	agentCount?: number;
 	createdAt: string;
 	updatedAt: string;
 	workflowCount: number;

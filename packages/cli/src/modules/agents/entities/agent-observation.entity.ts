@@ -1,27 +1,35 @@
-import { JsonColumn, WithTimestampsAndStringId } from '@n8n/db';
+import type { ObservationLogMarker, ObservationLogStatus } from '@n8n/agents';
+import { WithTimestampsAndStringId } from '@n8n/db';
 import { Column, Entity, Index } from '@n8n/typeorm';
 
-export type ObservationScopeKind = 'thread' | 'resource' | 'agent';
-
 @Entity({ name: 'agents_observations' })
-@Index(['scopeKind', 'scopeId', 'kind', 'createdAt'])
-@Index(['scopeKind', 'scopeId', 'createdAt', 'id'])
+@Index(['agentId', 'observationScopeId', 'status', 'createdAt', 'id'])
+@Index(['agentId', 'observationScopeId', 'createdAt', 'id'])
+@Index(['observationScopeId'])
+@Index(['parentId'])
+@Index(['supersededBy'])
 export class AgentObservationEntity extends WithTimestampsAndStringId {
-	@Column({ type: 'varchar', length: 20 })
-	scopeKind: ObservationScopeKind;
+	@Column({ type: 'varchar', length: 36 })
+	agentId: string;
 
 	@Column({ type: 'varchar', length: 255 })
-	scopeId: string;
+	observationScopeId: string;
 
-	@Column({ type: 'varchar', length: 64 })
-	kind: string;
+	@Column({ type: 'varchar', length: 16 })
+	marker: ObservationLogMarker;
 
-	@JsonColumn()
-	payload: unknown;
+	@Column({ type: 'text' })
+	text: string;
 
-	@Column({ type: 'bigint', nullable: true })
-	durationMs: number | null;
+	@Column({ type: 'varchar', length: 36, nullable: true })
+	parentId: string | null;
 
-	@Column({ type: 'int' })
-	schemaVersion: number;
+	@Column({ type: 'int', default: 0 })
+	tokenCount: number;
+
+	@Column({ type: 'varchar', length: 16 })
+	status: ObservationLogStatus;
+
+	@Column({ type: 'varchar', length: 36, nullable: true })
+	supersededBy: string | null;
 }

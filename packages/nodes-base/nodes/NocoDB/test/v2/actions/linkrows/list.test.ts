@@ -1,14 +1,19 @@
+import { requestPath } from 'n8n-workflow';
 import type { IExecuteFunctions, INode } from 'n8n-workflow';
 
 import { execute } from '../../../../v2/actions/linkrows/list.operation';
 import { apiRequest, apiRequestAllItems } from '../../../../v2/transport';
+import type { Mock } from 'vitest';
+import type * as _importType0 from '../../../../v2/transport/index';
 
-jest.mock('../../../../v2/transport/index', () => {
-	const originalModule = jest.requireActual('../../../../v2/transport/index');
+vi.mock('../../../../v2/transport/index', async () => {
+	const originalModule = await vi.importActual<typeof _importType0>(
+		'../../../../v2/transport/index',
+	);
 	return {
 		...originalModule,
-		apiRequest: { call: jest.fn() },
-		apiRequestAllItems: { call: jest.fn() },
+		apiRequest: { call: vi.fn() },
+		apiRequestAllItems: { call: vi.fn() },
 	};
 });
 
@@ -18,14 +23,14 @@ describe('NocoDB Link Rows List Action', () => {
 
 	beforeEach(() => {
 		mockExecuteFunctions = {
-			getNodeParameter: jest.fn(),
-			getInputData: jest.fn(() => [{ json: {} }]),
-			continueOnFail: jest.fn(() => false),
+			getNodeParameter: vi.fn(),
+			getInputData: vi.fn(() => [{ json: {} }]),
+			continueOnFail: vi.fn(() => false),
 			helpers: {
-				returnJsonArray: jest.fn((data) => (Array.isArray(data) ? data : [data])),
-				constructExecutionMetaData: jest.fn((items) => items),
+				returnJsonArray: vi.fn((data) => (Array.isArray(data) ? data : [data])),
+				constructExecutionMetaData: vi.fn((items) => items),
 			},
-			getNode: jest.fn(() => mockNode),
+			getNode: vi.fn(() => mockNode),
 		} as unknown as IExecuteFunctions;
 		mockNode = {
 			parameters: {},
@@ -37,14 +42,14 @@ describe('NocoDB Link Rows List Action', () => {
 			disabled: false,
 			credentials: {},
 		};
-		(apiRequest.call as jest.Mock).mockClear();
-		(apiRequestAllItems.call as jest.Mock).mockClear();
+		(apiRequest.call as Mock).mockClear();
+		(apiRequestAllItems.call as Mock).mockClear();
 	});
 
 	describe('list', () => {
 		it('should return linked rows with minimal parameters', async () => {
 			const responseData = { records: [{ id: 'row1' }, { id: 'row2' }] };
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
 				if (name === 'linkFieldName') return 'linkField1';
@@ -54,7 +59,7 @@ describe('NocoDB Link Rows List Action', () => {
 				if (name === 'options') return {};
 				return undefined;
 			});
-			(apiRequest.call as jest.Mock).mockResolvedValue(responseData);
+			(apiRequest.call as Mock).mockResolvedValue(responseData);
 
 			const result = await execute.call(mockExecuteFunctions);
 
@@ -62,7 +67,7 @@ describe('NocoDB Link Rows List Action', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				'/api/v3/data/base1/table1/links/linkField1/record1',
+				requestPath`/api/v3/data/base1/table1/links/linkField1/record1`,
 				{},
 				{ limit: 50 },
 			);
@@ -70,7 +75,7 @@ describe('NocoDB Link Rows List Action', () => {
 
 		it('should return all linked rows when returnAll is true', async () => {
 			const responseData = [{ id: 'row1' }, { id: 'row2' }, { id: 'row3' }];
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
 				if (name === 'linkFieldName') return 'linkField1';
@@ -79,7 +84,7 @@ describe('NocoDB Link Rows List Action', () => {
 				if (name === 'options') return {};
 				return undefined;
 			});
-			(apiRequestAllItems.call as jest.Mock).mockResolvedValue(responseData);
+			(apiRequestAllItems.call as Mock).mockResolvedValue(responseData);
 
 			const result = await execute.call(mockExecuteFunctions);
 
@@ -87,7 +92,7 @@ describe('NocoDB Link Rows List Action', () => {
 			expect(apiRequestAllItems.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				'/api/v3/data/base1/table1/links/linkField1/record1',
+				requestPath`/api/v3/data/base1/table1/links/linkField1/record1`,
 				{},
 				{},
 			);
@@ -95,7 +100,7 @@ describe('NocoDB Link Rows List Action', () => {
 
 		it('should return linked rows with a specific limit', async () => {
 			const responseData = { records: [{ id: 'row1' }, { id: 'row2' }] };
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
 				if (name === 'linkFieldName') return 'linkField1';
@@ -105,7 +110,7 @@ describe('NocoDB Link Rows List Action', () => {
 				if (name === 'options') return {};
 				return undefined;
 			});
-			(apiRequest.call as jest.Mock).mockResolvedValue(responseData);
+			(apiRequest.call as Mock).mockResolvedValue(responseData);
 
 			const result = await execute.call(mockExecuteFunctions);
 
@@ -113,7 +118,7 @@ describe('NocoDB Link Rows List Action', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				'/api/v3/data/base1/table1/links/linkField1/record1',
+				requestPath`/api/v3/data/base1/table1/links/linkField1/record1`,
 				{},
 				{ limit: 2 },
 			);
@@ -121,7 +126,7 @@ describe('NocoDB Link Rows List Action', () => {
 
 		it('should return linked rows with selected fields', async () => {
 			const responseData = { records: [{ id: 'row1', name: 'test1' }] };
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
 				if (name === 'linkFieldName') return 'linkField1';
@@ -136,7 +141,7 @@ describe('NocoDB Link Rows List Action', () => {
 					};
 				return undefined;
 			});
-			(apiRequest.call as jest.Mock).mockResolvedValue(responseData);
+			(apiRequest.call as Mock).mockResolvedValue(responseData);
 
 			const result = await execute.call(mockExecuteFunctions);
 
@@ -144,7 +149,7 @@ describe('NocoDB Link Rows List Action', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				'/api/v3/data/base1/table1/links/linkField1/record1',
+				requestPath`/api/v3/data/base1/table1/links/linkField1/record1`,
 				{},
 				{ limit: 50, fields: 'name' },
 			);
@@ -152,7 +157,7 @@ describe('NocoDB Link Rows List Action', () => {
 
 		it('should return linked rows with sorting', async () => {
 			const responseData = { records: [{ id: 'row2' }, { id: 'row1' }] };
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
 				if (name === 'linkFieldName') return 'linkField1';
@@ -167,7 +172,7 @@ describe('NocoDB Link Rows List Action', () => {
 					};
 				return undefined;
 			});
-			(apiRequest.call as jest.Mock).mockResolvedValue(responseData);
+			(apiRequest.call as Mock).mockResolvedValue(responseData);
 
 			const result = await execute.call(mockExecuteFunctions);
 
@@ -175,7 +180,7 @@ describe('NocoDB Link Rows List Action', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				'/api/v3/data/base1/table1/links/linkField1/record1',
+				requestPath`/api/v3/data/base1/table1/links/linkField1/record1`,
 				{},
 				{ limit: 50, sort: JSON.stringify([{ field: 'id', direction: 'desc' }]) },
 			);
@@ -183,7 +188,7 @@ describe('NocoDB Link Rows List Action', () => {
 
 		it('should return linked rows with filter by formula', async () => {
 			const responseData = { records: [{ id: 'row1', name: 'example' }] };
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
 				if (name === 'linkFieldName') return 'linkField1';
@@ -196,7 +201,7 @@ describe('NocoDB Link Rows List Action', () => {
 					};
 				return undefined;
 			});
-			(apiRequest.call as jest.Mock).mockResolvedValue(responseData);
+			(apiRequest.call as Mock).mockResolvedValue(responseData);
 
 			const result = await execute.call(mockExecuteFunctions);
 
@@ -204,7 +209,7 @@ describe('NocoDB Link Rows List Action', () => {
 			expect(apiRequest.call).toHaveBeenCalledWith(
 				mockExecuteFunctions,
 				'GET',
-				'/api/v3/data/base1/table1/links/linkField1/record1',
+				requestPath`/api/v3/data/base1/table1/links/linkField1/record1`,
 				{},
 				{ limit: 50, where: '(name,like,example%)' },
 			);
@@ -212,7 +217,7 @@ describe('NocoDB Link Rows List Action', () => {
 
 		it('should handle API errors gracefully', async () => {
 			const errorMessage = 'NocoDB API Error: Something went wrong';
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
 				if (name === 'linkFieldName') return 'linkField1';
@@ -222,8 +227,8 @@ describe('NocoDB Link Rows List Action', () => {
 				if (name === 'options') return {};
 				return undefined;
 			});
-			(mockExecuteFunctions.continueOnFail as jest.Mock).mockReturnValue(true);
-			(apiRequest.call as jest.Mock).mockRejectedValue(new Error(errorMessage));
+			(mockExecuteFunctions.continueOnFail as Mock).mockReturnValue(true);
+			(apiRequest.call as Mock).mockRejectedValue(new Error(errorMessage));
 
 			const result = await execute.call(mockExecuteFunctions);
 
@@ -233,7 +238,7 @@ describe('NocoDB Link Rows List Action', () => {
 		it('should throw NodeApiError when continueOnFail is false', async () => {
 			const errorMessage = 'NocoDB API Error: Something went wrong';
 			const mockError = new Error(errorMessage);
-			(mockExecuteFunctions.getNodeParameter as jest.Mock).mockImplementation((name: string) => {
+			(mockExecuteFunctions.getNodeParameter as Mock).mockImplementation((name: string) => {
 				if (name === 'projectId') return 'base1';
 				if (name === 'table') return 'table1';
 				if (name === 'linkFieldName') return 'linkField1';
@@ -243,8 +248,8 @@ describe('NocoDB Link Rows List Action', () => {
 				if (name === 'options') return {};
 				return undefined;
 			});
-			(mockExecuteFunctions.continueOnFail as jest.Mock).mockReturnValue(false);
-			(apiRequest.call as jest.Mock).mockRejectedValue(mockError);
+			(mockExecuteFunctions.continueOnFail as Mock).mockReturnValue(false);
+			(apiRequest.call as Mock).mockRejectedValue(mockError);
 
 			await expect(execute.call(mockExecuteFunctions)).rejects.toThrow(errorMessage);
 		});

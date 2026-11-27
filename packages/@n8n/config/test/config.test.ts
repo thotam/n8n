@@ -1,17 +1,26 @@
 import { Container } from '@n8n/di';
-import fs from 'fs';
-import { mock } from 'jest-mock-extended';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import type { MockInstance } from 'vitest';
 
 import type { DatabaseConfig } from '../src/index';
-import { ExecutionsConfig, GlobalConfig, SSRF_DEFAULT_BLOCKED_IP_RANGES } from '../src/index';
+import {
+	AgentsConfig,
+	DEFAULT_CONTENT_SECURITY_POLICY,
+	GlobalConfig,
+	SSRF_DEFAULT_BLOCKED_IP_RANGES,
+} from '../src/index';
 
-jest.mock('fs');
-const mockFs = mock<typeof fs>();
-fs.readFileSync = mockFs.readFileSync;
+const { readFileSyncMock } = vi.hoisted(() => ({
+	readFileSyncMock: vi.fn(),
+}));
 
-const consoleWarnMock = jest.spyOn(console, 'warn').mockImplementation(() => {});
+vi.mock('node:fs', () => ({
+	readFileSync: readFileSyncMock,
+}));
+
+// `restoreMocks` restores spies before each test, so this is re-established in beforeEach.
+let consoleWarnMock: MockInstance;
 
 // Ignore the sanitize function from the GlobalConfig nested types
 type ConfigShape<T> = T extends ReadonlyArray<infer U>
@@ -31,7 +40,8 @@ type GlobalConfigShape = ConfigShape<GlobalConfig>;
 describe('GlobalConfig', () => {
 	beforeEach(() => {
 		Container.reset();
-		jest.clearAllMocks();
+		vi.clearAllMocks();
+		consoleWarnMock = vi.spyOn(console, 'warn').mockImplementation(() => {});
 	});
 
 	const originalEnv = process.env;
@@ -50,11 +60,15 @@ describe('GlobalConfig', () => {
 				samesite: 'lax',
 				secure: true,
 			},
+			oauthBrowserBinding: false,
+			oauthCimdEnabled: false,
+			oauthClientMetadataUrl: '',
 		},
 		defaultLocale: 'en',
 		hideUsagePage: false,
 		deployment: {
 			type: 'default',
+			artifact: '',
 		},
 		mfa: {
 			enabled: true,
@@ -68,10 +82,15 @@ describe('GlobalConfig', () => {
 		proxy_hops: 0,
 		ssl_key: '',
 		ssl_cert: '',
-		canvasOnly: false,
+		canvasOnly: {
+			enabled: false,
+			personalSpaceScopeDenyList: [],
+		},
 		editorBaseUrl: '',
+		webhookUrl: '',
+		agentWebhookUrl: '',
 		dataTable: {
-			maxSize: 50 * 1024 * 1024,
+			maxSize: 200 * 1024 * 1024,
 			sizeCheckCacheDuration: 5 * 1000,
 			cleanupIntervalMs: 60 * 1000,
 			fileMaxAgeMs: 2 * 60 * 1000,
@@ -91,8 +110,12 @@ describe('GlobalConfig', () => {
 				port: 5432,
 				schema: 'public',
 				connectionTimeoutMs: 20_000,
+				destroyTimeoutMs: 10_000,
 				idleTimeoutMs: 30_000,
 				statementTimeoutMs: 5 * 60 * 1000,
+				maxConnectionLifetimeMs: 60 * 60 * 1000,
+				keepAlive: true,
+				keepAliveInitialDelayMs: 10_000,
 				ssl: {
 					ca: '',
 					cert: '',
@@ -110,6 +133,12 @@ describe('GlobalConfig', () => {
 			tablePrefix: '',
 			type: 'sqlite',
 			pingIntervalSeconds: 2,
+			pingTimeoutMs: 5_000,
+			pingMaxFailuresBeforeRecovery: 3,
+			minRecoveryBackoffMs: 1_000,
+			maxRecoveryBackoffMs: 30_000,
+			connectionAcquisitionTimeoutMs: 30_000,
+			startupConnectMaxRetries: 5,
 		} as DatabaseConfig,
 		credentials: {
 			defaultName: 'My credentials',
@@ -118,6 +147,7 @@ describe('GlobalConfig', () => {
 				endpoint: '',
 				endpointAuthToken: '',
 				persistence: false,
+				showScopes: [],
 				skipTypes: [],
 			},
 		},
@@ -152,6 +182,12 @@ describe('GlobalConfig', () => {
 					'workflow-failure': '',
 					'workflow-shared': '',
 					'project-shared': '',
+					'api-key-revoked': '',
+					'mcp-client-revoked': '',
+					'email-change-requested': '',
+					'email-change-completed': '',
+					'agent-budget-alert': '',
+					'migration-findings': '',
 				},
 			},
 		},
@@ -171,21 +207,40 @@ describe('GlobalConfig', () => {
 			separator: ':',
 			files: [],
 		},
+		featureFlags: {
+			override: {},
+		},
+		activityLog: {
+			retentionDays: 0,
+			maxEntries: 1_000,
+		},
 		nodes: {
 			errorTriggerType: 'n8n-nodes-base.errorTrigger',
 			include: [],
 			exclude: ['n8n-nodes-base.executeCommand', 'n8n-nodes-base.localFileTrigger'],
 			pythonEnabled: true,
+			mergeSqlSandboxMemoryLimitMb: 64,
+			blockDeprecated: true,
 		},
 		publicApi: {
 			disabled: false,
 			path: 'api',
 			swaggerUiDisabled: false,
+			rateLimit: {
+				enabled: false,
+				globalReadLimit: 1200,
+				globalReadWindowSeconds: 60,
+				globalWriteLimit: 600,
+				globalWriteWindowSeconds: 60,
+				endpointReadLimit: 1000,
+				endpointReadWindowSeconds: 60,
+				endpointWriteLimit: 500,
+				endpointWriteWindowSeconds: 60,
+			},
 		},
 		templates: {
 			enabled: true,
 			host: 'https://api.n8n.io/api/',
-			dynamicTemplatesHost: 'https://dynamic-templates.n8n.io/templates',
 		},
 		versionNotifications: {
 			enabled: true,
@@ -202,10 +257,19 @@ describe('GlobalConfig', () => {
 			defaultName: 'My workflow',
 			callerPolicyDefaultOption: 'workflowsFromSameOwner',
 			activationBatchSize: 1,
-			indexingEnabled: true,
 			indexingBatchSize: 10,
-			useWorkflowPublicationService: false,
+			useWorkflowPublicationService: true,
+			publicationOutboxPollIntervalMs: 15_000,
+			publicationOutboxLeaseSeconds: 120,
+			workflowPublicationConcurrency: 5,
+			publicationOutboxCompletedRetentionHours: 1,
+			publicationOutboxFailedRetentionHours: 168,
+			publicationOutboxCleanupIntervalSeconds: 1200,
+			publicationOutboxCleanupBatchSize: 1000,
+			publicationReconcileIntervalSeconds: 10,
 			autosaveDisabled: false,
+			groupsWithTriggersEnabled: false,
+			groupsWithManyBoundariesEnabled: false,
 		},
 		endpoints: {
 			metrics: {
@@ -225,17 +289,37 @@ describe('GlobalConfig', () => {
 				includeQueueMetrics: false,
 				includeWorkflowExecutionDuration: true,
 				queueMetricsInterval: 20,
+				includeSchedulerMetrics: false,
+				schedulerMetricsInterval: 20,
+				includePollTriggerMetrics: false,
+				includeSystemTaskMetrics: false,
+				includeAgentMetrics: false,
 				activeWorkflowCountInterval: 60,
 				includeWorkflowStatistics: false,
 				workflowStatisticsInterval: 300,
+				includeExecutionDataMetrics: false,
+				includeSsrfMetrics: false,
+				includeEncryptionMetrics: false,
+				includeDnsCacheMetrics: false,
+				includeWebhookMetrics: false,
+				includeFormMetrics: false,
+				includeWorkflowInfoMetrics: false,
+				workflowInfoMetricInterval: 60,
+				includeDbPoolMetrics: false,
+				includeWorkflowPublicationMetrics: false,
+				includeMcpPostSaveMetrics: false,
+				workflowPublicationMetricInterval: 60,
+				includeExecutionLedgerMetrics: false,
 			},
 			additionalNonUIRoutes: '',
+			agentWebhook: 'agent-webhook',
 			disableProductionWebhooksOnMainProcess: false,
 			disableUi: false,
 			form: 'form',
 			formTest: 'form-test',
 			formWaiting: 'form-waiting',
 			mcp: 'mcp',
+			mcpAppsEnabled: false,
 			mcpBuilderEnabled: true,
 			mcpMaxRegisteredClients: 5000,
 			mcpTest: 'mcp-test',
@@ -246,6 +330,7 @@ describe('GlobalConfig', () => {
 			webhookTest: 'webhook-test',
 			webhookWaiting: 'webhook-waiting',
 			health: '/healthz',
+			frontendHealthCheckTimeoutMs: 5000,
 		},
 		cache: {
 			backend: 'auto',
@@ -261,39 +346,79 @@ describe('GlobalConfig', () => {
 		chatTrigger: {
 			disablePublicChat: false,
 		},
+		compressionNode: {
+			maxDecompressedSize: 2 * 1024 * 1024 * 1024,
+			maxZipEntries: 5000,
+		},
+		mcpClient: {
+			cacheTtl: 300000,
+			cacheMaxSize: 500,
+		},
+		mcpServer: {
+			sessionIdleTtl: 900000,
+			sessionSweepInterval: 300000,
+		},
 		chatHub: {
 			executionContextTtl: 3600,
 			maxBufferedChunks: 1000,
 			streamStateTtl: 300,
 		},
 		instanceAi: {
-			model: 'anthropic/claude-sonnet-4-6',
+			workflowSuggestionsEnabled: false,
+			assistantAgentEnabled: false,
+			model: 'anthropic/claude-opus-5-5',
 			modelUrl: '',
+			modelRequestLabels: false,
 			modelApiKey: '',
-			maxContextWindowTokens: 500_000,
+			vertexProjectId: '',
+			vertexLocation: '',
+			vertexServiceAccountJson: '',
 			mcpServers: '',
-			localGatewayDisabled: false,
-			browserMcp: false,
-			lastMessages: 20,
-			embedderModel: '',
-			semanticRecallTopK: 5,
-			subAgentMaxSteps: 100,
+			browserUseEnabled: true,
+			cloudBrowserEnabled: true,
+			observerMessageTokens: 30_000,
+			utilityModel: '',
+			approvalJudgeModel: '',
+			midRunObservation: true,
 			sandboxEnabled: false,
-			sandboxProvider: 'daytona',
+			sandboxProvider: 'n8n-sandbox',
 			sandboxImage: 'daytonaio/sandbox:0.5.0',
+			sandboxSnapshot: '',
 			daytonaApiUrl: '',
 			daytonaApiKey: '',
 			n8nSandboxServiceUrl: '',
 			n8nSandboxServiceApiKey: '',
 			sandboxTimeout: 300000,
-			builderSandboxTtlMs: 600_000,
+			sandboxNamePrefix: '',
+			sandboxEphemeral: false,
+			evalInstance: false,
+			sandboxAutoStopMinutes: 15,
+			sandboxAutoArchiveMinutes: 60,
+			sandboxAutoDeleteMinutes: 10_080,
+			daytonaTokenRefreshSkewMs: 300_000,
+			builderSandboxTtlMs: 900_000,
 			braveSearchApiKey: '',
 			searxngUrl: '',
-			gatewayApiKey: '',
-			threadTtlDays: 90,
-			snapshotPruneInterval: 3_600_000,
+			threadTtlDays: 30,
+			pruneInterval: 3_600_000,
 			snapshotRetention: 86_400_000,
-			confirmationTimeout: 600_000,
+			checkpointGcRetention: 604_800_000,
+			confirmationTimeout: 86_400_000,
+			runDebugEnabled: false,
+			thinkingEnabled: true,
+			canvasNodeContextEnabled: false,
+			promptVersion: '',
+			nodeUsageEnabled: false,
+			folderExplorationEnabled: false,
+			maxConcurrentRuns: -1,
+			maxConcurrentRunsPerUser: -1,
+			maxConcurrentSubAgents: -1,
+			observationMaxWindowTokens: 200_000,
+			observationLogPlacement: 'message',
+			observationFailurePolicy: 'retry',
+			observerMaxBatches: 5,
+			reflectionMode: 'background',
+			historyRecall: true,
 		},
 		queue: {
 			health: {
@@ -311,6 +436,10 @@ describe('GlobalConfig', () => {
 					username: '',
 					clusterNodes: '',
 					tls: false,
+					tlsConfig: {
+						serverName: '',
+						rejectUnauthorized: true,
+					},
 					dualStack: false,
 					slotsRefreshInterval: 5_000,
 					slotsRefreshTimeout: 1_000,
@@ -328,6 +457,11 @@ describe('GlobalConfig', () => {
 					stalledInterval: 30_000,
 				},
 			},
+			workerPool: {
+				enabled: false,
+				name: '',
+			},
+			suspendExecutionsOnShutdown: false,
 		},
 		taskRunners: {
 			mode: 'internal',
@@ -340,18 +474,31 @@ describe('GlobalConfig', () => {
 			maxConcurrency: 10,
 			taskTimeout: 300,
 			taskRequestTimeout: 60,
+			taskAcceptTimeout: 2,
 			heartbeatInterval: 30,
 			grantTokenTtl: 30,
 			insecureMode: false,
+		},
+		codeExecution: {
+			backend: 'task-runners',
+			sandbox: {
+				url: '',
+				apiKey: '',
+				scope: 'execution',
+			},
 		},
 		sentry: {
 			backendDsn: '',
 			frontendDsn: '',
 			environment: '',
 			deploymentName: '',
-			profilesSampleRate: 0,
+			profilingEnabled: false,
 			tracesSampleRate: 0,
+			tracesSlowSpanThresholdMs: 1000,
+			webhookTracesSampleRate: 0.05,
+			eventLoopBlockDetectionEnabled: false,
 			eventLoopBlockThreshold: 500,
+			eventLoopBlockMaxEventsPerHour: 5,
 		},
 		logging: {
 			level: 'info',
@@ -371,10 +518,52 @@ describe('GlobalConfig', () => {
 			enabled: false,
 			ttl: 10,
 			interval: 3,
-			newLeaderElection: false,
+		},
+		scheduler: {
+			enabled: true,
+			materializationWindowSeconds: 60,
+			materializationIntervalSeconds: 10,
+			materializationTimeoutSeconds: 60,
+			executorIntervalSeconds: 5,
+			executorTimeoutSeconds: 60,
+			claimBatchSize: 100,
+			reaperIntervalSeconds: 30,
+			reaperBatchSize: 100,
+			reaperTimeoutSeconds: 60,
+			leaseDurationSeconds: 60,
+			retentionSeconds: 86400,
+			failedRetentionSeconds: 604800,
+			retentionIntervalSeconds: 3600,
+			retentionTimeoutSeconds: 300,
+			jitterRatio: 0.1,
+			maxConcurrentPasses: 10,
+			triggerNodeMode: 'new',
+			enabledForPollTriggers: true,
+			pollTimeoutSeconds: 45,
+			maxAttempts: 5,
+			taskTimeoutSeconds: 300,
+			misfireGraceSeconds: 60,
+			durableCursorsEnabled: true,
+			enabledForSystemTasks: false,
+			enabledForAgentTasks: false,
+			ownerReconciliationEnabled: true,
+			ownerReconciliationIntervalSeconds: 900,
+			ownerReconciliationTimeoutSeconds: 300,
+			ownerReconciliationBatchSize: 500,
+			ownerQuarantineGraceSeconds: 86400,
+			ownerSettleSeconds: 300,
+		},
+		leases: {
+			leaseSeconds: 20,
+			renewSeconds: 5,
+			marginSeconds: 5,
 		},
 		evaluation: {
-			parallelExecutionEnabled: false,
+			collectionsEnabled: false,
+			configEvalsEnabled: false,
+			agentEvalsEnabled: false,
+			forceAgentWorthTesting: false,
+			agentEvalsRunTimeoutMinutes: 60,
 		},
 		generic: {
 			timezone: 'America/New_York',
@@ -392,17 +581,20 @@ describe('GlobalConfig', () => {
 		security: {
 			restrictFileAccessTo: '~/.n8n-files',
 			blockFileAccessToN8nFiles: true,
-			blockFilePatterns: '^(.*\\/)*\\.git(\\/.*)*$',
+			blockFilePatterns: '(?:^|/)\\.git(?:/|$)',
 			daysAbandonedWorkflow: 90,
-			contentSecurityPolicy: '{}',
-			contentSecurityPolicyReportOnly: false,
-			crossOriginOpenerPolicy: 'same-origin',
+			contentSecurityPolicy: undefined,
+			contentSecurityPolicyReportOnly: DEFAULT_CONTENT_SECURITY_POLICY,
+			crossOriginOpenerPolicy: 'same-origin-allow-popups',
 			disableWebhookHtmlSandboxing: false,
 			disableFormHtmlSandboxing: false,
 			disableBareRepos: true,
 			awsSystemCredentialsAccess: false,
+			awsSystemCredentialsSdkSources: 'all',
+			azureStorageCustomEndpoints: false,
 			enableGitNodeHooks: false,
 			enableGitNodeAllConfigKeys: false,
+			postMessageAllowedOrigins: '',
 		},
 		executions: {
 			mode: 'regular',
@@ -424,15 +616,31 @@ describe('GlobalConfig', () => {
 				interval: 180,
 				batchSize: 100,
 			},
+			queueRetention: {
+				keepLastCompleted: 0,
+				keepLastFailed: 0,
+			},
 			recovery: {
 				maxLastExecutions: 3,
 				workflowDeactivationEnabled: false,
+				maxResumeAttempts: 2,
 			},
 			saveDataOnError: 'all',
 			saveDataOnSuccess: 'all',
 			saveExecutionProgress: false,
 			saveDataManualExecutions: true,
-			scheduledExecutionDeduplicationEnabled: false,
+			maxDisplaySize: 100 * 1024 * 1024,
+			webhookResponseRelaySizeMaxMiB: 64,
+			webhookResponseRelayOffloadEnabled: false,
+			preExecuteErrorCreatesExecution: false,
+		},
+		memoryGuard: {
+			enabled: false,
+			holdLevel: 0.8,
+			resumeLevel: 0.75,
+			stopLevel: 0.85,
+			criticalLevel: 0.95,
+			stopsToUnpublish: 3,
 		},
 		diagnostics: {
 			enabled: true,
@@ -446,8 +654,14 @@ describe('GlobalConfig', () => {
 		aiAssistant: {
 			baseUrl: '',
 		},
+		aiGateway: {
+			enabled: true,
+		},
 		aiBuilder: {
 			apiKey: '',
+		},
+		collaboration: {
+			crdt: 'off',
 		},
 		tags: {
 			disabled: false,
@@ -483,11 +697,16 @@ describe('GlobalConfig', () => {
 			blockedIpRanges: [...SSRF_DEFAULT_BLOCKED_IP_RANGES],
 			allowedIpRanges: [],
 			allowedHostnames: [],
+			blockedHostnames: [],
 			dnsCacheMaxSize: 1024 * 1024,
 		},
 		httpRequest: {
 			enforceGlobalUserAgent: false,
 			globalUserAgentValue: '',
+			responseBodyReadTimeout: 300000,
+		},
+		outboundProxy: {
+			mode: 'all',
 		},
 		redis: {
 			prefix: 'n8n',
@@ -498,6 +717,7 @@ describe('GlobalConfig', () => {
 			enabled: false,
 			timeout: 3600000,
 			allowSendingParameterValues: true,
+			maxAgentPassthroughBinarySizeBytes: 50 * 1024 * 1024,
 		},
 		workflowHistoryCompaction: {
 			batchDelayMs: 1_000,
@@ -506,18 +726,23 @@ describe('GlobalConfig', () => {
 			optimizingTimeWindowHours: 2,
 			trimmingMinimumAgeDays: 6,
 			trimmingTimeWindowDays: 2,
-			trimOnStartUp: false,
 		},
 		expressionEngine: {
-			engine: 'legacy',
+			engine: 'vm',
+			frontendEngine: 'legacy',
 			poolSize: 1,
 			maxCodeCacheSize: 1024,
 			bridgeTimeout: 5000,
 			bridgeMemoryLimit: 128,
 			observabilityEnabled: true,
-			tracesEnabled: true,
+			tracesEnabled: false,
 			slowEvaluationThresholdMs: 50,
 			tracesSampleRate: 0.0,
+			allowWebhookIsolateSkip: true,
+			lazyAcquire: false,
+			compileCache: false,
+			nativeEvaluation: false,
+			nativeEvaluationVerifySample: 0,
 		},
 		instanceSettingsLoader: {
 			ownerManagedByEnv: false,
@@ -532,11 +757,15 @@ describe('GlobalConfig', () => {
 			oidcLoginEnabled: false,
 			oidcPrompt: 'select_account',
 			oidcAcrValues: '',
+			oidcAdditionalScopes: '',
+			oidcRpInitiatedLogoutEnabled: false,
 			ssoUserRoleProvisioning: 'disabled',
 			securityPolicyManagedByEnv: false,
 			mfaEnforcedEnabled: false,
 			personalSpacePublishingEnabled: true,
 			personalSpaceSharingEnabled: true,
+			workflowReviewsEnabled: false,
+			workflowReviewsAlwaysRequired: false,
 			samlMetadata: '',
 			samlMetadataUrl: '',
 			samlLoginEnabled: false,
@@ -544,12 +773,37 @@ describe('GlobalConfig', () => {
 			logStreamingDestinations: '',
 			mcpManagedByEnv: false,
 			mcpAccessEnabled: false,
+			skillSyncManagedByEnv: false,
+			skillSyncEnabled: false,
+			preferencesManagedByEnv: false,
+			preferencesEnabled: false,
 			communityPackagesManagedByEnv: false,
 			communityPackages: '',
 		},
 		agents: {
+			planToolsEnabled: false,
 			checkpointTtlSeconds: 345600,
+			tracingEnabled: true,
+			tracingRecordInputs: true,
+			tracingRecordOutputs: true,
 			modules: [],
+			humanReviewEnabled: false,
+			backgroundTasksEnabled: false,
+			serviceAccountsEnabled: false,
+			sandboxEnabled: false,
+			sandboxImage: 'daytonaio/sandbox:0.5.0',
+			sandboxSnapshot: 'daytonaio/sandbox:0.8.0',
+			sandboxTimeout: 300000,
+			sandboxEphemeral: false,
+			sandboxEgressPolicy: 'opt-in',
+			maxGeneratedFileSizeMb: 50,
+			maxGeneratedFileCount: 100,
+			maxGeneratedTotalMb: 500,
+			maxTotalMb: 1536,
+			maxImportMb: 200,
+			channelReconcileIntervalSeconds: 60,
+			webhookChannelRateLimit: 300,
+			whatsAppAllowTemporaryToken: false,
 		},
 	} satisfies GlobalConfigShape;
 
@@ -560,7 +814,73 @@ describe('GlobalConfig', () => {
 		// which `toEqual` and `toBe` does not do.
 		expect(defaultConfig).toMatchObject(config);
 		expect(config).toMatchObject(defaultConfig);
-		expect(mockFs.readFileSync).not.toHaveBeenCalled();
+		expect(readFileSyncMock).not.toHaveBeenCalled();
+	});
+
+	it('should parse N8N_AGENTS_TRACING_ENABLED from env variables', () => {
+		process.env = {
+			N8N_AGENTS_TRACING_ENABLED: 'false',
+		};
+		const config = Container.get(GlobalConfig);
+
+		expect(config.agents.tracingEnabled).toBe(false);
+	});
+
+	it('should parse N8N_POLLER_DURABLE_CURSORS_ENABLED from env variables', () => {
+		process.env = {
+			N8N_POLLER_DURABLE_CURSORS_ENABLED: 'false',
+		};
+		const config = Container.get(GlobalConfig);
+
+		expect(config.scheduler.durableCursorsEnabled).toBe(false);
+	});
+
+	it('should parse N8N_AGENTS_TRACING_RECORD_INPUTS from env variables', () => {
+		process.env = {
+			N8N_AGENTS_TRACING_RECORD_INPUTS: 'false',
+		};
+		const config = Container.get(GlobalConfig);
+
+		expect(config.agents.tracingRecordInputs).toBe(false);
+	});
+
+	it('should parse N8N_AGENTS_TRACING_RECORD_OUTPUTS from env variables', () => {
+		process.env = {
+			N8N_AGENTS_TRACING_RECORD_OUTPUTS: 'false',
+		};
+		const config = Container.get(GlobalConfig);
+
+		expect(config.agents.tracingRecordOutputs).toBe(false);
+	});
+
+	it('should parse N8N_AGENTS_AI_SANDBOX_SNAPSHOT from env variables', () => {
+		process.env = {
+			N8N_AGENTS_AI_SANDBOX_SNAPSHOT: 'n8n/agent-knowledge:1.2.3',
+		};
+		const config = Container.get(GlobalConfig);
+
+		expect(config.agents.sandboxSnapshot).toBe('n8n/agent-knowledge:1.2.3');
+	});
+
+	it.each([
+		['true', true],
+		['false', false],
+	])('should parse workflow suggestions enabled=%s', (value, expected) => {
+		process.env = { N8N_INSTANCE_AI_WORKFLOW_SUGGESTIONS_ENABLED: value };
+
+		expect(Container.get(GlobalConfig).instanceAi.workflowSuggestionsEnabled).toBe(expected);
+	});
+
+	it('should parse N8N_MANAGED_OAUTH_SHOW_SCOPES from env variables', () => {
+		process.env = {
+			N8N_MANAGED_OAUTH_SHOW_SCOPES: 'googleOAuth2Api,microsoftOAuth2Api',
+		};
+		const config = Container.get(GlobalConfig);
+
+		expect(config.credentials.overwrite.showScopes).toEqual([
+			'googleOAuth2Api',
+			'microsoftOAuth2Api',
+		]);
 	});
 
 	it('should use values from env variables when defined', () => {
@@ -579,9 +899,15 @@ describe('GlobalConfig', () => {
 			N8N_PASSWORD_MIN_LENGTH: '12',
 			N8N_ENFORCE_GLOBAL_USER_AGENT: 'true',
 			N8N_GLOBAL_USER_AGENT_VALUE: 'AcmeCorp/1.0',
+			N8N_AGENTS_AI_SANDBOX_EPHEMERAL: 'true',
+			N8N_AGENTS_AI_SANDBOX_SNAPSHOT: 'n8n/agent-knowledge:1.2.3',
+			N8N_WORKFLOW_REVIEWS_ENABLED: 'true',
+			N8N_WORKFLOW_REVIEWS_ALWAYS_REQUIRED: 'true',
 		};
 		const config = Container.get(GlobalConfig);
 
+		// structuredClone omits prototype getters.
+		const { humanReviewEnabled: _humanReviewEnabled, ...agentDefaults } = defaultConfig.agents;
 		expect(structuredClone(config)).toEqual({
 			...defaultConfig,
 			database: {
@@ -596,6 +922,12 @@ describe('GlobalConfig', () => {
 				tablePrefix: 'test_',
 				type: 'sqlite',
 				pingIntervalSeconds: 2,
+				pingTimeoutMs: 5_000,
+				pingMaxFailuresBeforeRecovery: 3,
+				minRecoveryBackoffMs: 1_000,
+				maxRecoveryBackoffMs: 30_000,
+				connectionAcquisitionTimeoutMs: 30_000,
+				startupConnectMaxRetries: 5,
 			},
 			endpoints: {
 				...defaultConfig.endpoints,
@@ -625,9 +957,20 @@ describe('GlobalConfig', () => {
 			httpRequest: {
 				enforceGlobalUserAgent: true,
 				globalUserAgentValue: 'AcmeCorp/1.0',
+				responseBodyReadTimeout: 300000,
+			},
+			agents: {
+				...agentDefaults,
+				sandboxEphemeral: true,
+				sandboxSnapshot: 'n8n/agent-knowledge:1.2.3',
+			},
+			instanceSettingsLoader: {
+				...defaultConfig.instanceSettingsLoader,
+				workflowReviewsEnabled: true,
+				workflowReviewsAlwaysRequired: true,
 			},
 		});
-		expect(mockFs.readFileSync).not.toHaveBeenCalled();
+		expect(readFileSyncMock).not.toHaveBeenCalled();
 	});
 
 	it('should read values from files using _FILE env variables', () => {
@@ -635,7 +978,7 @@ describe('GlobalConfig', () => {
 		process.env = {
 			DB_POSTGRESDB_PASSWORD_FILE: passwordFile,
 		};
-		mockFs.readFileSync.calledWith(passwordFile, 'utf8').mockReturnValueOnce('password-from-file');
+		readFileSyncMock.mockReturnValueOnce('password-from-file');
 
 		const config = Container.get(GlobalConfig);
 		const expected = {
@@ -652,7 +995,7 @@ describe('GlobalConfig', () => {
 		// which `toEqual` and `toBe` does not do.
 		expect(config).toMatchObject(expected);
 		expect(expected).toMatchObject(config);
-		expect(mockFs.readFileSync).toHaveBeenCalled();
+		expect(readFileSyncMock).toHaveBeenCalled();
 	});
 
 	it('should warn when _FILE env variable value contains whitespace', () => {
@@ -660,15 +1003,13 @@ describe('GlobalConfig', () => {
 		process.env = {
 			DB_POSTGRESDB_PASSWORD_FILE: passwordFile,
 		};
-		mockFs.readFileSync
-			.calledWith(passwordFile, 'utf8')
-			.mockReturnValueOnce('password-from-file\n');
+		readFileSyncMock.mockReturnValueOnce('password-from-file\n');
 
 		const config = Container.get(GlobalConfig);
 		expect(config.database.postgresdb.password).toBe('password-from-file');
 		expect(consoleWarnMock).toHaveBeenCalledWith(
 			expect.stringContaining(
-				'DB_POSTGRESDB_PASSWORD_FILE contains leading or trailing whitespace',
+				'DB_POSTGRESDB_PASSWORD_FILE contained leading or trailing whitespace',
 			),
 		);
 	});
@@ -682,6 +1023,250 @@ describe('GlobalConfig', () => {
 		expect(consoleWarnMock).toHaveBeenCalledWith(
 			'Invalid number value for DB_LOGGING_MAX_EXECUTION_TIME: abcd',
 		);
+	});
+
+	describe('memory guard config', () => {
+		it('should read the levels and the stops to unpublish from env variables', () => {
+			process.env = {
+				N8N_MEMORY_GUARD_RESUME_LEVEL: '0.6',
+				N8N_MEMORY_GUARD_HOLD_LEVEL: '0.7',
+				N8N_MEMORY_GUARD_STOP_LEVEL: '0.8',
+				N8N_MEMORY_GUARD_CRITICAL_LEVEL: '0.9',
+				N8N_MEMORY_GUARD_STOPS_TO_UNPUBLISH: '0',
+			};
+			const { memoryGuard } = Container.get(GlobalConfig);
+			expect(memoryGuard).toMatchObject({
+				resumeLevel: 0.6,
+				holdLevel: 0.7,
+				stopLevel: 0.8,
+				criticalLevel: 0.9,
+				stopsToUnpublish: 0,
+			});
+		});
+
+		it('should fall back to the default levels when the levels do not increase', () => {
+			process.env = { N8N_MEMORY_GUARD_HOLD_LEVEL: '0.9' };
+			const { memoryGuard } = Container.get(GlobalConfig);
+			expect(memoryGuard).toMatchObject({
+				resumeLevel: 0.75,
+				holdLevel: 0.8,
+				stopLevel: 0.85,
+				criticalLevel: 0.95,
+			});
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('Memory guard levels must increase'),
+			);
+		});
+
+		it('should reject a level above 1 and fall back to its default', () => {
+			process.env = { N8N_MEMORY_GUARD_CRITICAL_LEVEL: '95' };
+			const { memoryGuard } = Container.get(GlobalConfig);
+			expect(memoryGuard.criticalLevel).toBe(0.95);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('N8N_MEMORY_GUARD_CRITICAL_LEVEL'),
+			);
+		});
+	});
+
+	describe('database recovery config validation', () => {
+		it('should reject DB_PING_MAX_FAILURES_BEFORE_RECOVERY below 1 and fall back to the default', () => {
+			process.env = { DB_PING_MAX_FAILURES_BEFORE_RECOVERY: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.database.pingMaxFailuresBeforeRecovery).toBe(3);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('DB_PING_MAX_FAILURES_BEFORE_RECOVERY'),
+			);
+		});
+
+		it('should reject an empty DB_PING_MAX_FAILURES_BEFORE_RECOVERY (coerces to 0, not NaN)', () => {
+			process.env = { DB_PING_MAX_FAILURES_BEFORE_RECOVERY: '' };
+			const config = Container.get(GlobalConfig);
+			expect(config.database.pingMaxFailuresBeforeRecovery).toBe(3);
+		});
+
+		it('should reject DB_RECOVERY_BACKOFF_MIN_MS of 0 and fall back to the default', () => {
+			process.env = { DB_RECOVERY_BACKOFF_MIN_MS: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.database.minRecoveryBackoffMs).toBe(1000);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('DB_RECOVERY_BACKOFF_MIN_MS'),
+			);
+		});
+
+		it('should reject a negative DB_RECOVERY_BACKOFF_MAX_MS and fall back to the default', () => {
+			process.env = { DB_RECOVERY_BACKOFF_MAX_MS: '-5' };
+			const config = Container.get(GlobalConfig);
+			expect(config.database.maxRecoveryBackoffMs).toBe(30000);
+		});
+
+		it('should accept 0 for DB_CONNECTION_ACQUISITION_TIMEOUT_MS (wait indefinitely)', () => {
+			process.env = { DB_CONNECTION_ACQUISITION_TIMEOUT_MS: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.database.connectionAcquisitionTimeoutMs).toBe(0);
+		});
+
+		it('should reject a negative DB_CONNECTION_ACQUISITION_TIMEOUT_MS and fall back to the default', () => {
+			process.env = { DB_CONNECTION_ACQUISITION_TIMEOUT_MS: '-1' };
+			const config = Container.get(GlobalConfig);
+			expect(config.database.connectionAcquisitionTimeoutMs).toBe(30000);
+		});
+
+		it('should accept valid recovery overrides', () => {
+			process.env = {
+				DB_PING_MAX_FAILURES_BEFORE_RECOVERY: '5',
+				DB_RECOVERY_BACKOFF_MIN_MS: '500',
+				DB_RECOVERY_BACKOFF_MAX_MS: '60000',
+				DB_CONNECTION_ACQUISITION_TIMEOUT_MS: '10000',
+			};
+			const config = Container.get(GlobalConfig);
+			expect(config.database.pingMaxFailuresBeforeRecovery).toBe(5);
+			expect(config.database.minRecoveryBackoffMs).toBe(500);
+			expect(config.database.maxRecoveryBackoffMs).toBe(60000);
+			expect(config.database.connectionAcquisitionTimeoutMs).toBe(10000);
+		});
+	});
+
+	describe('public API rate limit config', () => {
+		it('should read the rate limit settings from env variables', () => {
+			process.env = {
+				N8N_PUBLIC_API_RATE_LIMIT_ENABLED: 'true',
+				N8N_PUBLIC_API_RATE_LIMIT_GLOBAL_READ_LIMIT: '100',
+				N8N_PUBLIC_API_RATE_LIMIT_GLOBAL_READ_WINDOW_SECONDS: '10',
+				N8N_PUBLIC_API_RATE_LIMIT_GLOBAL_WRITE_LIMIT: '50',
+				N8N_PUBLIC_API_RATE_LIMIT_GLOBAL_WRITE_WINDOW_SECONDS: '20',
+				N8N_PUBLIC_API_RATE_LIMIT_ENDPOINT_READ_LIMIT: '30',
+				N8N_PUBLIC_API_RATE_LIMIT_ENDPOINT_READ_WINDOW_SECONDS: '30',
+				N8N_PUBLIC_API_RATE_LIMIT_ENDPOINT_WRITE_LIMIT: '10',
+				N8N_PUBLIC_API_RATE_LIMIT_ENDPOINT_WRITE_WINDOW_SECONDS: '40',
+			};
+			const config = Container.get(GlobalConfig);
+			expect(config.publicApi.rateLimit).toEqual({
+				enabled: true,
+				globalReadLimit: 100,
+				globalReadWindowSeconds: 10,
+				globalWriteLimit: 50,
+				globalWriteWindowSeconds: 20,
+				endpointReadLimit: 30,
+				endpointReadWindowSeconds: 30,
+				endpointWriteLimit: 10,
+				endpointWriteWindowSeconds: 40,
+			});
+		});
+
+		it('should accept a limit of 0', () => {
+			process.env = { N8N_PUBLIC_API_RATE_LIMIT_ENDPOINT_READ_LIMIT: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.publicApi.rateLimit.endpointReadLimit).toBe(0);
+		});
+
+		it.each(['-1', '1.5', 'abc'])(
+			'should reject a limit of %s and fall back to the default',
+			(value) => {
+				process.env = { N8N_PUBLIC_API_RATE_LIMIT_GLOBAL_WRITE_LIMIT: value };
+				const config = Container.get(GlobalConfig);
+				expect(config.publicApi.rateLimit.globalWriteLimit).toBe(600);
+				expect(consoleWarnMock).toHaveBeenCalledWith(
+					expect.stringContaining('N8N_PUBLIC_API_RATE_LIMIT_GLOBAL_WRITE_LIMIT'),
+				);
+			},
+		);
+
+		it.each(['0', '-1', '1.5'])(
+			'should reject a window of %s and fall back to the default',
+			(value) => {
+				process.env = { N8N_PUBLIC_API_RATE_LIMIT_ENDPOINT_WRITE_WINDOW_SECONDS: value };
+				const config = Container.get(GlobalConfig);
+				expect(config.publicApi.rateLimit.endpointWriteWindowSeconds).toBe(60);
+				expect(consoleWarnMock).toHaveBeenCalledWith(
+					expect.stringContaining('N8N_PUBLIC_API_RATE_LIMIT_ENDPOINT_WRITE_WINDOW_SECONDS'),
+				);
+			},
+		);
+	});
+
+	describe('data table cleanup interval config validation', () => {
+		it('should accept a positive N8N_DATA_TABLES_CLEANUP_INTERVAL_MS', () => {
+			process.env = { N8N_DATA_TABLES_CLEANUP_INTERVAL_MS: '30000' };
+			const config = Container.get(GlobalConfig);
+			expect(config.dataTable.cleanupIntervalMs).toBe(30000);
+		});
+
+		it.each(['0', '-5', '1500.5'])(
+			'should reject a data table cleanup interval of %s and fall back to the default',
+			(value) => {
+				process.env = { N8N_DATA_TABLES_CLEANUP_INTERVAL_MS: value };
+				const config = Container.get(GlobalConfig);
+				expect(config.dataTable.cleanupIntervalMs).toBe(60000);
+				expect(consoleWarnMock).toHaveBeenCalledWith(
+					expect.stringContaining('N8N_DATA_TABLES_CLEANUP_INTERVAL_MS'),
+				);
+			},
+		);
+	});
+
+	describe('workflow publication outbox cleanup config validation', () => {
+		it('should reject a cleanup interval of 0 and fall back to the default', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_OUTBOX_CLEANUP_INTERVAL_SECONDS: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.publicationOutboxCleanupIntervalSeconds).toBe(1200);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('N8N_WORKFLOW_PUBLICATION_OUTBOX_CLEANUP_INTERVAL_SECONDS'),
+			);
+		});
+
+		it('should accept a positive cleanup interval', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_OUTBOX_CLEANUP_INTERVAL_SECONDS: '60' };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.publicationOutboxCleanupIntervalSeconds).toBe(60);
+		});
+
+		it('should reject a cleanup batch size of 0 and fall back to the default', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_OUTBOX_CLEANUP_BATCH_SIZE: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.publicationOutboxCleanupBatchSize).toBe(1000);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('N8N_WORKFLOW_PUBLICATION_OUTBOX_CLEANUP_BATCH_SIZE'),
+			);
+		});
+
+		it('should accept a positive cleanup batch size', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_OUTBOX_CLEANUP_BATCH_SIZE: '50' };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.publicationOutboxCleanupBatchSize).toBe(50);
+		});
+
+		it('should reject a consumer concurrency of 0 and fall back to the default', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_CONCURRENCY: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.workflowPublicationConcurrency).toBe(5);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('N8N_WORKFLOW_PUBLICATION_CONCURRENCY'),
+			);
+		});
+
+		it('should accept a positive consumer concurrency', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_CONCURRENCY: '3' };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.workflowPublicationConcurrency).toBe(3);
+		});
+
+		it('should reject an outbox lease above one day and fall back to the default', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_OUTBOX_LEASE_SECONDS: `${100 * 24 * 60 * 60}` };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.publicationOutboxLeaseSeconds).toBe(120);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('N8N_WORKFLOW_PUBLICATION_OUTBOX_LEASE_SECONDS'),
+			);
+		});
+
+		it('should reject an outbox lease of 0 and fall back to the default', () => {
+			process.env = { N8N_WORKFLOW_PUBLICATION_OUTBOX_LEASE_SECONDS: '0' };
+			const config = Container.get(GlobalConfig);
+			expect(config.workflows.publicationOutboxLeaseSeconds).toBe(120);
+			expect(consoleWarnMock).toHaveBeenCalledWith(
+				expect.stringContaining('N8N_WORKFLOW_PUBLICATION_OUTBOX_LEASE_SECONDS'),
+			);
+		});
 	});
 
 	it('should clamp password min length to valid range', () => {
@@ -716,11 +1301,11 @@ describe('GlobalConfig', () => {
 
 		it('should validate crossOriginOpenerPolicy enum values', () => {
 			process.env = {
-				N8N_CROSS_ORIGIN_OPENER_POLICY: 'same-origin-allow-popups',
+				N8N_CROSS_ORIGIN_OPENER_POLICY: 'same-origin',
 			};
 
 			const globalConfig = Container.get(GlobalConfig);
-			expect(globalConfig.security.crossOriginOpenerPolicy).toEqual('same-origin-allow-popups');
+			expect(globalConfig.security.crossOriginOpenerPolicy).toEqual('same-origin');
 		});
 
 		it('should warn and fall back to default for invalid crossOriginOpenerPolicy', () => {
@@ -729,8 +1314,21 @@ describe('GlobalConfig', () => {
 			};
 
 			const globalConfig = Container.get(GlobalConfig);
-			expect(globalConfig.security.crossOriginOpenerPolicy).toEqual('same-origin');
+			expect(globalConfig.security.crossOriginOpenerPolicy).toEqual('same-origin-allow-popups');
 		});
+	});
+
+	it('falls back to the default for a negative or infinite agent file cap', () => {
+		process.env = {
+			N8N_AGENTS_FILES_MAX_TOTAL_MB: '-1',
+			N8N_AGENTS_FILES_MAX_IMPORT_MB: 'Infinity',
+			N8N_AGENTS_FILES_MAX_GENERATED_COUNT: '20',
+		};
+
+		const config = Container.get(AgentsConfig);
+		expect(config.maxTotalMb).toEqual(1536);
+		expect(config.maxImportMb).toEqual(200);
+		expect(config.maxGeneratedFileCount).toEqual(20);
 	});
 
 	describe('health endpoint transformation', () => {
@@ -759,22 +1357,6 @@ describe('GlobalConfig', () => {
 
 			const config = Container.get(GlobalConfig);
 			expect(config.endpoints.health).toEqual('/api/v1/health');
-		});
-	});
-
-	describe('ExecutionsConfig', () => {
-		it('should default scheduledExecutionDeduplicationEnabled to false', () => {
-			process.env = {};
-			const config = Container.get(ExecutionsConfig);
-			expect(config.scheduledExecutionDeduplicationEnabled).toBe(false);
-		});
-
-		it('should enable scheduledExecutionDeduplicationEnabled when env var is set to true', () => {
-			process.env = {
-				N8N_SCHEDULED_EXECUTION_DEDUPLICATION_ENABLED: 'true',
-			};
-			const config = Container.get(ExecutionsConfig);
-			expect(config.scheduledExecutionDeduplicationEnabled).toBe(true);
 		});
 	});
 });

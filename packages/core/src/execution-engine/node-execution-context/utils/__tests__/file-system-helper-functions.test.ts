@@ -1,14 +1,19 @@
+import { Logger } from '@n8n/backend-common';
 import { SecurityConfig } from '@n8n/config';
 import { Container } from '@n8n/di';
-import type { INode } from 'n8n-workflow';
+import type { INode, ResolvedFilePath } from 'n8n-workflow';
 import { constants } from 'node:fs';
 import {
 	access as fsAccess,
 	realpath as fsRealpath,
 	stat as fsStat,
 	open as fsOpen,
+	mkdir as fsMkdir,
+	lstat as fsLstat,
 } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Mock } from 'vitest';
 
 import {
 	BINARY_DATA_STORAGE_PATH,
@@ -22,8 +27,8 @@ import { InstanceSettings } from '@/instance-settings';
 
 import { getFileSystemHelperFunctions } from '../file-system-helper-functions';
 
-jest.mock('node:fs');
-jest.mock('node:fs/promises');
+vi.mock('node:fs');
+vi.mock('node:fs/promises');
 
 const originalProcessEnv = { ...process.env };
 
@@ -37,8 +42,8 @@ beforeEach(() => {
 	const error = new Error('ENOENT');
 	// @ts-expect-error undefined property
 	error.code = 'ENOENT';
-	(fsAccess as jest.Mock).mockRejectedValue(error);
-	(fsRealpath as jest.Mock).mockImplementation((path: string) => path);
+	(fsAccess as Mock).mockRejectedValue(error);
+	(fsRealpath as Mock).mockImplementation((path: string) => path);
 
 	instanceSettings = Container.get(InstanceSettings);
 	securityConfig = Container.get(SecurityConfig);
@@ -172,7 +177,7 @@ describe('isFilePathBlocked', () => {
 		securityConfig.restrictFileAccessTo = '/path1';
 		const allowedPath = '/path1/symlink';
 		const actualPath = '/path2/realfile';
-		(fsRealpath as jest.Mock).mockImplementation((path: string) =>
+		(fsRealpath as Mock).mockImplementation((path: string) =>
 			path === allowedPath ? actualPath : path,
 		);
 		expect(isFilePathBlocked(await resolvePath(allowedPath))).toBe(true);
@@ -183,8 +188,25 @@ describe('isFilePathBlocked', () => {
 		const error = new Error('ENOENT');
 		// @ts-expect-error undefined property
 		error.code = 'ENOENT';
-		(fsRealpath as jest.Mock).mockRejectedValueOnce(error);
+		(fsRealpath as Mock).mockRejectedValueOnce(error);
 		expect(isFilePathBlocked(await resolvePath(filePath))).toBe(false);
+	});
+
+	it('should reject a path over the filesystem path limit without a filesystem call', async () => {
+		const path = `/tmp/missing/${'a/'.repeat(2500)}x`;
+		(fsRealpath as Mock).mockClear();
+
+		await expect(resolvePath(path)).rejects.toMatchObject({ code: 'ENAMETOOLONG' });
+		expect(fsRealpath).not.toHaveBeenCalled();
+	});
+
+	it('should reject a multibyte path whose encoded size is over the limit', async () => {
+		// 3000 code units, 6000 encoded bytes
+		const path = `/tmp/missing/${'é/'.repeat(1500)}x`;
+		(fsRealpath as Mock).mockClear();
+
+		await expect(resolvePath(path)).rejects.toMatchObject({ code: 'ENAMETOOLONG' });
+		expect(fsRealpath).not.toHaveBeenCalled();
 	});
 
 	it('should handle non-existent file when it is not allowed', async () => {
@@ -194,16 +216,40 @@ describe('isFilePathBlocked', () => {
 		const error = new Error('ENOENT');
 		// @ts-expect-error undefined property
 		error.code = 'ENOENT';
-		(fsRealpath as jest.Mock).mockRejectedValueOnce(error);
+		(fsRealpath as Mock).mockRejectedValueOnce(error);
 		expect(isFilePathBlocked(await resolvePath(filePath))).toBe(true);
 	});
 
-	it.each(['.git', '/.git', '/tmp/.git', '/tmp/.git/config'])(
+	it.each(['.git', '/.git', '/tmp/.git', '/tmp/.git/config', '/tmp/.GIT'])(
 		'should per default block access to %s',
 		async (path) => {
 			expect(isFilePathBlocked(await resolvePath(path))).toBe(true);
 		},
 	);
+
+	it('should block a multi-line path whose final line matches the default pattern', () => {
+		const path = '/tmp/x\n.git' as ResolvedFilePath;
+
+		expect(isFilePathBlocked(path)).toBe(true);
+	});
+
+	it.each(['/tmp/foo.git', '/tmp/.github', '/tmp/.git-credentials', '/tmp/a.git/b'])(
+		'should per default allow access to %s',
+		async (path) => {
+			expect(isFilePathBlocked(await resolvePath(path))).toBe(false);
+		},
+	);
+
+	it('should evaluate the default pattern without degradation on paths with many segments', async () => {
+		const manySegments = `/tmp/${'a/'.repeat(2000)}x`;
+
+		const start = performance.now();
+		const blocked = isFilePathBlocked(await resolvePath(manySegments));
+		const elapsed = performance.now() - start;
+
+		expect(blocked).toBe(false);
+		expect(elapsed).toBeLessThan(1000);
+	});
 
 	it('should allow access when pattern matching is disabled', async () => {
 		securityConfig.blockFilePatterns = '';
@@ -215,10 +261,47 @@ describe('isFilePathBlocked', () => {
 		expect(isFilePathBlocked(await resolvePath('/tmp/xo'))).toBe(true);
 	});
 
+	it('should block and log a warning when pattern evaluation exceeds the time limit', () => {
+		securityConfig.blockFilePatterns = '^(?:[^/]*/)*\\.git(?:/.*)?$';
+		const warnSpy = vi.spyOn(Container.get(Logger), 'warn');
+		const path = `/tmp/x${'\n'.repeat(200_000)}` as ResolvedFilePath;
+
+		const startedAt = Date.now();
+		const isBlocked = isFilePathBlocked(path);
+
+		expect(isBlocked).toBe(true);
+		expect(warnSpy).toHaveBeenCalledOnce();
+		expect(Date.now() - startedAt).toBeLessThan(2_000);
+	});
+
+	it.each(['\n', '\r', '\u2028'])(
+		'should quickly allow a long path padded with line terminators (%j)',
+		(terminator) => {
+			const path = `/tmp/x${terminator.repeat(200_000)}` as ResolvedFilePath;
+
+			const startedAt = Date.now();
+			const isBlocked = isFilePathBlocked(path);
+
+			expect(isBlocked).toBe(false);
+			expect(Date.now() - startedAt).toBeLessThan(100);
+		},
+	);
+
+	it('should stay fast across repeated long multi-line paths', () => {
+		const path = `/tmp/x${'\n'.repeat(200_000)}` as ResolvedFilePath;
+
+		const startedAt = Date.now();
+		for (let i = 0; i < 20; i++) {
+			expect(isFilePathBlocked(path)).toBe(false);
+		}
+
+		expect(Date.now() - startedAt).toBeLessThan(250);
+	});
+
 	describe('cross-platform path handling', () => {
 		beforeEach(() => {
 			// Use default .git blocking pattern
-			securityConfig.blockFilePatterns = '^(.*\\/)*\\.git(\\/.*)*$';
+			securityConfig.blockFilePatterns = originalBlockedFilePatterns;
 		});
 
 		it('should handle Windows-style paths for .git directory', async () => {
@@ -298,42 +381,54 @@ describe('getFileSystemHelperFunctions', () => {
 			const error = new Error('ENOENT');
 			// @ts-expect-error undefined property
 			error.code = 'ENOENT';
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
-			(fsAccess as jest.Mock).mockRejectedValueOnce(error);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+			(fsAccess as Mock).mockRejectedValueOnce(error);
 
 			await expect(
 				helperFunctions.createReadStream(await helperFunctions.resolvePath(filePath)),
 			).rejects.toThrow(`The file "${filePath}" could not be accessed.`);
 		});
 
-		it('should throw when file access is blocked', async () => {
+		it('should explain that a blocked file is outside the allowed paths', async () => {
 			securityConfig.restrictFileAccessTo = '/allowed/path';
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
 			await expect(
 				helperFunctions.createReadStream(await helperFunctions.resolvePath('/blocked/path')),
-			).rejects.toThrow('Access to the file is not allowed');
+			).rejects.toThrow('Access to the file is not allowed.');
 		});
 
-		it('should not reveal if file exists if it is within restricted path', async () => {
+		it('should not reveal if a blocked file exists', async () => {
 			securityConfig.restrictFileAccessTo = '/allowed/path';
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
 
 			await expect(
 				helperFunctions.createReadStream(await helperFunctions.resolvePath('/blocked/path')),
-			).rejects.toThrow('Access to the file is not allowed');
+			).rejects.toThrow('Access to the file is not allowed.');
+		});
+
+		it('should omit allowed paths from blocked access errors when none are configured', async () => {
+			process.env[BLOCK_FILE_ACCESS_TO_N8N_FILES] = 'true';
+			const blockedPath = await helperFunctions.resolvePath(
+				join(instanceSettings.n8nFolder, 'config'),
+			);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+
+			await expect(helperFunctions.createReadStream(blockedPath)).rejects.toThrow(
+				'Access to the file is not allowed.',
+			);
 		});
 
 		it('should create a read stream if file access is permitted', async () => {
 			const filePath = '/allowed/path';
-			const mockStream = { pipe: jest.fn() };
+			const mockStream = { pipe: vi.fn() };
 			const mockFileHandle = {
-				stat: jest.fn().mockResolvedValue(mockFileStats),
-				createReadStream: jest.fn().mockReturnValue(mockStream),
+				stat: vi.fn().mockResolvedValue(mockFileStats),
+				createReadStream: vi.fn().mockReturnValue(mockStream),
 			};
 
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
-			(fsAccess as jest.Mock).mockResolvedValueOnce(undefined);
-			(fsOpen as jest.Mock).mockResolvedValueOnce(mockFileHandle);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+			(fsAccess as Mock).mockResolvedValueOnce(undefined);
+			(fsOpen as Mock).mockResolvedValueOnce(mockFileHandle);
 
 			const result = await helperFunctions.createReadStream(
 				await helperFunctions.resolvePath(filePath),
@@ -349,9 +444,9 @@ describe('getFileSystemHelperFunctions', () => {
 			// @ts-expect-error undefined property
 			eloopError.code = 'ELOOP';
 
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
-			(fsAccess as jest.Mock).mockResolvedValueOnce(undefined);
-			(fsOpen as jest.Mock).mockRejectedValueOnce(eloopError);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+			(fsAccess as Mock).mockResolvedValueOnce(undefined);
+			(fsOpen as Mock).mockRejectedValueOnce(eloopError);
 
 			await expect(
 				helperFunctions.createReadStream(await helperFunctions.resolvePath(filePath)),
@@ -362,14 +457,14 @@ describe('getFileSystemHelperFunctions', () => {
 			const filePath = '/allowed/path/file';
 			const differentStats = { dev: 999, ino: 888 };
 			const mockFileHandle = {
-				stat: jest.fn().mockResolvedValue(differentStats),
-				createReadStream: jest.fn(),
-				close: jest.fn(),
+				stat: vi.fn().mockResolvedValue(differentStats),
+				createReadStream: vi.fn(),
+				close: vi.fn(),
 			};
 
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
-			(fsAccess as jest.Mock).mockResolvedValueOnce(undefined);
-			(fsOpen as jest.Mock).mockResolvedValueOnce(mockFileHandle);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+			(fsAccess as Mock).mockResolvedValueOnce(undefined);
+			(fsOpen as Mock).mockResolvedValueOnce(mockFileHandle);
 
 			await expect(
 				helperFunctions.createReadStream(await helperFunctions.resolvePath(filePath)),
@@ -390,7 +485,20 @@ describe('getFileSystemHelperFunctions', () => {
 					'content',
 					constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC,
 				),
-			).rejects.toThrow('not writable');
+			).rejects.toThrow('Access to the file is not allowed.');
+		});
+
+		it('should explain that a blocked file is outside the allowed paths', async () => {
+			securityConfig.restrictFileAccessTo = '/allowed/path';
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+
+			await expect(
+				helperFunctions.writeContentToFile(
+					await helperFunctions.resolvePath('/blocked/path'),
+					'content',
+					constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC,
+				),
+			).rejects.toThrow('Access to the file is not allowed.');
 		});
 
 		it('should reject symlinks with ELOOP error', async () => {
@@ -399,8 +507,8 @@ describe('getFileSystemHelperFunctions', () => {
 			// @ts-expect-error undefined property
 			eloopError.code = 'ELOOP';
 
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
-			(fsOpen as jest.Mock).mockRejectedValueOnce(eloopError);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+			(fsOpen as Mock).mockRejectedValueOnce(eloopError);
 
 			await expect(
 				helperFunctions.writeContentToFile(
@@ -414,14 +522,14 @@ describe('getFileSystemHelperFunctions', () => {
 			const filePath = '/allowed/path/file';
 			const differentStats = { dev: 999, ino: 888, isFile: () => true };
 			const mockFileHandle = {
-				stat: jest.fn().mockResolvedValue(differentStats),
-				truncate: jest.fn(),
-				write: jest.fn(),
-				close: jest.fn(),
+				stat: vi.fn().mockResolvedValue(differentStats),
+				truncate: vi.fn(),
+				write: vi.fn(),
+				close: vi.fn(),
 			};
 
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
-			(fsOpen as jest.Mock).mockResolvedValueOnce(mockFileHandle);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+			(fsOpen as Mock).mockResolvedValueOnce(mockFileHandle);
 
 			await expect(
 				helperFunctions.writeContentToFile(
@@ -436,14 +544,14 @@ describe('getFileSystemHelperFunctions', () => {
 		it('should successfully write to file when identity matches', async () => {
 			const filePath = '/allowed/path/file';
 			const mockFileHandle = {
-				stat: jest.fn().mockResolvedValue(mockFileStats),
-				truncate: jest.fn().mockResolvedValue(undefined),
-				writeFile: jest.fn().mockResolvedValue(undefined),
-				close: jest.fn().mockResolvedValue(undefined),
+				stat: vi.fn().mockResolvedValue(mockFileStats),
+				truncate: vi.fn().mockResolvedValue(undefined),
+				writeFile: vi.fn().mockResolvedValue(undefined),
+				close: vi.fn().mockResolvedValue(undefined),
 			};
 
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
-			(fsOpen as jest.Mock).mockResolvedValueOnce(mockFileHandle);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+			(fsOpen as Mock).mockResolvedValueOnce(mockFileHandle);
 
 			await helperFunctions.writeContentToFile(
 				await helperFunctions.resolvePath(filePath),
@@ -467,15 +575,15 @@ describe('getFileSystemHelperFunctions', () => {
 
 			const newFileStats = { dev: 123, ino: 789, isFile: () => true };
 			const mockFileHandle = {
-				stat: jest.fn().mockResolvedValue(newFileStats),
-				truncate: jest.fn().mockResolvedValue(undefined),
-				writeFile: jest.fn().mockResolvedValue(undefined),
-				close: jest.fn().mockResolvedValue(undefined),
+				stat: vi.fn().mockResolvedValue(newFileStats),
+				truncate: vi.fn().mockResolvedValue(undefined),
+				writeFile: vi.fn().mockResolvedValue(undefined),
+				close: vi.fn().mockResolvedValue(undefined),
 			};
 
-			(fsStat as jest.Mock).mockRejectedValueOnce(enoentError);
-			(fsStat as jest.Mock).mockResolvedValueOnce(newFileStats);
-			(fsOpen as jest.Mock).mockResolvedValueOnce(mockFileHandle);
+			(fsStat as Mock).mockRejectedValueOnce(enoentError);
+			(fsStat as Mock).mockResolvedValueOnce(newFileStats);
+			(fsOpen as Mock).mockResolvedValueOnce(mockFileHandle);
 
 			await helperFunctions.writeContentToFile(
 				await helperFunctions.resolvePath(filePath),
@@ -490,14 +598,14 @@ describe('getFileSystemHelperFunctions', () => {
 		it('should strip O_TRUNC flag from user flags', async () => {
 			const filePath = '/allowed/path/file';
 			const mockFileHandle = {
-				stat: jest.fn().mockResolvedValue(mockFileStats),
-				truncate: jest.fn().mockResolvedValue(undefined),
-				writeFile: jest.fn().mockResolvedValue(undefined),
-				close: jest.fn().mockResolvedValue(undefined),
+				stat: vi.fn().mockResolvedValue(mockFileStats),
+				truncate: vi.fn().mockResolvedValue(undefined),
+				writeFile: vi.fn().mockResolvedValue(undefined),
+				close: vi.fn().mockResolvedValue(undefined),
 			};
 
-			(fsStat as jest.Mock).mockResolvedValueOnce(mockFileStats);
-			(fsOpen as jest.Mock).mockResolvedValueOnce(mockFileHandle);
+			(fsStat as Mock).mockResolvedValueOnce(mockFileStats);
+			(fsOpen as Mock).mockResolvedValueOnce(mockFileHandle);
 
 			await helperFunctions.writeContentToFile(
 				await helperFunctions.resolvePath(filePath),
@@ -516,12 +624,12 @@ describe('getFileSystemHelperFunctions', () => {
 			const filePath = '/allowed/path/directory';
 			const dirStats = { dev: 123, ino: 456, isFile: () => false };
 			const mockFileHandle = {
-				stat: jest.fn().mockResolvedValue(dirStats),
-				close: jest.fn().mockResolvedValue(undefined),
+				stat: vi.fn().mockResolvedValue(dirStats),
+				close: vi.fn().mockResolvedValue(undefined),
 			};
 
-			(fsStat as jest.Mock).mockResolvedValueOnce(dirStats);
-			(fsOpen as jest.Mock).mockResolvedValueOnce(mockFileHandle);
+			(fsStat as Mock).mockResolvedValueOnce(dirStats);
+			(fsOpen as Mock).mockResolvedValueOnce(mockFileHandle);
 
 			await expect(
 				helperFunctions.writeContentToFile(
@@ -531,6 +639,309 @@ describe('getFileSystemHelperFunctions', () => {
 			).rejects.toThrow('The path is not a regular file.');
 
 			expect(mockFileHandle.close).toHaveBeenCalled();
+		});
+	});
+
+	describe('symlinked ancestor directory', () => {
+		// Build a REAL symlinked dir via importActual (this file mocks node:fs/promises, but the
+		// symlink check in @n8n/backend-common runs against the real filesystem).
+		let realFs: {
+			realpath(path: string): Promise<string>;
+			mkdtemp(prefix: string): Promise<string>;
+			mkdir(path: string, options?: { recursive?: boolean }): Promise<string | undefined>;
+			symlink(target: string, path: string): Promise<void>;
+			rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
+		};
+		let base: string;
+		let pathWithSymlinkedAncestor: string;
+
+		beforeAll(async () => {
+			realFs = await vi.importActual('node:fs/promises');
+		});
+
+		beforeEach(async () => {
+			base = await realFs.realpath(await realFs.mkdtemp(join(tmpdir(), 'fsh-toctou-')));
+			await realFs.mkdir(join(base, 'real'), { recursive: true });
+			await realFs.symlink(join(base, 'real'), join(base, 'link'));
+			// `link` is a symlinked ancestor of the target file.
+			pathWithSymlinkedAncestor = join(base, 'link', 'file.txt');
+		});
+
+		afterEach(async () => {
+			await realFs.rm(base, { recursive: true, force: true });
+		});
+
+		it('createReadStream rejects when an ancestor path component is a symlink', async () => {
+			(fsStat as Mock).mockResolvedValueOnce({ dev: 1, ino: 2 });
+			(fsAccess as Mock).mockResolvedValueOnce(undefined);
+
+			await expect(
+				helperFunctions.createReadStream(
+					await helperFunctions.resolvePath(pathWithSymlinkedAncestor),
+				),
+			).rejects.toThrow('Access to the file is not allowed');
+		});
+
+		it('writeContentToFile rejects when an ancestor path component is a symlink', async () => {
+			(fsStat as Mock).mockResolvedValueOnce({ dev: 1, ino: 2, isFile: () => true });
+
+			await expect(
+				helperFunctions.writeContentToFile(
+					await helperFunctions.resolvePath(pathWithSymlinkedAncestor),
+					'content',
+				),
+			).rejects.toThrow('Access to the file is not allowed');
+		});
+	});
+
+	describe('ensureParentDirectoryWithoutFollowingSymlinks', () => {
+		it('creates each parent component when none is a symlink', async () => {
+			(fsMkdir as Mock).mockResolvedValue(undefined);
+			(fsLstat as Mock).mockResolvedValue({ isSymbolicLink: () => false, isDirectory: () => true });
+
+			await expect(
+				helperFunctions.ensureParentDirectoryWithoutFollowingSymlinks(
+					await helperFunctions.resolvePath('/allowed/dir/file'),
+				),
+			).resolves.toBeUndefined();
+
+			expect(fsMkdir).toHaveBeenCalledWith('/allowed');
+			expect(fsMkdir).toHaveBeenCalledWith('/allowed/dir');
+		});
+
+		it('rejects when a parent component is a symlink', async () => {
+			(fsMkdir as Mock).mockResolvedValue(undefined);
+			(fsLstat as Mock).mockResolvedValue({ isSymbolicLink: () => true, isDirectory: () => false });
+
+			await expect(
+				helperFunctions.ensureParentDirectoryWithoutFollowingSymlinks(
+					await helperFunctions.resolvePath('/allowed/dir/file'),
+				),
+			).rejects.toThrow('Access to the file is not allowed');
+		});
+	});
+
+	describe('resolveStagingBaseForTarget', () => {
+		it('returns the realpath of the allowed base that contains the target', async () => {
+			securityConfig.restrictFileAccessTo = '/allowed/base';
+
+			const base = await helperFunctions.resolveStagingBaseForTarget(
+				await helperFunctions.resolvePath('/allowed/base/sub/repo'),
+			);
+
+			expect(base).toBe('/allowed/base');
+		});
+
+		it('returns the containing base when several are allowed', async () => {
+			securityConfig.restrictFileAccessTo = '/first/base;/second/base';
+
+			const base = await helperFunctions.resolveStagingBaseForTarget(
+				await helperFunctions.resolvePath('/second/base/repo'),
+			);
+
+			expect(base).toBe('/second/base');
+		});
+
+		it('resolves the allowed base through symlinks', async () => {
+			securityConfig.restrictFileAccessTo = '/allowed/link';
+			(fsRealpath as Mock).mockImplementation((path: string) =>
+				path === '/allowed/link' ? '/allowed/real' : path,
+			);
+
+			const base = await helperFunctions.resolveStagingBaseForTarget(
+				'/allowed/link/repo' as ResolvedFilePath,
+			);
+
+			expect(base).toBe('/allowed/real');
+		});
+
+		it('falls back to the n8n folder when no path restriction is configured', async () => {
+			securityConfig.restrictFileAccessTo = '';
+
+			const base = await helperFunctions.resolveStagingBaseForTarget(
+				'/anywhere/repo' as ResolvedFilePath,
+			);
+
+			expect(base).toBe(instanceSettings.n8nFolder);
+		});
+	});
+
+	describe('pinDirectory', () => {
+		const originalPlatform = process.platform;
+		const setPlatform = (platform: string) =>
+			Object.defineProperty(process, 'platform', { value: platform, configurable: true });
+
+		afterEach(() => {
+			Object.defineProperty(process, 'platform', {
+				value: originalPlatform,
+				configurable: true,
+			});
+		});
+
+		it('returns null on non-Linux platforms', async () => {
+			setPlatform('darwin');
+			securityConfig.restrictFileAccessTo = '/allowed/base';
+
+			await expect(
+				helperFunctions.pinDirectory('/allowed/base/sub', { create: false }),
+			).resolves.toBeNull();
+		});
+
+		it('returns null when the directory is not within a trusted base', async () => {
+			setPlatform('linux');
+			securityConfig.restrictFileAccessTo = '/allowed/base';
+
+			await expect(
+				helperFunctions.pinDirectory('/elsewhere/sub', { create: false }),
+			).resolves.toBeNull();
+		});
+
+		it('returns null when the resolved anchor no longer contains the path', async () => {
+			setPlatform('linux');
+			securityConfig.restrictFileAccessTo = '/allowed/link';
+			(fsRealpath as Mock).mockImplementation((path: string) =>
+				path === '/allowed/link' ? '/real/base' : path,
+			);
+
+			await expect(
+				helperFunctions.pinDirectory('/allowed/link/sub', { create: false }),
+			).resolves.toBeNull();
+		});
+
+		it('descends from the trusted base relative to the held descriptors', async () => {
+			setPlatform('linux');
+			securityConfig.restrictFileAccessTo = '/allowed/base';
+
+			const handles: Array<{ fd: number; close: Mock }> = [];
+			let nextFd = 10;
+			(fsOpen as Mock).mockImplementation(async () => {
+				const handle = { fd: nextFd++, close: vi.fn().mockResolvedValue(undefined) };
+				handles.push(handle);
+				return handle;
+			});
+			(fsMkdir as Mock).mockResolvedValue(undefined);
+			(fsOpen as Mock).mockClear();
+			(fsMkdir as Mock).mockClear();
+
+			const pinned = await helperFunctions.pinDirectory('/allowed/base/sub/dir', {
+				create: true,
+			});
+
+			expect(fsOpen).toHaveBeenNthCalledWith(1, '/allowed/base', expect.any(Number));
+			expect(fsMkdir).toHaveBeenCalledWith('/proc/self/fd/10/sub');
+			expect(fsOpen).toHaveBeenNthCalledWith(2, '/proc/self/fd/10/sub', expect.any(Number));
+			expect(fsMkdir).toHaveBeenCalledWith('/proc/self/fd/11/dir');
+			expect(fsOpen).toHaveBeenNthCalledWith(3, '/proc/self/fd/11/dir', expect.any(Number));
+
+			expect(pinned).not.toBeNull();
+			expect(pinned?.resolvePath('repo')).toBe('/proc/self/fd/12/repo');
+
+			// Intermediate descriptors are closed during the descent; the final one is held.
+			expect(handles[0].close).toHaveBeenCalled();
+			expect(handles[1].close).toHaveBeenCalled();
+			expect(handles[2].close).not.toHaveBeenCalled();
+
+			await pinned?.close();
+			expect(handles[2].close).toHaveBeenCalled();
+		});
+
+		it('rejects when a descended component is not a real directory', async () => {
+			setPlatform('linux');
+			securityConfig.restrictFileAccessTo = '/allowed/base';
+
+			const notDirectory = Object.assign(new Error('ENOTDIR'), { code: 'ENOTDIR' });
+			const closeAnchor = vi.fn().mockResolvedValue(undefined);
+			let call = 0;
+			(fsOpen as Mock).mockImplementation(async () => {
+				call += 1;
+				if (call === 1) return { fd: 20, close: closeAnchor };
+				throw notDirectory;
+			});
+
+			await expect(
+				helperFunctions.pinDirectory('/allowed/base/link', { create: false }),
+			).rejects.toThrow('Access to the file is not allowed');
+			expect(closeAnchor).toHaveBeenCalled();
+		});
+	});
+
+	describe('pinned file access on Linux', () => {
+		const originalPlatform = process.platform;
+
+		beforeEach(() => {
+			Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+			securityConfig.restrictFileAccessTo = '/allowed';
+		});
+
+		afterEach(() => {
+			Object.defineProperty(process, 'platform', {
+				value: originalPlatform,
+				configurable: true,
+			});
+		});
+
+		// '/allowed/sub/file' pins via two directory opens (anchor + 'sub'); the third open
+		// is the leaf, addressed relative to the pinned parent descriptor.
+		const onLeafOpen = (leaf: () => Promise<unknown>) => {
+			let call = 0;
+			let fd = 30;
+			(fsOpen as Mock).mockImplementation(async () => {
+				call += 1;
+				if (call <= 2) {
+					return { fd: fd++, close: vi.fn().mockResolvedValue(undefined) };
+				}
+				return await leaf();
+			});
+		};
+
+		it('rejects a symlinked leaf opened relative to the pinned parent', async () => {
+			const eloop = Object.assign(new Error('ELOOP'), { code: 'ELOOP' });
+			(fsStat as Mock).mockResolvedValueOnce({ dev: 1, ino: 2 });
+			(fsAccess as Mock).mockResolvedValueOnce(undefined);
+			onLeafOpen(async () => {
+				throw eloop;
+			});
+
+			await expect(
+				helperFunctions.createReadStream(await helperFunctions.resolvePath('/allowed/sub/file')),
+			).rejects.toThrow('Symlinks are not allowed.');
+		});
+
+		it('opens the leaf relative to the pinned parent and verifies its identity', async () => {
+			const stats = { dev: 7, ino: 8 };
+			const stream = { pipe: vi.fn() };
+			const fileHandle = {
+				stat: vi.fn().mockResolvedValue(stats),
+				createReadStream: vi.fn().mockReturnValue(stream),
+				close: vi.fn(),
+			};
+			(fsStat as Mock).mockResolvedValueOnce(stats);
+			(fsAccess as Mock).mockResolvedValueOnce(undefined);
+			onLeafOpen(async () => fileHandle);
+
+			const result = await helperFunctions.createReadStream(
+				await helperFunctions.resolvePath('/allowed/sub/file'),
+			);
+
+			expect(result).toBe(stream);
+			const leafCall = (fsOpen as Mock).mock.calls.at(-1);
+			expect(leafCall?.[0]).toMatch(/^\/proc\/self\/fd\/\d+\/file$/);
+		});
+
+		it('rejects when the pinned leaf identity does not match', async () => {
+			const fileHandle = {
+				stat: vi.fn().mockResolvedValue({ dev: 999, ino: 888 }),
+				createReadStream: vi.fn(),
+				close: vi.fn(),
+			};
+			(fsStat as Mock).mockResolvedValueOnce({ dev: 7, ino: 8 });
+			(fsAccess as Mock).mockResolvedValueOnce(undefined);
+			onLeafOpen(async () => fileHandle);
+
+			await expect(
+				helperFunctions.createReadStream(await helperFunctions.resolvePath('/allowed/sub/file')),
+			).rejects.toThrow('The file has changed and cannot be accessed.');
+			expect(fileHandle.close).toHaveBeenCalled();
 		});
 	});
 });

@@ -1,5 +1,6 @@
 import { Logger } from '@n8n/backend-common';
 import { mockInstance } from '@n8n/backend-test-utils';
+import { CANVAS_ONLY_PERSONAL_SPACE_DENIABLE_SCOPES, type GlobalConfig } from '@n8n/config';
 import { AuthRolesService, Role, Scope } from '@n8n/db';
 import type { DbLock, DbLockService } from '@n8n/db';
 import {
@@ -12,9 +13,10 @@ import {
 	PERSONAL_SPACE_PUBLISHING_SETTING,
 	PERSONAL_SPACE_SHARING_SETTING,
 	EXTERNAL_SECRETS_SYSTEM_ROLES_ENABLED_SETTING,
+	PROMOTION_PROJECT_ACCESS_SETTING_KEYS,
 } from '@n8n/permissions';
 import type { EntityManager, FindManyOptions, Repository } from '@n8n/typeorm';
-import { mock } from 'jest-mock-extended';
+import { mock } from 'vitest-mock-extended';
 
 const SHARING_SCOPES = PERSONAL_SPACE_SHARING_SETTING.scopes;
 
@@ -43,7 +45,11 @@ describe('AuthRolesService', () => {
 			await fn(mockEntityManager),
 	);
 
-	const authRolesService = new AuthRolesService(logger, dbLockService);
+	const globalConfig = mock<GlobalConfig>({
+		canvasOnly: { enabled: false, personalSpaceScopeDenyList: [] },
+	});
+
+	const authRolesService = new AuthRolesService(logger, dbLockService, globalConfig);
 
 	// Helper functions for creating test data
 	function createScope(
@@ -107,8 +113,8 @@ describe('AuthRolesService', () => {
 	}
 
 	beforeEach(() => {
-		jest.restoreAllMocks();
-		jest.clearAllMocks();
+		vi.restoreAllMocks();
+		vi.clearAllMocks();
 		// Re-setup the EntityManager mocks after restoreAllMocks
 		mockEntityManager.getRepository.mockImplementation((entity) => {
 			if (entity === Scope) return scopeRepository as never;
@@ -118,6 +124,8 @@ describe('AuthRolesService', () => {
 		// Default: no settings rows (backward compat: undefined values => grant scopes)
 		mockEntityManager.findBy.mockResolvedValue([]);
 		mockEntityManager.findOneBy.mockResolvedValue(null);
+		globalConfig.canvasOnly.enabled = false;
+		globalConfig.canvasOnly.personalSpaceScopeDenyList = [];
 		dbLockService.withLock.mockImplementation(
 			async (_lockId: DbLock, fn: (tx: EntityManager) => Promise<unknown>) =>
 				await fn(mockEntityManager),
@@ -211,7 +219,8 @@ describe('AuthRolesService', () => {
 			});
 
 			scopeRepository.find.mockResolvedValueOnce([obsoleteScope, validScope]);
-			roleRepository.find.mockResolvedValueOnce([roleWithObsoleteScope]);
+			roleRepository.find.mockResolvedValueOnce([roleWithObsoleteScope]); // find affected role slugs
+			roleRepository.find.mockResolvedValueOnce([roleWithObsoleteScope]); // reload roles with full scopes
 			roleRepository.save.mockImplementation(async (entities) => entities as never);
 			scopeRepository.remove.mockImplementation(async (entities) => entities as never);
 			scopeRepository.find.mockResolvedValueOnce([validScope]);
@@ -241,7 +250,8 @@ describe('AuthRolesService', () => {
 			});
 
 			scopeRepository.find.mockResolvedValueOnce([obsoleteScope1, obsoleteScope2, validScope]);
-			roleRepository.find.mockResolvedValueOnce([role1, role2, role3]);
+			roleRepository.find.mockResolvedValueOnce([role1, role2, role3]); // find affected role slugs
+			roleRepository.find.mockResolvedValueOnce([role1, role2, role3]); // reload roles with full scopes
 			roleRepository.save.mockImplementation(async (entities) => entities as never);
 			scopeRepository.remove.mockImplementation(async (entities) => entities as never);
 			scopeRepository.find.mockResolvedValueOnce([validScope]);
@@ -482,7 +492,7 @@ describe('AuthRolesService', () => {
 				publishing: boolean | null,
 				sharing: boolean | null,
 			): void {
-				const rows: { key: string; value: string; loadOnStartup: boolean }[] = [];
+				const rows: Array<{ key: string; value: string; loadOnStartup: boolean }> = [];
 				if (publishing !== null) {
 					rows.push({
 						key: PERSONAL_SPACE_PUBLISHING_SETTING.key,
@@ -618,6 +628,95 @@ describe('AuthRolesService', () => {
 					expect(updatedRole).toBeDefined();
 					const scopeSlugs = updatedRole?.scopes.map((s) => s.slug) ?? [];
 					expect(scopeSlugs).not.toContain('workflow:publish');
+				});
+			});
+
+			describe('canvas-only personal space role', () => {
+				const DENIABLE_SCOPES = [...CANVAS_ONLY_PERSONAL_SPACE_DENIABLE_SCOPES];
+
+				/** The scope slugs the sync gives the personal owner role on a fresh instance. */
+				async function syncedPersonalOwnerScopes(): Promise<string[]> {
+					setupDefaultMocks(createAllScopes());
+					await authRolesService.init();
+
+					const personalOwnerCall = roleRepository.create.mock.calls.find(
+						(call) => (call[0] as Role).slug === PROJECT_OWNER_ROLE_SLUG,
+					);
+					expect(personalOwnerCall).toBeDefined();
+					return (personalOwnerCall?.[0] as Role).scopes.map((s: Scope) => s.slug);
+				}
+
+				test('should give the personalOwner role every deniable scope when the deny list is empty', async () => {
+					globalConfig.canvasOnly.enabled = true;
+					globalConfig.canvasOnly.personalSpaceScopeDenyList = [];
+
+					const scopeSlugs = await syncedPersonalOwnerScopes();
+
+					expect(scopeSlugs).toEqual(expect.arrayContaining(DENIABLE_SCOPES));
+				});
+
+				test('should remove the denied scopes when canvas-only mode is on', async () => {
+					globalConfig.canvasOnly.enabled = true;
+					globalConfig.canvasOnly.personalSpaceScopeDenyList = ['credential:create'];
+
+					const scopeSlugs = await syncedPersonalOwnerScopes();
+
+					expect(scopeSlugs).not.toContain('credential:create');
+					expect(scopeSlugs).toContain('dataTable:create');
+					expect(scopeSlugs).toContain('agent:create');
+					expect(scopeSlugs).toContain('workflow:create');
+				});
+
+				test('should remove every deniable scope when all are denied', async () => {
+					globalConfig.canvasOnly.enabled = true;
+					globalConfig.canvasOnly.personalSpaceScopeDenyList = DENIABLE_SCOPES;
+
+					const scopeSlugs = await syncedPersonalOwnerScopes();
+
+					for (const scope of DENIABLE_SCOPES) {
+						expect(scopeSlugs).not.toContain(scope);
+					}
+					expect(scopeSlugs).toContain('workflow:create');
+				});
+
+				test('should ignore the deny list when canvas-only mode is off', async () => {
+					globalConfig.canvasOnly.enabled = false;
+					globalConfig.canvasOnly.personalSpaceScopeDenyList = ['credential:create'];
+
+					const scopeSlugs = await syncedPersonalOwnerScopes();
+
+					expect(scopeSlugs).toContain('credential:create');
+				});
+
+				test('should update an existing personalOwner role to remove the denied scopes', async () => {
+					globalConfig.canvasOnly.enabled = true;
+					globalConfig.canvasOnly.personalSpaceScopeDenyList = ['credential:create'];
+					const allScopes = createAllScopes();
+					const personalOwnerRoleDef = ALL_ROLES.project.find(
+						(r) => r.slug === PROJECT_OWNER_ROLE_SLUG,
+					)!;
+					const existingRole = createRole(PROJECT_OWNER_ROLE_SLUG, {
+						displayName: personalOwnerRoleDef.displayName,
+						description: personalOwnerRoleDef.description ?? null,
+						roleType: 'project',
+						scopes: allScopes.filter((s) => personalOwnerRoleDef.scopes.includes(s.slug)),
+					});
+					scopeRepository.find.mockResolvedValue(allScopes);
+					roleRepository.find.mockResolvedValue([existingRole]);
+					roleRepository.save.mockImplementation(async (entities) => entities as never);
+
+					await authRolesService.init();
+
+					const projectRoleSaveCall = roleRepository.save.mock.calls.find((call) => {
+						const roles = call[0] as Role[];
+						return Array.isArray(roles) && roles.some((r) => r?.roleType === 'project');
+					});
+					expect(projectRoleSaveCall).toBeDefined();
+					const savedRoles = projectRoleSaveCall?.[0] as Role[];
+					const updatedRole = savedRoles.find((r) => r?.slug === PROJECT_OWNER_ROLE_SLUG);
+					const scopeSlugs = updatedRole?.scopes.map((s) => s.slug) ?? [];
+					expect(scopeSlugs).not.toContain('credential:create');
+					expect(scopeSlugs).toContain('dataTable:create');
 				});
 			});
 
@@ -864,6 +963,45 @@ describe('AuthRolesService', () => {
 					];
 					for (const scope of externalSecretsScopes) {
 						expect(scopeSlugs).not.toContain(scope);
+					}
+				});
+			});
+
+			describe('promotion project access', () => {
+				test('should give admin and editor roles exactly the promotion scopes of the stored settings', async () => {
+					const allScopes = createAllScopes();
+					setupDefaultMocks(allScopes);
+					mockEntityManager.findBy.mockResolvedValue([
+						{
+							key: PROMOTION_PROJECT_ACCESS_SETTING_KEYS.whoCanPromote,
+							value: 'projectAdmins',
+							loadOnStartup: true,
+						},
+						{
+							key: PROMOTION_PROJECT_ACCESS_SETTING_KEYS.whoCanApprove,
+							value: 'projectAdminsAndEditors',
+							loadOnStartup: true,
+						},
+					]);
+
+					await authRolesService.init();
+
+					// No apply row is stored, so nobody below instance admin gets `promotions:apply`.
+					const expected = {
+						[PROJECT_ADMIN_ROLE_SLUG]: [
+							'promotions:approveReviews',
+							'promotions:promote',
+							'promotions:readReviews',
+						],
+						[PROJECT_EDITOR_ROLE_SLUG]: ['promotions:approveReviews', 'promotions:readReviews'],
+					};
+					for (const slug of [PROJECT_ADMIN_ROLE_SLUG, PROJECT_EDITOR_ROLE_SLUG] as const) {
+						const call = roleRepository.create.mock.calls.find((c) => (c[0] as Role).slug === slug);
+						const promotionScopes = (call?.[0] as Role).scopes
+							.map((s: Scope) => s.slug)
+							.filter((scope) => scope.startsWith('promotions:'))
+							.sort();
+						expect(promotionScopes).toEqual(expected[slug]);
 					}
 				});
 			});

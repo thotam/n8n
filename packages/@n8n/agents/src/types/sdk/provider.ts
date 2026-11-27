@@ -6,30 +6,86 @@
 export type Provider =
 	| 'anthropic'
 	| 'cerebras'
+	| 'custom'
 	| 'deepinfra'
 	| 'deepseek'
 	| 'google'
+	| 'google-vertex-anthropic'
 	| 'groq'
 	| 'mistral'
 	| 'openai'
 	| 'openrouter'
 	| 'perplexity'
-	| 'togetherai'
 	| 'vercel'
 	| 'xai'
 	| (string & {});
 
 // --- Per-Provider Thinking Configs ---
 
-export interface AnthropicThinkingConfig {
-	/** Token budget for extended thinking. Defaults to 10000. */
-	budgetTokens?: number;
-}
+/**
+ * Anthropic extended-thinking config. Discriminated by `mode`.
+ * - `'adaptive'`: the model decides how much to think per request.
+ * - `'enabled'` (default): a fixed token budget controlled by `budgetTokens`.
+ */
+export type AnthropicThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+export type AnthropicThinkingConfig =
+	| {
+			mode: 'adaptive';
+			/**
+			 * Controls whether thinking content is returned. Opus 4.7+ defaults to
+			 * `"omitted"` on the Anthropic API; we default to `"summarized"` so
+			 * reasoning streams and replay metadata are available.
+			 */
+			display?: 'omitted' | 'summarized';
+			/**
+			 * Adaptive-thinking effort (`output_config.effort` on the Anthropic API).
+			 * When omitted, Anthropic/SDK defaults apply.
+			 */
+			effort?: AnthropicThinkingEffort;
+	  }
+	| {
+			mode?: 'enabled';
+			/** Token budget for extended thinking. Defaults to 10000 when `effort` is omitted. */
+			budgetTokens?: number;
+			/**
+			 * Maps to Anthropic `output_config.effort`. Used with `type: 'enabled'` for
+			 * Anthropic-compatible gateways that reject `adaptive`.
+			 */
+			effort?: AnthropicThinkingEffort;
+	  };
+
+/**
+ * OpenAI / AI SDK reasoning effort.
+ * GPT-5.6 Sol supports none|low|medium|high|xhigh|max (no `minimal`).
+ * Older reasoning models may also accept `minimal`.
+ */
+export type OpenAIReasoningEffort =
+	| 'none'
+	| 'minimal'
+	| 'low'
+	| 'medium'
+	| 'high'
+	| 'xhigh'
+	| 'max';
 
 export interface OpenAIThinkingConfig {
-	/** Reasoning effort level. Defaults to 'medium'. */
-	reasoningEffort?: 'low' | 'medium' | 'high';
+	/**
+	 * Reasoning effort level. Mapped to AI SDK `providerOptions.<provider>.reasoningEffort`.
+	 * OpenAI quirks may default when unset; `custom` only forwards an explicit value.
+	 */
+	reasoningEffort?: OpenAIReasoningEffort;
+	/**
+	 * How much earlier reasoning text goes back to a `custom` (OpenAI-compatible)
+	 * model. `tool-chain` (default) sends the reasoning of the current tool chain
+	 * only. `conversation` also sends the reasoning of earlier turns, for models
+	 * served with a chat template that keeps it. Other providers ignore this.
+	 */
+	replayReasoning?: ReasoningReplayScope;
 }
+
+/** Which assistant messages have their reasoning text sent back to the model. */
+export type ReasoningReplayScope = 'tool-chain' | 'conversation';
 
 export interface GoogleThinkingConfig {
 	/** Token budget for thinking. */
@@ -40,7 +96,7 @@ export interface GoogleThinkingConfig {
 
 export interface XaiThinkingConfig {
 	/** Reasoning effort level. */
-	reasoningEffort?: 'low' | 'high';
+	reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 /**
@@ -48,7 +104,7 @@ export interface XaiThinkingConfig {
  * Known providers get their specific config; unknown providers default
  * to OpenAI-style (reasoningEffort) since most providers follow that API.
  */
-export type ThinkingConfigFor<P> = P extends 'anthropic'
+export type ThinkingConfigFor<P> = P extends 'anthropic' | 'google-vertex-anthropic'
 	? AnthropicThinkingConfig
 	: P extends 'google'
 		? GoogleThinkingConfig

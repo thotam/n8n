@@ -1,20 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createThreadComponentRenderer } from './createThreadComponentRenderer';
 import { createTestingPinia } from '@pinia/testing';
 import SubagentStepTimeline from '../components/SubagentStepTimeline.vue';
 import type { InstanceAiAgentNode, InstanceAiToolCallState } from '@n8n/api-types';
+import { mockedStore } from '@/__tests__/utils';
+import { INSTANCE_AI_DRAFT_WORKFLOW_PREVIEW_EXPERIMENT } from '@/app/constants/experiments';
+import { useNodeTypesStore } from '@/app/stores/nodeTypes.store';
+import { usePostHog } from '@/app/stores/posthog.store';
 
-const renderComponent = createThreadComponentRenderer(SubagentStepTimeline, {
-	global: {
-		stubs: {
-			// ToolCallStep is stubbed so we can verify which toolCall was passed
-			ToolCallStep: {
-				template: '<div data-test-id="tool-call-step">{{ toolCall.toolName }}</div>',
-				props: ['toolCall', 'label', 'showConnector'],
-			},
-		},
-	},
-});
+const renderComponent = createThreadComponentRenderer(SubagentStepTimeline);
 
 function makeToolCall(overrides: Partial<InstanceAiToolCallState> = {}): InstanceAiToolCallState {
 	return {
@@ -45,7 +39,7 @@ describe('SubagentStepTimeline', () => {
 		createTestingPinia({ stubActions: false });
 	});
 
-	it('should render text timeline entry as inline ButtonLike', () => {
+	it('should render text timeline entry as inline narration', () => {
 		const { getByText } = renderComponent({
 			props: {
 				agentNode: makeAgentNode({
@@ -57,9 +51,9 @@ describe('SubagentStepTimeline', () => {
 		expect(getByText('Analyzing the workflow')).toBeInTheDocument();
 	});
 
-	it('should render tool-call timeline entry via ToolCallStep stub', () => {
+	it('should render tool-call timeline entry', () => {
 		const tc = makeToolCall({ toolCallId: 'tc-42', toolName: 'search-nodes' });
-		const { getByTestId } = renderComponent({
+		const { getByText } = renderComponent({
 			props: {
 				agentNode: makeAgentNode({
 					toolCalls: [tc],
@@ -68,9 +62,49 @@ describe('SubagentStepTimeline', () => {
 			},
 		});
 
-		const step = getByTestId('tool-call-step');
-		expect(step).toBeInTheDocument();
-		expect(step.textContent).toContain('search-nodes');
+		expect(getByText('Searching nodes')).toBeInTheDocument();
+	});
+
+	describe('a running source write', () => {
+		function sourceWriteNode(status: InstanceAiAgentNode['status']) {
+			const { name, variant } = INSTANCE_AI_DRAFT_WORKFLOW_PREVIEW_EXPERIMENT;
+			vi.spyOn(usePostHog(), 'getVariant').mockImplementation((flag) =>
+				flag === name ? variant : undefined,
+			);
+			mockedStore(useNodeTypesStore).getNodeType = vi.fn((nodeType: string) =>
+				nodeType === 'n8n-nodes-base.gmail' ? { displayName: 'Gmail' } : null,
+			) as unknown as ReturnType<typeof useNodeTypesStore>['getNodeType'];
+			const read = makeToolCall({
+				toolCallId: 'tc-read',
+				toolName: 'get_node_types',
+				args: { nodeTypes: ['n8n-nodes-base.gmail'] },
+			});
+			const write = makeToolCall({
+				toolCallId: 'tc-write',
+				toolName: 'workspace_write_file',
+				args: { path: 'src/workflows/demo.workflow.ts' },
+				isLoading: true,
+			});
+			return makeAgentNode({
+				status,
+				toolCalls: [read, write],
+				timeline: [{ type: 'tool-call', toolCallId: 'tc-write' }],
+			});
+		}
+
+		it('names a node type the agent read while the sub-agent works', () => {
+			const { getByText } = renderComponent({ props: { agentNode: sourceWriteNode('active') } });
+
+			expect(getByText('Configuring Gmail nodes')).toBeInTheDocument();
+		});
+
+		it('keeps the plain tool label once the sub-agent stopped', () => {
+			const { queryByText } = renderComponent({
+				props: { agentNode: sourceWriteNode('cancelled') },
+			});
+
+			expect(queryByText('Configuring Gmail nodes')).toBeNull();
+		});
 	});
 
 	it('should skip child timeline entries', () => {
@@ -90,7 +124,7 @@ describe('SubagentStepTimeline', () => {
 	});
 
 	it('should skip tool-call entries with no matching toolCall in array', () => {
-		const { queryByTestId } = renderComponent({
+		const { container } = renderComponent({
 			props: {
 				agentNode: makeAgentNode({
 					toolCalls: [], // no tool calls
@@ -99,7 +133,7 @@ describe('SubagentStepTimeline', () => {
 			},
 		});
 
-		expect(queryByTestId('tool-call-step')).not.toBeInTheDocument();
+		expect(container.textContent).toBe('');
 	});
 
 	it('does not render a "Done" badge when status is completed', () => {
@@ -197,5 +231,106 @@ describe('SubagentStepTimeline', () => {
 			b.textContent?.includes('Crafting workflow'),
 		);
 		expect(triggerButton).toBeTruthy();
+	});
+
+	it('labels a settled reasoning entry with its first sentence', () => {
+		const { getByText } = renderComponent({
+			props: {
+				agentNode: makeAgentNode({
+					status: 'completed',
+					timeline: [
+						{
+							type: 'reasoning',
+							content: 'Checking the node schema. More detail.',
+						},
+					],
+				}),
+			},
+		});
+
+		expect(getByText('Checking the node schema.')).toBeInTheDocument();
+	});
+
+	it('streams the trailing reasoning entry on an active node', () => {
+		const { getByTestId } = renderComponent({
+			props: {
+				agentNode: makeAgentNode({
+					status: 'active',
+					timeline: [{ type: 'reasoning', content: 'Still thinking about tools.' }],
+				}),
+			},
+		});
+
+		const step = getByTestId('instance-ai-subagent-thinking');
+		expect(step).toHaveAttribute('data-active', 'true');
+		expect(step.querySelector('[class*="shimmer"]')).not.toBeNull();
+	});
+
+	it('does not stream a settled reasoning entry when later timeline content follows', () => {
+		const { getByText } = renderComponent({
+			props: {
+				agentNode: makeAgentNode({
+					status: 'active',
+					timeline: [
+						{ type: 'reasoning', content: 'Finished this thought.' },
+						{ type: 'text', content: 'Next step' },
+					],
+				}),
+			},
+		});
+
+		expect(getByText('Finished this thought.').className).not.toContain('shimmer');
+	});
+
+	it('groups adjacent tool calls into one step group', () => {
+		const { getAllByTestId, getByText } = renderComponent({
+			props: {
+				agentNode: makeAgentNode({
+					toolCalls: [makeToolCall({ toolCallId: 'tc-a' }), makeToolCall({ toolCallId: 'tc-b' })],
+					timeline: [
+						{ type: 'tool-call', toolCallId: 'tc-a' },
+						{ type: 'tool-call', toolCallId: 'tc-b' },
+					],
+				}),
+			},
+		});
+
+		expect(getAllByTestId('ai-activity-trace')).toHaveLength(1);
+		expect(getByText('2 tool calls')).toBeInTheDocument();
+	});
+
+	it('keeps text between tool calls and does not group across it', () => {
+		const { getAllByTestId, container } = renderComponent({
+			props: {
+				agentNode: makeAgentNode({
+					toolCalls: [makeToolCall({ toolCallId: 'tc-a' }), makeToolCall({ toolCallId: 'tc-b' })],
+					timeline: [
+						{ type: 'tool-call', toolCallId: 'tc-a' },
+						{ type: 'text', content: 'Between calls' },
+						{ type: 'tool-call', toolCallId: 'tc-b' },
+					],
+				}),
+			},
+		});
+
+		expect(getAllByTestId('ai-activity-trace')).toHaveLength(2);
+		expect(container.textContent).not.toContain('2 tool calls');
+		const text = container.textContent ?? '';
+		const firstTool = text.indexOf('Searching nodes');
+		expect(firstTool).toBeLessThan(text.indexOf('Between calls'));
+		expect(text.lastIndexOf('Searching nodes')).toBeGreaterThan(text.indexOf('Between calls'));
+	});
+
+	it('hides hidden tools', () => {
+		const { container } = renderComponent({
+			props: {
+				agentNode: makeAgentNode({
+					toolCalls: [makeToolCall({ toolCallId: 'tc-h', toolName: 'updateWorkingMemory' })],
+					timeline: [{ type: 'tool-call', toolCallId: 'tc-h' }],
+				}),
+			},
+		});
+
+		expect(container.textContent).toBe('');
 	});
 });

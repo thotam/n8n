@@ -2,28 +2,32 @@ import { Container } from '@n8n/di';
 
 import { ChatIntegrationRegistry } from './agent-chat-integration';
 import { loadChatSdk } from './esm-loader';
-import type { CardElement } from 'chat';
+import type { ButtonStyle, CardElement } from 'chat';
+
+type ComponentText = string | { text?: string; [key: string]: unknown };
 
 /**
  * Component type from agent SDK suspend/toMessage payloads.
  */
 export interface SuspendComponent {
 	type: string;
-	text?: string;
+	text?: ComponentText;
 	label?: string;
 	value?: string;
-	style?: string;
+	style?: ButtonStyle | string;
 	url?: string;
 	altText?: string;
 	placeholder?: string;
 	/** Accessory button on a section */
-	button?: { label: string; value: string; style?: string };
+	button?: { label?: string; text?: ComponentText; value: string; style?: ButtonStyle | string };
 	/** Options for select / radio_select components */
 	options?: Array<{ label: string; value: string; description?: string }>;
 	/** Fields for fields component */
 	fields?: Array<{ label: string; value: string }>;
-	/** Elements array for context blocks */
-	elements?: Array<{ type: string; text?: string; url?: string; altText?: string }>;
+	/** Alias agents commonly use for fields component entries */
+	items?: Array<{ label: string; value: string }>;
+	/** Elements array for context components */
+	elements?: Array<{ type: string; text?: ComponentText; url?: string; altText?: string }>;
 	/** Allow additional properties from the payload */
 	id?: string;
 	[key: string]: unknown;
@@ -35,7 +39,54 @@ interface SuspendPayload {
 	components: SuspendComponent[];
 }
 
+/**
+ * JSON Schema shape passed to {@link ComponentMapper.toCard} when the suspend
+ * payload comes from an integration action's interactive card.
+ *
+ * `wrapValueForSchema` inspects the top-level properties to pick the wrapping
+ * convention — a schema with `{ type, value }` produces `{ type: 'button',
+ * value: rawValue }` on click.
+ */
+export const INTERACTIVE_CARD_RESUME_JSON_SCHEMA = {
+	type: 'object',
+	properties: {
+		type: { type: 'string' },
+		id: { type: 'string' },
+		value: { type: 'string' },
+	},
+} as const;
+
 type ChatSdk = Awaited<ReturnType<typeof loadChatSdk>>;
+
+export type ShortenCallback = (
+	actionId: string,
+	value: string,
+	label?: string,
+) => Promise<{ id: string; value: string }>;
+
+/**
+ * Passed to {@link AgentChatIntegration.normalizeComponents} so a platform
+ * that folds several buttons into one native control (e.g. WhatsApp's list,
+ * see `WhatsAppIntegration.normalizeComponents`) can give each folded option
+ * the same resume encoding a real button would get, instead of a select's —
+ * see `wrapResumeValue`'s doc for why that distinction matters.
+ */
+export interface NormalizeComponentsContext {
+	runId: string;
+	toolCallId: string;
+	/** The card title: the payload's `title`, or its `message` when there is no title. */
+	title?: string;
+	/**
+	 * Wraps a raw resume value exactly as `makeButton` below does
+	 * (`JSON.stringify(wrapValueForSchema(rawValue, resumeSchema))`). A
+	 * native select's resume value is never schema-wrapped this way — its
+	 * decode path always produces a fixed `{ type: 'select', id, value }`
+	 * shape — so a button folded into a select without this would resume
+	 * with the wrong shape for a tool whose schema is `{ approved }` or
+	 * `{ type, value }`.
+	 */
+	wrapResumeValue: (rawValue: string) => string;
+}
 
 /** Shared state threaded through per-component render helpers. */
 interface ComponentRenderContext {
@@ -46,6 +97,24 @@ interface ComponentRenderContext {
 	children: unknown[];
 	buttons: unknown[];
 	makeButton: (label: string, rawValue: string, style?: string) => Promise<unknown>;
+}
+
+/**
+ * Shared by the platforms whose rich cards have no select control. Telegram
+ * keeps its own override because it also rewrites images.
+ */
+export function expandSelectsToButtons(components: SuspendComponent[]): SuspendComponent[] {
+	const normalized: SuspendComponent[] = [];
+	for (const c of components) {
+		if (c.type === 'select' || c.type === 'radio_select') {
+			for (const opt of c.options ?? []) {
+				normalized.push({ type: 'button', label: opt.label, value: opt.value });
+			}
+			continue;
+		}
+		normalized.push(c);
+	}
+	return normalized;
 }
 
 /**
@@ -71,14 +140,21 @@ export class ComponentMapper {
 		runId: string,
 		toolCallId: string,
 		resumeSchema?: unknown,
-		shortenCallback?: (actionId: string, value: string) => Promise<{ id: string; value: string }>,
+		shortenCallback?: ShortenCallback,
 		platform?: string,
 	): Promise<CardElement> {
 		const sdk = await loadChatSdk();
 
 		// Delegate per-platform normalization to the Integration implementation.
 		const integration = platform ? Container.get(ChatIntegrationRegistry).get(platform) : undefined;
-		const components = integration?.normalizeComponents?.(payload.components) ?? payload.components;
+		const components =
+			(await integration?.normalizeComponents?.(payload.components, {
+				runId,
+				toolCallId,
+				title: payload.title ?? payload.message,
+				wrapResumeValue: (rawValue) =>
+					JSON.stringify(this.wrapValueForSchema(rawValue, resumeSchema)),
+			})) ?? payload.components;
 
 		const children: unknown[] = [];
 		const buttons: unknown[] = [];
@@ -91,7 +167,7 @@ export class ComponentMapper {
 			// For platforms with short callback limits (e.g. Telegram 64 bytes),
 			// replace the full id/value with a short lookup key.
 			if (shortenCallback) {
-				const shortened = await shortenCallback(id, value);
+				const shortened = await shortenCallback(id, value, label);
 				id = shortened.id;
 				value = shortened.value;
 			}
@@ -99,7 +175,7 @@ export class ComponentMapper {
 			return sdk.Button({
 				id,
 				label,
-				style: style === 'danger' ? 'danger' : 'primary',
+				...(isButtonStyle(style) ? { style } : {}),
 				value,
 			});
 		};
@@ -131,8 +207,15 @@ export class ComponentMapper {
 		const { component, children, buttons, makeButton } = ctx;
 		switch (component.type) {
 			case 'button':
+				// `label` is the canonical caption field, but models trained on real
+				// Slack Block Kit (where buttons carry `text`) frequently emit the
+				// caption under `text`. Fall back to it before the generic placeholder.
 				buttons.push(
-					await makeButton(component.label ?? 'Action', component.value ?? '', component.style),
+					await makeButton(
+						component.label ?? componentTextToString(component.text) ?? 'Action',
+						component.value ?? '',
+						component.style,
+					),
 				);
 				return;
 			case 'section':
@@ -168,16 +251,20 @@ export class ComponentMapper {
 		children,
 		makeButton,
 	}: ComponentRenderContext): Promise<void> {
-		if (component.text) {
-			children.push(sdk.Section([sdk.CardText(component.text)] as never));
+		const text = componentTextToString(component.text);
+		if (text) {
+			children.push(sdk.Section([sdk.CardText(text)] as never));
 		}
-		// Section accessory buttons must be in a separate Actions block.
-		// Chat SDK's cardToBlockKit silently drops Button children
-		// inside Section — only Actions blocks render buttons.
+		// Chat SDK adapters render interactive controls from Actions containers,
+		// so section accessory buttons are emitted as adjacent actions.
 		if (component.button) {
 			children.push(
 				sdk.Actions([
-					await makeButton(component.button.label, component.button.value, component.button.style),
+					await makeButton(
+						component.button.label ?? componentTextToString(component.button.text) ?? 'Action',
+						component.button.value,
+						component.button.style,
+					),
 				] as never),
 			);
 		}
@@ -187,24 +274,27 @@ export class ComponentMapper {
 		children.push(
 			sdk.Image({
 				url: component.url as string,
-				alt: (component.altText as string) ?? 'image',
+				alt: component.altText ?? 'image',
 			}),
 		);
 	}
 
 	private appendContext({ component, sdk, children }: ComponentRenderContext): void {
-		// Context blocks contain an elements array with text/image items
+		// Context components can contain an elements array with text/image items.
 		if (component.elements && Array.isArray(component.elements)) {
 			for (const el of component.elements) {
-				if (el.type === 'text' && el.text) {
-					children.push(sdk.CardText(el.text));
+				const text = componentTextToString(el.text);
+				if (el.type === 'text' && text) {
+					children.push(sdk.CardText(text));
 				} else if (el.type === 'image' && el.url) {
 					children.push(sdk.Image({ url: el.url, alt: el.altText ?? '' }));
 				}
 			}
-		} else if (component.text) {
+		} else {
+			const text = componentTextToString(component.text);
+			if (!text) return;
 			// Fallback: plain text context
-			children.push(sdk.CardText(component.text));
+			children.push(sdk.CardText(text));
 		}
 	}
 
@@ -218,7 +308,7 @@ export class ComponentMapper {
 		children.push(
 			sdk.Actions([
 				sdk.Select({
-					id: `ri-sel:${component.id ?? 'select'}:${runId}:${toolCallId}`,
+					id: selectComponentId(component, 'select', runId, toolCallId),
 					label: component.label ?? 'Select',
 					placeholder: component.placeholder,
 					options: this.toSelectOptions(component),
@@ -237,7 +327,7 @@ export class ComponentMapper {
 		children.push(
 			sdk.Actions([
 				sdk.RadioSelect({
-					id: `ri-sel:${component.id ?? 'radio'}:${runId}:${toolCallId}`,
+					id: selectComponentId(component, 'radio', runId, toolCallId),
 					label: component.label ?? 'Select',
 					options: this.toSelectOptions(component),
 				}),
@@ -246,9 +336,10 @@ export class ComponentMapper {
 	}
 
 	private appendFields({ component, sdk, children }: ComponentRenderContext): void {
-		const fieldElements = (component.fields ?? []).map((f) =>
-			sdk.Field({ label: f.label, value: f.value }),
-		);
+		const fields = component.fields ?? component.items ?? [];
+		if (fields.length === 0) return;
+
+		const fieldElements = fields.map((f) => sdk.Field({ label: f.label, value: f.value }));
 		children.push(sdk.Fields(fieldElements as never));
 	}
 
@@ -267,7 +358,7 @@ export class ComponentMapper {
 	 * tool's resume schema.
 	 *
 	 * Inspects the JSON Schema top-level properties to determine the shape:
-	 * - Schema has `approved` (boolean) → `{ approved: value === 'true' }`
+	 * - Schema has `approved` → an approval decision, including an optional session scope
 	 * - Schema has `values` (object) → `{ values: { action: value } }`
 	 * - No schema / unknown → try JSON.parse, fall back to `{ value }`
 	 */
@@ -289,10 +380,11 @@ export class ComponentMapper {
 		const props = schema.properties ?? {};
 
 		if ('approved' in props) {
+			if (rawValue === 'session') return { approved: true, scope: 'session' };
 			return { approved: rawValue === 'true' };
 		}
 
-		// Rich interaction resume schema: { type, value }
+		// Interactive card resume schema: { type, value }
 		if ('type' in props && 'value' in props) {
 			return { type: 'button', value: rawValue };
 		}
@@ -336,7 +428,10 @@ export class ComponentMapper {
 	private appendMarkdownChild(c: SuspendComponent, sdk: ChatSdk, children: unknown[]): void {
 		switch (c.type) {
 			case 'section':
-				if (c.text) children.push(sdk.Section([sdk.CardText(c.text)] as never));
+				{
+					const text = componentTextToString(c.text);
+					if (text) children.push(sdk.Section([sdk.CardText(text)] as never));
+				}
 				return;
 			case 'divider':
 				children.push(sdk.Divider());
@@ -348,7 +443,10 @@ export class ComponentMapper {
 				this.appendMarkdownContext(c, sdk, children);
 				return;
 			default:
-				if (c.text) children.push(sdk.CardText(c.text));
+				{
+					const text = componentTextToString(c.text);
+					if (text) children.push(sdk.CardText(text));
+				}
 				return;
 		}
 	}
@@ -356,14 +454,55 @@ export class ComponentMapper {
 	private appendMarkdownContext(c: SuspendComponent, sdk: ChatSdk, children: unknown[]): void {
 		if (c.elements) {
 			for (const el of c.elements) {
-				if (el.type === 'text' && el.text) {
-					children.push(sdk.CardText(el.text));
+				const text = componentTextToString(el.text);
+				if (el.type === 'text' && text) {
+					children.push(sdk.CardText(text));
 				} else if (el.type === 'image' && el.url) {
 					children.push(sdk.Image({ url: el.url, alt: el.altText ?? '' }));
 				}
 			}
-		} else if (c.text) {
-			children.push(sdk.CardText(c.text));
+		} else {
+			const text = componentTextToString(c.text);
+			if (text) children.push(sdk.CardText(text));
 		}
 	}
+}
+
+export function componentTextToString(text: unknown): string | undefined {
+	if (typeof text === 'string') return text;
+	if (text && typeof text === 'object' && 'text' in text) {
+		const value = (text as { text?: unknown }).text;
+		if (typeof value === 'string') return value;
+	}
+	return undefined;
+}
+
+function isButtonStyle(style: unknown): style is ButtonStyle {
+	return style === 'primary' || style === 'danger' || style === 'default';
+}
+
+/**
+ * A platform's `normalizeComponents` can pre-build a `resume:{runId}:{toolCallId}:{index}`
+ * id (see `NormalizeComponentsContext`) for a select folded from buttons, so its
+ * options resume like buttons instead of through the generic `ri-sel:` select
+ * decode path. Passed through verbatim when present; otherwise built as usual.
+ */
+function selectComponentId(
+	component: SuspendComponent,
+	kind: 'select' | 'radio',
+	runId: string,
+	toolCallId: string,
+): string {
+	// Only an id matching the exact generated shape for *this* run/tool call
+	// passes through — a user-supplied id that merely starts with "resume:"
+	// (a different run, or not one of ours at all) would otherwise be parsed
+	// as button data and resume with the wrong shape.
+	const generatedResumePrefix = `resume:${runId}:${toolCallId}:`;
+	if (
+		component.id?.startsWith(generatedResumePrefix) &&
+		/^\d+$/.test(component.id.slice(generatedResumePrefix.length))
+	) {
+		return component.id;
+	}
+	return `ri-sel:${component.id ?? kind}:${runId}:${toolCallId}`;
 }

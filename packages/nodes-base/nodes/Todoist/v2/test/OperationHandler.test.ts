@@ -1,5 +1,6 @@
-import { mock } from 'jest-mock-extended';
+import { mock } from 'vitest-mock-extended';
 import type { IExecuteFunctions, INode } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import {
 	todoistApiRequest,
@@ -40,38 +41,39 @@ import {
 	LabelUpdateHandler,
 	QuickAddHandler,
 } from '../OperationHandler';
+import type { MockedFunction } from 'vitest';
 
 // Mock the GenericFunctions
-jest.mock('../../GenericFunctions', () => ({
-	todoistApiRequest: jest.fn(),
-	todoistApiGetAllRequest: jest.fn(),
-	todoistSyncRequest: jest.fn(),
-	FormatDueDatetime: jest.fn((dateTime: string) => dateTime),
+vi.mock('../../GenericFunctions', () => ({
+	todoistApiRequest: vi.fn(),
+	todoistApiGetAllRequest: vi.fn(),
+	todoistSyncRequest: vi.fn(),
+	FormatDueDatetime: vi.fn((dateTime: string) => dateTime),
 }));
 
 // Mock uuid
-jest.mock('uuid', () => ({
-	v4: jest.fn(() => 'mock-uuid-123'),
+vi.mock('uuid', () => ({
+	v4: vi.fn(() => 'mock-uuid-123'),
 }));
 
-const mockTodoistApiRequest = todoistApiRequest as jest.MockedFunction<typeof todoistApiRequest>;
-const mockTodoistApiGetAllRequest = todoistApiGetAllRequest as jest.MockedFunction<
+const mockTodoistApiRequest = todoistApiRequest as MockedFunction<typeof todoistApiRequest>;
+const mockTodoistApiGetAllRequest = todoistApiGetAllRequest as MockedFunction<
 	typeof todoistApiGetAllRequest
 >;
-const mockTodoistSyncRequest = todoistSyncRequest as jest.MockedFunction<typeof todoistSyncRequest>;
+const mockTodoistSyncRequest = todoistSyncRequest as MockedFunction<typeof todoistSyncRequest>;
 
 // Mock Context interface
 const createMockContext = (params: Record<string, any> = {}) =>
 	mock<IExecuteFunctions>({
-		getNodeParameter: jest.fn((key: string, _idx?: number, defaultValue?: any) =>
+		getNodeParameter: vi.fn((key: string, _idx?: number, defaultValue?: any) =>
 			key in params ? params[key] : defaultValue,
 		),
-		getNode: jest.fn(() => mock<INode>({ typeVersion: 2.1 })),
+		getNode: vi.fn(() => mock<INode>({ typeVersion: 2.1 })),
 	});
 
 describe('OperationHandler', () => {
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 	});
 
 	describe('Task Handlers', () => {
@@ -100,7 +102,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/tasks',
+					requestPath`/tasks`,
 					expect.objectContaining({
 						content: 'Test task',
 						project_id: '123456',
@@ -131,7 +133,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/tasks',
+					requestPath`/tasks`,
 					expect.objectContaining({
 						content: 'Task with due date',
 						project_id: '123456',
@@ -155,7 +157,10 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('POST', '/tasks/123456/close');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
+					'POST',
+					requestPath`/tasks/123456/close`,
+				);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -171,7 +176,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', '/tasks/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', requestPath`/tasks/123456`);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -193,7 +198,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', '/tasks/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', requestPath`/tasks/123456`);
 				expect(result).toEqual({ data: expectedResponse });
 			});
 		});
@@ -221,7 +226,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(
 					mockCtx,
-					'/tasks',
+					requestPath`/tasks`,
 					expect.objectContaining({
 						project_id: '123456',
 						label: '789',
@@ -243,14 +248,19 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(mockCtx, '/tasks', {}, undefined);
+				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(
+					mockCtx,
+					requestPath`/tasks`,
+					{},
+					undefined,
+				);
 				expect(result).toEqual({ data: expectedResponse });
 			});
 
 			it('should use /tasks/filter endpoint when filter is set on api/v1 (node version >= 2.2)', async () => {
 				const handler = new GetAllHandler();
 				const mockCtx = mock<IExecuteFunctions>({
-					getNodeParameter: jest.fn((key: string, _idx?: number, defaultValue?: any) => {
+					getNodeParameter: vi.fn((key: string, _idx?: number, defaultValue?: any) => {
 						const params: Record<string, any> = {
 							returnAll: false,
 							limit: 5,
@@ -258,7 +268,7 @@ describe('OperationHandler', () => {
 						};
 						return key in params ? params[key] : defaultValue;
 					}),
-					getNode: jest.fn(() => mock<INode>({ typeVersion: 2.2 })),
+					getNode: vi.fn(() => mock<INode>({ typeVersion: 2.2 })),
 				});
 
 				const mockApiResponse = [{ id: '1', content: 'Task due today' }];
@@ -268,7 +278,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(
 					mockCtx,
-					'/tasks/filter',
+					requestPath`/tasks/filter`,
 					expect.objectContaining({ query: 'today' }),
 					5,
 				);
@@ -278,7 +288,7 @@ describe('OperationHandler', () => {
 			it('should use /tasks endpoint when filter is set on rest/v2 (node version < 2.2)', async () => {
 				const handler = new GetAllHandler();
 				const mockCtx = mock<IExecuteFunctions>({
-					getNodeParameter: jest.fn((key: string, _idx?: number, defaultValue?: any) => {
+					getNodeParameter: vi.fn((key: string, _idx?: number, defaultValue?: any) => {
 						const params: Record<string, any> = {
 							returnAll: false,
 							limit: 5,
@@ -286,7 +296,7 @@ describe('OperationHandler', () => {
 						};
 						return key in params ? params[key] : defaultValue;
 					}),
-					getNode: jest.fn(() => mock<INode>({ typeVersion: 2.1 })),
+					getNode: vi.fn(() => mock<INode>({ typeVersion: 2.1 })),
 				});
 
 				const mockApiResponse = [{ id: '1', content: 'Task due today' }];
@@ -296,7 +306,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(
 					mockCtx,
-					'/tasks',
+					requestPath`/tasks`,
 					expect.objectContaining({ filter: 'today' }),
 					5,
 				);
@@ -315,7 +325,10 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('POST', '/tasks/123456/reopen');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
+					'POST',
+					requestPath`/tasks/123456/reopen`,
+				);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -339,7 +352,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/tasks/123456',
+					requestPath`/tasks/123456`,
 					expect.objectContaining({
 						content: 'Updated task',
 						description: 'Updated description',
@@ -438,7 +451,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/projects',
+					requestPath`/projects`,
 					expect.objectContaining({
 						name: 'Test Project',
 						color: 'blue',
@@ -467,7 +480,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', '/projects/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', requestPath`/projects/123456`);
 				expect(result).toEqual({ data: expectedResponse });
 			});
 		});
@@ -486,7 +499,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(mockCtx, '/projects');
+				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(mockCtx, requestPath`/projects`);
 				expect(result).toEqual({ data: expectedResponse });
 			});
 		});
@@ -509,7 +522,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/projects/123456',
+					requestPath`/projects/123456`,
 					expect.objectContaining({
 						name: 'Updated Project',
 						color: 'red',
@@ -531,7 +544,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', '/projects/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', requestPath`/projects/123456`);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -547,7 +560,10 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('POST', '/projects/123456/archive');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
+					'POST',
+					requestPath`/projects/123456/archive`,
+				);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -563,7 +579,10 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('POST', '/projects/123456/unarchive');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
+					'POST',
+					requestPath`/projects/123456/unarchive`,
+				);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -586,7 +605,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(
 					mockCtx,
-					'/projects/123456/collaborators',
+					requestPath`/projects/123456/collaborators`,
 				);
 				expect(result).toEqual({ data: expectedResponse });
 			});
@@ -618,7 +637,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/sections',
+					requestPath`/sections`,
 					expect.objectContaining({
 						name: 'Test Section',
 						project_id: '123456',
@@ -646,7 +665,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', '/sections/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', requestPath`/sections/123456`);
 				expect(result).toEqual({ data: expectedResponse });
 			});
 		});
@@ -671,7 +690,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(
 					mockCtx,
-					'/sections',
+					requestPath`/sections`,
 					expect.objectContaining({
 						project_id: '123456',
 					}),
@@ -696,7 +715,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/sections/123456',
+					requestPath`/sections/123456`,
 					expect.objectContaining({
 						name: 'Updated Section',
 					}),
@@ -716,7 +735,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', '/sections/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', requestPath`/sections/123456`);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -749,7 +768,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/labels',
+					requestPath`/labels`,
 					expect.objectContaining({
 						name: 'Test Label',
 						color: 'red',
@@ -778,7 +797,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', '/labels/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', requestPath`/labels/123456`);
 				expect(result).toEqual({ data: expectedResponse });
 			});
 		});
@@ -797,7 +816,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(mockCtx, '/labels');
+				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(mockCtx, requestPath`/labels`);
 				expect(result).toEqual({ data: expectedResponse });
 			});
 		});
@@ -820,7 +839,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/labels/123456',
+					requestPath`/labels/123456`,
 					expect.objectContaining({
 						name: 'Updated Label',
 						color: 'green',
@@ -842,7 +861,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', '/labels/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', requestPath`/labels/123456`);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -870,7 +889,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/comments',
+					requestPath`/comments`,
 					expect.objectContaining({
 						task_id: '123456',
 						content: 'Test comment',
@@ -897,7 +916,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', '/comments/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('GET', requestPath`/comments/123456`);
 				expect(result).toEqual({ data: expectedResponse });
 			});
 		});
@@ -922,7 +941,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(
 					mockCtx,
-					'/comments',
+					requestPath`/comments`,
 					expect.objectContaining({
 						task_id: '123456',
 					}),
@@ -946,7 +965,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiGetAllRequest).toHaveBeenCalledWith(
 					mockCtx,
-					'/comments',
+					requestPath`/comments`,
 					expect.objectContaining({
 						project_id: '789',
 					}),
@@ -971,7 +990,7 @@ describe('OperationHandler', () => {
 
 				expect(mockTodoistApiRequest).toHaveBeenCalledWith(
 					'POST',
-					'/comments/123456',
+					requestPath`/comments/123456`,
 					expect.objectContaining({
 						content: 'Updated comment',
 					}),
@@ -991,7 +1010,7 @@ describe('OperationHandler', () => {
 
 				const result = await handler.handleOperation(mockCtx, 0);
 
-				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', '/comments/123456');
+				expect(mockTodoistApiRequest).toHaveBeenCalledWith('DELETE', requestPath`/comments/123456`);
 				expect(result).toEqual({ success: true });
 			});
 		});
@@ -1024,7 +1043,7 @@ describe('OperationHandler', () => {
 				expect(mockTodoistSyncRequest).toHaveBeenCalledWith(
 					{ text: 'Buy milk tomorrow @shopping' },
 					{},
-					'/quick/add',
+					requestPath`/quick/add`,
 				);
 				expect(result).toEqual({ data: expectedResponse });
 			});
@@ -1063,7 +1082,7 @@ describe('OperationHandler', () => {
 						auto_reminder: true,
 					},
 					{},
-					'/quick/add',
+					requestPath`/quick/add`,
 				);
 				expect(result).toEqual({ data: expectedResponse });
 			});
@@ -1093,7 +1112,7 @@ describe('OperationHandler', () => {
 						note: 'Check the quarterly reports',
 					},
 					{},
-					'/quick/add',
+					requestPath`/quick/add`,
 				);
 				expect(result).toEqual({ data: expectedResponse });
 			});
@@ -1123,7 +1142,7 @@ describe('OperationHandler', () => {
 						reminder: 'next Monday at 9am',
 					},
 					{},
-					'/quick/add',
+					requestPath`/quick/add`,
 				);
 				expect(result).toEqual({ data: expectedResponse });
 			});
@@ -1158,7 +1177,7 @@ describe('OperationHandler', () => {
 						auto_reminder: true,
 					},
 					{},
-					'/quick/add',
+					requestPath`/quick/add`,
 				);
 				expect(result).toEqual({ data: expectedResponse });
 			});
@@ -1188,7 +1207,7 @@ describe('OperationHandler', () => {
 				expect(mockTodoistSyncRequest).toHaveBeenCalledWith(
 					{ text: 'Simple task' },
 					{},
-					'/quick/add',
+					requestPath`/quick/add`,
 				);
 				expect(result).toEqual({ data: expectedResponse });
 			});
@@ -1208,7 +1227,7 @@ describe('OperationHandler', () => {
 				expect(mockTodoistSyncRequest).toHaveBeenCalledWith(
 					{ text: 'Buy milk' },
 					{},
-					'/tasks/quick',
+					requestPath`/tasks/quick`,
 				);
 			});
 		});

@@ -3,7 +3,7 @@ import type { CSSProperties } from 'vue';
 import { computed, onMounted, ref } from 'vue';
 import { capitalizeFirstLetter } from '@/app/utils/htmlUtils';
 import { convertToDisplayDate } from '@/app/utils/typesUtils';
-import { useToast } from '@/app/composables/useToast';
+import { useToast } from '@n8n/composables/useToast';
 import { useMessage } from '@/app/composables/useMessage';
 import { useDocumentTitle } from '@/app/composables/useDocumentTitle';
 import type { IFormInput, IFormInputs } from '@/Interface';
@@ -13,15 +13,22 @@ import { MODAL_CONFIRM } from '@/app/constants';
 import humanizeDuration from 'humanize-duration';
 import type { Events } from 'v3-infinite-loading';
 import InfiniteLoading from 'v3-infinite-loading';
-import { useSettingsStore } from '@/app/stores/settings.store';
-import { createFormEventBus } from '@n8n/design-system/utils';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import { createFormEventBus } from '@n8n/design-system';
 import type { TableColumnCtx } from 'element-plus';
 import { useI18n } from '@n8n/i18n';
 import { usePageRedirectionHelper } from '@/app/composables/usePageRedirectionHelper';
 import { useSSOStore } from '../sso.store';
 
 import { ElTable, ElTableColumn } from 'element-plus';
-import { N8nActionBox, N8nButton, N8nFormInputs, N8nHeading, N8nInfoTip } from '@n8n/design-system';
+import {
+	N8nEmptyState,
+	N8nButton,
+	N8nFormInputs,
+	N8nHeading,
+	N8nInfoTip,
+} from '@n8n/design-system';
+import AuthenticationBackLink from '../components/AuthenticationBackLink.vue';
 type TableRow = {
 	status: string;
 	startAt: string;
@@ -52,6 +59,7 @@ type LDAPConfigForm = {
 	pageSize: string;
 	searchTimeout: string;
 	enforceEmailUniqueness: boolean;
+	linkExistingAccountsByEmail: boolean;
 };
 
 type CellClassStyleMethodParams<T> = {
@@ -169,6 +177,7 @@ const onSubmit = async () => {
 		searchPageSize: +formValues.pageSize,
 		searchTimeout: +formValues.searchTimeout,
 		enforceEmailUniqueness: formValues.enforceEmailUniqueness,
+		linkExistingAccountsByEmail: formValues.linkExistingAccountsByEmail,
 	};
 
 	let saveForm = true;
@@ -561,6 +570,17 @@ const getLdapConfig = async () => {
 				},
 				shouldDisplay: whenLoginEnabled,
 			},
+			{
+				name: 'linkExistingAccountsByEmail',
+				initialValue: adConfig.value.linkExistingAccountsByEmail,
+				properties: {
+					type: 'toggle',
+					label: i18n.baseText('settings.ldap.form.linkExistingAccountsByEmail.label'),
+					tooltipText: i18n.baseText('settings.ldap.form.linkExistingAccountsByEmail.tooltip'),
+					required: false,
+				},
+				shouldDisplay: whenLoginEnabled,
+			},
 		];
 	} catch (error) {
 		toast.showError(error, i18n.baseText('settings.ldap.configurationError'));
@@ -622,6 +642,7 @@ onMounted(async () => {
 
 <template>
 	<div v-if="!isLDAPFeatureEnabled">
+		<AuthenticationBackLink />
 		<div :class="[$style.header, 'mb-2xl']">
 			<N8nHeading size="2xlarge">
 				{{ i18n.baseText('settings.ldap') }}
@@ -631,7 +652,7 @@ onMounted(async () => {
 		<N8nInfoTip type="note" theme="info" tooltip-placement="right" class="mb-l">
 			{{ i18n.baseText('settings.ldap.note') }}
 		</N8nInfoTip>
-		<N8nActionBox
+		<N8nEmptyState
 			:description="i18n.baseText('settings.ldap.disabled.description')"
 			:button-text="i18n.baseText('settings.ldap.disabled.buttonText')"
 			@click:button="goToUpgrade"
@@ -639,9 +660,10 @@ onMounted(async () => {
 			<template #heading>
 				<span>{{ i18n.baseText('settings.ldap.disabled.title') }}</span>
 			</template>
-		</N8nActionBox>
+		</N8nEmptyState>
 	</div>
 	<div v-else>
+		<AuthenticationBackLink />
 		<div :class="$style.container">
 			<div :class="$style.header">
 				<N8nHeading size="2xlarge">
@@ -734,7 +756,7 @@ onMounted(async () => {
 			</div>
 			<div :class="['pb-3xl', $style.buttonContainer]">
 				<N8nButton
-					variant="subtle"
+					variant="outline"
 					:label="i18n.baseText('settings.ldap.dryRun')"
 					size="large"
 					class="mr-s"
@@ -780,7 +802,7 @@ onMounted(async () => {
 
 	> span {
 		font-size: var(--font-size--sm);
-		font-weight: var(--font-weight--bold);
+		font-weight: var(--font-weight--medium);
 		padding: 0;
 	}
 

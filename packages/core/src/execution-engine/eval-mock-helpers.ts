@@ -7,7 +7,16 @@
  * type definitions in index.ts (module augmentation).
  */
 
-import type { IHttpRequestOptions, INode, INodeProperties, IRequestOptions } from 'n8n-workflow';
+import { isRecord } from '@n8n/utils/is-record';
+import type {
+	IHttpRequestOptions,
+	INode,
+	INodeProperties,
+	IRequestOptions,
+	IWorkflowExecuteAdditionalData,
+} from 'n8n-workflow';
+import { generateKeyPairSync } from 'node:crypto';
+import { STATUS_CODES } from 'node:http';
 import { Readable } from 'node:stream';
 
 import type { EvalLlmMockHandler, EvalMockHttpResponse } from './index';
@@ -16,28 +25,20 @@ import type { EvalLlmMockHandler, EvalMockHttpResponse } from './index';
 // Mock credentials
 // ---------------------------------------------------------------------------
 
-// NOT A SECRET — throwaway RSA key used only in eval mode to satisfy OAuth
-// signing requirements so HTTP requests reach the interception layer. This key
-// has no access to any real service. It never leaves the process. The mock
-// credential system needs a structurally valid key for jwt.sign() to succeed;
-// without it, OAuth nodes crash before the HTTP interceptor can capture the request.
-// Generated once offline via: openssl genrsa 2048
-// prettier-ignore
-const EVAL_MOCK_RSA_KEY =
-	'-----BEGIN RSA PRIVATE KEY-----\n' +
-	'MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWep4PAtGoRBh2hHiwxBgNlHOVMSMk7\n' +
-	'R1ueXBOwqmLMSsGCnl1kV2QLFG6mnMBOxJBbXGLuzJsFMDPCnZGfnJBfcCnxGYCE\n' +
-	'c0bO3GN/S4Lk1eTarfEDQC/k0GFyyGPMQ5rnmZxSOqX1MtVCoB5FEGnLJEMqNFDt\n' +
-	'tJmYMmzxR9Lgd7bVMOYG8xDT/PYWw28GdgNZhAIPqFVHqMjUFWC76Q8rA6OF4OU0\n' +
-	'S0IAejdh3LGAzMIjCMfmSBn+VaRzcBVoKBpZgN0a1YjqFCr8LpqpMIxLfm+7SIdB\n' +
-	'Z6YWxEeOwKoiMIB9drmHO2lNzSTmblOKMPmqJwIDAQABAoIBAC5RgZ+hBx7xHNaM\n' +
-	'pPgwGMnCd3KE2M8RMBx1bfOUEODjQx7E3fOtqqa4HNqVGz9HBfVzL4JBpYCknI1X\n' +
-	'p9Dxd6hf0Ht5BPMWxPBqKGhqCSxIxwvGLShDANGKbjilSTkmhGBDrGj3U0DRXKxmU\n' +
-	'i6jDP0VJwy9ZmkBqxJvYEhW0m+fQd0JJKQ5HRk2RNXoP+GBmZsBeIs4uAt14i6n4\n' +
-	'kfYCR9CMSBC6DlNWxqGSAWzPrKAMPMiL5GJWGhy+A4DEXPewYQ6LpbD4xXEJN2v7\n' +
-	'Tae0YYjM/B7oy3JV5UsMaQKBgQDjYKMcn8io6Ei7RDYH8sMpKLejIEjE7ksMvYCk\n' +
-	'1RGx/w0Q3n5FVjMP3oG3UcUx9EB7GD8NMo74J/lEJ2UsBnIP3ggOb3AE+pWHNE0K\n' +
-	'-----END RSA PRIVATE KEY-----';
+// NOT A SECRET — throwaway RSA key used only in eval mode to satisfy local
+// JWT/OAuth signing (e.g. Google service-account nodes call jwt.sign with
+// credentials.privateKey before any HTTP request) so requests reach the
+// interception layer. Generated per process rather than checked in: a static
+// PEM here rotted into an unparseable key, and every service-account node then
+// crashed with "secretOrPrivateKey must be an asymmetric key when using RS256"
+// before the interceptor could capture the request.
+let evalMockRsaKey: string | undefined;
+function getEvalMockRsaKey(): string {
+	evalMockRsaKey ??= generateKeyPairSync('rsa', { modulusLength: 2048 })
+		.privateKey.export({ type: 'pkcs1', format: 'pem' })
+		.toString();
+	return evalMockRsaKey;
+}
 
 // Name patterns that indicate a property holds a secret value (case-insensitive).
 const SECRET_NAME_PATTERNS =
@@ -105,7 +106,7 @@ export function buildEvalMockCredentials(properties: INodeProperties[]): Record<
 		token_type: 'Bearer',
 		refresh_token: 'eval-mock-refresh-token',
 	};
-	mockCredentials.privateKey = EVAL_MOCK_RSA_KEY;
+	mockCredentials.privateKey = getEvalMockRsaKey();
 	return mockCredentials;
 }
 
@@ -129,7 +130,7 @@ export function serializeMockToHttpResponse(
 	const common = {
 		headers: mock.headers,
 		statusCode: mock.statusCode,
-		statusMessage: 'OK',
+		statusMessage: STATUS_CODES[mock.statusCode] ?? 'OK',
 	};
 
 	const bytes = () =>
@@ -165,9 +166,18 @@ export function serializeMockToHttpResponse(
 	return { ...common, body: mock.body, __bodyResolved: true };
 }
 
-/** Normalize legacy IRequestOptions or (uri, options) args into IHttpRequestOptions for the eval mock handler. */
+/**
+ * Normalize legacy IRequestOptions or (uri, options) args into IHttpRequestOptions
+ * for the eval mock handler. The legacy API has three mutually exclusive body
+ * slots: `body`, `formData` (multipart), and `form` (URL-encoded) — fold them
+ * all into `body` so the mock layer sees the payload regardless of transport
+ * encoding (the binary redactor reduces multipart to part metadata before the
+ * LLM). `simple: false` becomes `ignoreHttpStatusErrors`.
+ */
 export function normalizeLegacyRequest(
+	// oxlint-disable-next-line typescript/no-deprecated
 	uriOrObject: string | IRequestOptions,
+	// oxlint-disable-next-line typescript/no-deprecated
 	options?: IRequestOptions,
 ): IHttpRequestOptions {
 	if (typeof uriOrObject === 'string') {
@@ -175,17 +185,77 @@ export function normalizeLegacyRequest(
 			url: uriOrObject,
 			method: options?.method,
 			headers: options?.headers,
-			body: options?.body as IHttpRequestOptions['body'],
+			body: (options?.body ?? options?.formData ?? options?.form) as IHttpRequestOptions['body'],
 			qs: options?.qs,
+			...(options?.simple === false ? { ignoreHttpStatusErrors: true } : {}),
 		};
 	}
 	return {
-		url: uriOrObject.uri ?? uriOrObject.url ?? '',
+		url: uriOrObject.url ?? uriOrObject.uri ?? '',
 		method: uriOrObject.method,
 		headers: uriOrObject.headers,
-		body: uriOrObject.body as IHttpRequestOptions['body'],
+		body: (uriOrObject.body ??
+			uriOrObject.formData ??
+			uriOrObject.form) as IHttpRequestOptions['body'],
 		qs: uriOrObject.qs,
+		...(uriOrObject.simple === false ? { ignoreHttpStatusErrors: true } : {}),
 	};
+}
+
+const AWS_CREDENTIAL_TYPES = new Set(['aws', 'awsAssumeRole']);
+
+// Not the credential's region: the resolver must not read credentials. The mock only
+// needs a plausible, stable URL.
+const AWS_PLACEHOLDER_REGION = 'us-east-1';
+
+function nonEmptyString(value: unknown): string | undefined {
+	return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+/**
+ * AWS nodes send no URL: they put `service`, `path` and `query` in `qs`, and the AWS
+ * credential's `authenticate` builds the endpoint URL. The eval mock intercepts before
+ * `authenticate`, so build the same default endpoint here. Credentials are not read, so
+ * custom endpoints are ignored. Any other request, or one whose service or region makes
+ * no valid URL, is returned unchanged.
+ * Takes the legacy shape too: resolve before `normalizeLegacyRequest`, which drops the
+ * top-level `region` and `baseURL`.
+ */
+// oxlint-disable-next-line typescript/no-deprecated
+export function resolveEvalMockRequestUrl<T extends IHttpRequestOptions | IRequestOptions>(
+	requestOptions: T,
+	credentialsType: string,
+): T {
+	const qs = requestOptions.qs;
+	const service = nonEmptyString(qs?.service);
+	const legacyUri = 'uri' in requestOptions ? requestOptions.uri : undefined;
+	const hasUrl = Boolean(requestOptions.url || requestOptions.baseURL || legacyUri);
+	if (!AWS_CREDENTIAL_TYPES.has(credentialsType) || !qs || !service || hasUrl) {
+		return requestOptions;
+	}
+
+	const requestRegion = 'region' in requestOptions ? requestOptions.region : undefined;
+	const region =
+		nonEmptyString(qs._region) ?? nonEmptyString(requestRegion) ?? AWS_PLACEHOLDER_REGION;
+	const domain = region.startsWith('cn-') ? 'amazonaws.com.cn' : 'amazonaws.com';
+	const path = nonEmptyString(qs.path) ?? '';
+
+	let url: URL;
+	try {
+		url = new URL(`https://${service}.${region}.${domain}${path}`);
+	} catch {
+		// A service or region that makes no valid host (e.g. `EU (Ireland)`): the mock
+		// sees the request as the node sent it.
+		return requestOptions;
+	}
+	if (isRecord(qs.query)) {
+		for (const [key, value] of Object.entries(qs.query)) {
+			url.searchParams.append(key, String(value));
+		}
+	}
+
+	// The credential sends the query in the URL only, so `qs` is dropped as well.
+	return { ...requestOptions, url: url.toString(), qs: undefined };
 }
 
 /**
@@ -193,7 +263,8 @@ export function normalizeLegacyRequest(
  * When `returnFullResponse` is true, serializes to `{ body: Buffer, headers, statusCode }`
  * matching the shape that nodes expect from real HTTP responses.
  * For error responses (status >= 400), throws an error matching the HTTP library's
- * error shape so nodes handle it identically to real HTTP failures.
+ * error shape so nodes handle it identically to real HTTP failures, unless the
+ * request set `ignoreHttpStatusErrors`.
  * Returns `undefined` if the handler did not produce a response.
  */
 export async function callEvalMockHandler(
@@ -206,11 +277,24 @@ export async function callEvalMockHandler(
 	const response = await handler(requestOptions, node);
 	if (!response) return undefined;
 
-	if (response.statusCode >= 400) {
+	if (
+		response.statusCode >= 400 &&
+		!ignoresStatusError(requestOptions.ignoreHttpStatusErrors, response.statusCode)
+	) {
 		throwHttpError(response, httpLibrary);
 	}
 
 	return returnFullResponse ? serializeMockToHttpResponse(response, requestOptions) : response.body;
+}
+
+// Same rule as @n8n/backend-network: `true` ignores every status, the config form all but `except`.
+function ignoresStatusError(
+	option: IHttpRequestOptions['ignoreHttpStatusErrors'],
+	statusCode: number,
+): boolean {
+	if (option === true) return true;
+	if (typeof option === 'object' && option.ignore) return !option.except.includes(statusCode);
+	return false;
 }
 
 /**
@@ -242,4 +326,38 @@ function throwHttpError(response: EvalMockHttpResponse, library: 'axios' | 'lega
 			headers: response.headers,
 		},
 	});
+}
+
+// ---------------------------------------------------------------------------
+// Simulated-services runs
+// ---------------------------------------------------------------------------
+
+/** The eval run's egress proxy URL, or `undefined` outside a simulated-services run. */
+export function getEvalEgressProxy(
+	additionalData: Pick<IWorkflowExecuteAdditionalData, 'evalEgressProxy'> | undefined,
+): string | undefined {
+	const proxy = additionalData?.evalEgressProxy;
+	return typeof proxy === 'string' && proxy !== '' ? proxy : undefined;
+}
+
+/**
+ * Sends a node request through the eval run's egress proxy, when the run has one.
+ * Called on the final request object, after credential auth and signing.
+ */
+export function withEvalEgressProxy<T extends IHttpRequestOptions>(
+	requestOptions: T,
+	additionalData: Pick<IWorkflowExecuteAdditionalData, 'evalEgressProxy'> | undefined,
+): T {
+	const proxy = getEvalEgressProxy(additionalData);
+	if (!proxy) return requestOptions;
+	const { hostname, port, protocol, username, password } = new URL(proxy);
+	requestOptions.proxy = {
+		host: hostname,
+		port: Number(port) || (protocol === 'https:' ? 443 : 80),
+		protocol: protocol.replace(/:$/, ''),
+		...(username
+			? { auth: { username: decodeURIComponent(username), password: decodeURIComponent(password) } }
+			: {}),
+	};
+	return requestOptions;
 }

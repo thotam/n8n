@@ -1,6 +1,7 @@
 /* eslint-disable import-x/no-extraneous-dependencies -- test-only pattern */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ref } from 'vue';
+import { flushPromises } from '@vue/test-utils';
 
 const listAgents = vi.fn();
 
@@ -14,6 +15,9 @@ vi.mock('@n8n/stores/useRootStore', () => ({
 
 import {
 	useProjectAgentsList,
+	invalidateProjectAgentsListCache,
+	removeProjectAgentFromListCache,
+	upsertProjectAgentsListCache,
 	__clearProjectAgentsListCacheForTests,
 } from '../composables/useProjectAgentsList';
 
@@ -21,6 +25,53 @@ describe('useProjectAgentsList', () => {
 	beforeEach(() => {
 		__clearProjectAgentsListCacheForTests();
 		listAgents.mockReset();
+	});
+
+	it('refreshes mounted consumers without clearing their list', async () => {
+		listAgents.mockResolvedValueOnce([{ id: 'a1' }]);
+		const first = useProjectAgentsList(ref('p1'));
+		const second = useProjectAgentsList(ref('p1'));
+		await first.ensureLoaded();
+		listAgents.mockResolvedValueOnce([{ id: 'a2' }]);
+
+		invalidateProjectAgentsListCache('p1');
+
+		expect(first.list.value).toEqual([{ id: 'a1' }]);
+		await flushPromises();
+		expect(first.list.value).toEqual([{ id: 'a2' }]);
+		expect(second.list.value).toEqual(first.list.value);
+	});
+
+	it('ignores a request started before invalidation', async () => {
+		let finishOld!: (value: unknown) => void;
+		listAgents.mockReturnValueOnce(
+			new Promise((resolve) => {
+				finishOld = resolve;
+			}),
+		);
+		const { list, ensureLoaded } = useProjectAgentsList(ref('p1'));
+		const oldRequest = ensureLoaded();
+		listAgents.mockResolvedValueOnce([{ id: 'fresh' }]);
+
+		invalidateProjectAgentsListCache('p1');
+		await ensureLoaded();
+		finishOld([{ id: 'stale' }]);
+		await oldRequest;
+
+		expect(list.value).toEqual([{ id: 'fresh' }]);
+		expect(listAgents).toHaveBeenCalledTimes(2);
+	});
+
+	it('keeps the last list when a background refresh fails', async () => {
+		listAgents.mockResolvedValueOnce([{ id: 'a1' }]);
+		const { list, ensureLoaded } = useProjectAgentsList(ref('p1'));
+		await ensureLoaded();
+		listAgents.mockRejectedValueOnce(new Error('unavailable'));
+
+		invalidateProjectAgentsListCache('p1');
+		await flushPromises();
+
+		expect(list.value).toEqual([{ id: 'a1' }]);
 	});
 
 	it('fetches on first call and caches on second', async () => {
@@ -74,5 +125,99 @@ describe('useProjectAgentsList', () => {
 		listAgents.mockResolvedValueOnce([{ id: 'a1', name: 'Agent One' }]);
 		const next = await ensureLoaded();
 		expect(next).toEqual([{ id: 'a1', name: 'Agent One' }]);
+	});
+
+	it('reactively upserts cached agents after publish or create', async () => {
+		listAgents.mockResolvedValueOnce([{ id: 'a1', name: 'Agent One', activeVersionId: null }]);
+		const { list, ensureLoaded } = useProjectAgentsList(ref('p1'));
+
+		await ensureLoaded();
+		upsertProjectAgentsListCache('p1', {
+			id: 'a1',
+			name: 'Agent One',
+			activeVersionId: 'version-1',
+		} as never);
+		upsertProjectAgentsListCache('p1', {
+			id: 'a2',
+			name: 'Agent Two',
+			activeVersionId: null,
+		} as never);
+
+		expect(list.value).toEqual([
+			{ id: 'a2', name: 'Agent Two', activeVersionId: null },
+			{ id: 'a1', name: 'Agent One', activeVersionId: 'version-1' },
+		]);
+	});
+
+	it('projects a full agent into a list item on upsert', async () => {
+		listAgents.mockResolvedValueOnce([{ id: 'a1', name: 'Agent One' }]);
+		const { list, ensureLoaded } = useProjectAgentsList(ref('p1'));
+
+		await ensureLoaded();
+		upsertProjectAgentsListCache('p1', {
+			id: 'a1',
+			name: 'Agent One',
+			projectId: 'p1',
+			project: null,
+			availableInMCP: false,
+			isArchived: false,
+			versionId: 'v1',
+			activeVersionId: null,
+			createdAt: '2026-01-01T00:00:00.000Z',
+			updatedAt: '2026-01-02T00:00:00.000Z',
+			config: {
+				name: 'Agent One',
+				model: '',
+				instructions: '',
+				personalisation: {
+					icon: 'zap',
+					gradient: { from: '#2563EB', to: '#7C3AED', angle: 135, fromStop: 0, toStop: 100 },
+				},
+			},
+			configHash: 'hash-1',
+			tools: {},
+			activeVersion: null,
+			isRunnable: true,
+			hasPublishHistory: false,
+			hasVersionHistory: false,
+			skills: {},
+			skillHashes: {},
+			outdatedSkillIds: [],
+			skillVersions: {},
+		});
+
+		expect(list.value).toEqual([
+			{
+				id: 'a1',
+				name: 'Agent One',
+				projectId: 'p1',
+				project: null,
+				availableInMCP: false,
+				isArchived: false,
+				versionId: 'v1',
+				activeVersionId: null,
+				createdAt: '2026-01-01T00:00:00.000Z',
+				updatedAt: '2026-01-02T00:00:00.000Z',
+				personalisation: {
+					icon: 'zap',
+					gradient: { from: '#2563EB', to: '#7C3AED', angle: 135, fromStop: 0, toStop: 100 },
+				},
+				hasConfig: true,
+				skillVersions: {},
+			},
+		]);
+	});
+
+	it('reactively removes cached agents after delete', async () => {
+		listAgents.mockResolvedValueOnce([
+			{ id: 'a1', name: 'Agent One' },
+			{ id: 'a2', name: 'Agent Two' },
+		]);
+		const { list, ensureLoaded } = useProjectAgentsList(ref('p1'));
+
+		await ensureLoaded();
+		removeProjectAgentFromListCache('p1', 'a1');
+
+		expect(list.value).toEqual([{ id: 'a2', name: 'Agent Two' }]);
 	});
 });

@@ -88,7 +88,8 @@ function filterHitlToolProperties(
 		displayName: 'Message',
 		name: 'message',
 		type: 'string',
-		default: '=The agent wants to call {{ $tool.name }}',
+		default:
+			'=The agent wants to run this tool: {{ $tool.name }}\n\nInput:\n{{ $tool.parameters }}',
 		required: true,
 		typeOptions: { rows: 3 },
 		description:
@@ -200,6 +201,16 @@ export function convertNodeToHitlTool<
 			},
 		];
 
+		// Workflow validation reads required AI inputs from builderHint, not from inputs.
+		// HITL tools have no generated type file, so their type definition is the base
+		// node's. The search hint tells the builder how the HITL variant differs.
+		item.description.builderHint = {
+			...item.description.builderHint,
+			inputs: { [NodeConnectionTypes.AiTool]: { required: true } },
+			searchHint:
+				'Approval tool that gates other tools. Attach it to the AI Agent in subnodes.tools, and put the gated tools in its own subnodes.tools. The type definition is the base node: only the send-and-wait parameters apply. Use {{ $tool.name }} and {{ $tool.parameters }} in the message to show what the agent wants to run.',
+		};
+
 		// Filter and adjust properties for HITL use case
 		item.description.properties = filterHitlToolProperties(
 			item.description.properties,
@@ -224,7 +235,6 @@ export function convertNodeToHitlTool<
 			// This makes the HITL node appear in the Agent's logs panel
 			node.rewireOutputLogTo = NodeConnectionTypes.AiTool;
 
-			// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 			return await originalExecute.call(this);
 		};
 	}

@@ -27,6 +27,7 @@ export const configSchema = z.object({
 	defaultBrowser: browserNameSchema.default('chrome'),
 	browsers: z.record(browserNameSchema, browserOverrideSchema).default({}),
 	adapter: z.enum(['playwright', 'agent-browser']).default('agent-browser'),
+	mode: z.enum(['local', 'remote']).default('local'),
 });
 
 export type Config = z.input<typeof configSchema>;
@@ -41,6 +42,7 @@ export interface ResolvedConfig {
 	defaultBrowser: BrowserName;
 	browsers: Map<BrowserName, ResolvedBrowserInfo>;
 	adapter: 'playwright' | 'agent-browser';
+	mode: 'local' | 'remote';
 }
 
 // ---------------------------------------------------------------------------
@@ -57,15 +59,36 @@ export interface PageInfo {
 	url: string;
 }
 
+export interface DisconnectDetails {
+	/** Other extensions owning a frame in the tab. Empty when none could be named. */
+	blockingExtensionIds: string[];
+}
+
+export interface PageChangeDetails {
+	type: 'opened' | 'closed';
+	pageId: string;
+}
+
 export interface Adapter {
-	onDisconnect?: (reason: ConnectionLostReason) => void;
+	onDisconnect?: (reason: ConnectionLostReason, details?: DisconnectDetails) => void;
+	/**
+	 * Another extension blocked automation; the session may still be alive.
+	 * Playwright adapter only. `agent-browser` never fires this and drops the
+	 * disconnect details, so there a block is reported without naming the extension.
+	 */
+	onBlocked?: (details: DisconnectDetails) => void;
+	/**
+	 * A page opened or closed, for example a popup. It also fires when no tool call
+	 * runs, such as when a user clicks in a live view. Playwright adapter only.
+	 */
+	onPageChange?: (change: PageChangeDetails) => void;
 	launch(config: ConnectConfig): Promise<void>;
 	close(): Promise<void>;
 	// Tabs
 	listTabs(): Promise<PageInfo[]>;
 	listTabIds(): Promise<string[]>;
 	listTabSessionIds(): Promise<string[]>;
-	newPage(url?: string): Promise<PageInfo>;
+	newPage(url?: string, waitUntil?: 'load' | 'domcontentloaded' | 'networkidle'): Promise<PageInfo>;
 	closePage(pageId: string): Promise<void>;
 	focusPage(pageId: string): Promise<void>;
 	// Navigation
@@ -74,8 +97,14 @@ export interface Adapter {
 		url: string,
 		waitUntil?: 'load' | 'domcontentloaded' | 'networkidle',
 	): Promise<NavigateResult>;
-	back(pageId: string): Promise<NavigateResult>;
-	forward(pageId: string): Promise<NavigateResult>;
+	back(
+		pageId: string,
+		waitUntil?: 'load' | 'domcontentloaded' | 'networkidle',
+	): Promise<NavigateResult>;
+	forward(
+		pageId: string,
+		waitUntil?: 'load' | 'domcontentloaded' | 'networkidle',
+	): Promise<NavigateResult>;
 	reload(
 		pageId: string,
 		waitUntil?: 'load' | 'domcontentloaded' | 'networkidle',
@@ -92,6 +121,7 @@ export interface Adapter {
 	dialog(pageId: string, action: 'accept' | 'dismiss', text?: string): Promise<string>;
 	// Inspection
 	snapshot(pageId: string, target?: ElementTarget, interactive?: boolean): Promise<SnapshotResult>;
+	probePageHtml(pageId: string): Promise<HtmlProbeResult>;
 	screenshot(pageId: string, target?: ElementTarget, options?: ScreenshotOptions): Promise<string>;
 	getText(pageId: string, target?: ElementTarget): Promise<string>;
 	getContent(pageId: string, selector?: string): Promise<{ html: string; url: string }>;
@@ -108,9 +138,6 @@ export interface Adapter {
 	wait(pageId: string, options: WaitOptions): Promise<number>;
 	waitForCompletion<T>(pageId: string, action: () => Promise<T>): Promise<T>;
 	// State
-	getCookies(pageId: string, url?: string): Promise<Cookie[]>;
-	setCookies(pageId: string, cookies: Cookie[]): Promise<void>;
-	clearCookies(pageId: string): Promise<void>;
 	getStorage(pageId: string, kind: 'local' | 'session'): Promise<Record<string, string>>;
 	setStorage(
 		pageId: string,
@@ -120,6 +147,13 @@ export interface Adapter {
 	clearStorage(pageId: string, kind: 'local' | 'session'): Promise<void>;
 	// Sync helpers used by tool helpers
 	getPageUrl(pageId: string): string | undefined;
+	/**
+	 * The CDP target id of a tracked page, which a remote browser service uses to name
+	 * its tabs. `undefined` when the page is gone. Playwright adapter only.
+	 */
+	getTargetId?(pageId: string): Promise<string | undefined>;
+	// Credential capture
+	getElementValue(pageId: string, target: ElementTarget): Promise<string>;
 }
 
 export interface ConnectionState {
@@ -166,6 +200,20 @@ export interface SnapshotResult {
 	refCount: number;
 }
 
+export interface HtmlProbeNode {
+	kind: 'document' | 'iframe' | 'shadow-root';
+	html: string;
+	url?: string;
+	children: HtmlProbeNode[];
+	errors: string[];
+}
+
+export interface HtmlProbeResult {
+	ok: boolean;
+	root?: HtmlProbeNode;
+	error?: string;
+}
+
 export interface ConsoleEntry {
 	level: string;
 	text: string;
@@ -186,17 +234,6 @@ export interface NetworkEntry {
 	timestamp: number;
 }
 
-export interface Cookie {
-	name: string;
-	value: string;
-	domain?: string;
-	path?: string;
-	expires?: number;
-	httpOnly?: boolean;
-	secure?: boolean;
-	sameSite?: 'Strict' | 'Lax' | 'None';
-}
-
 // ---------------------------------------------------------------------------
 // Adapter option types
 // ---------------------------------------------------------------------------
@@ -208,6 +245,8 @@ export interface ClickOptions {
 }
 
 export interface TypeOptions {
+	/** 'paste' inserts the value in one operation, replacing existing content. */
+	mode?: 'type' | 'paste';
 	clear?: boolean;
 	submit?: boolean;
 	delay?: number;
@@ -226,7 +265,6 @@ export interface WaitOptions {
 	selector?: string;
 	url?: string;
 	loadState?: 'load' | 'domcontentloaded' | 'networkidle';
-	predicate?: string;
 	text?: string;
 	timeoutMs?: number;
 }
@@ -237,9 +275,24 @@ export interface WaitOptions {
 
 export type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
+export interface SecretsBuffer {
+	capture(credentialsKey: string, field: string, value: string): void;
+	getFields(credentialsKey: string): Map<string, string> | undefined;
+	clear(credentialsKey: string): void;
+}
+
+export interface CreateCredentialPayload {
+	name: string;
+	type: string;
+	data: Record<string, unknown>;
+	projectId?: string;
+}
+
 export interface ToolContext {
 	/** Base filesystem directory (used by filesystem tools) */
 	dir: string;
+	secretsBuffer?: SecretsBuffer;
+	createCredential?: (payload: CreateCredentialPayload) => Promise<{ credentialId: string }>;
 }
 
 export interface ToolDefinition<TSchema extends z.ZodType = z.ZodType> {
@@ -254,8 +307,16 @@ export interface ToolDefinition<TSchema extends z.ZodType = z.ZodType> {
 	): AffectedResource[] | Promise<AffectedResource[]>;
 }
 
+/**
+ * What the `resource` string identifies. Callers gate on this rather than on the
+ * string itself: `resource` is a hostname for `host`, and a hostname can legitimately
+ * be the literal `credentials`.
+ */
+export type AffectedResourceKind = 'host' | 'credential-write';
+
 export interface AffectedResource {
 	toolGroup: 'browser';
+	kind: AffectedResourceKind;
 	resource: string;
 	description: string;
 }

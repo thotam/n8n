@@ -1,6 +1,8 @@
 import type { DynamicStructuredTool, Tool } from '@langchain/classic/tools';
+import { isBaseMessage } from '@langchain/core/messages';
+import { isRecord } from '@n8n/utils/is-record';
 import isObject from 'lodash/isObject';
-import omit from 'lodash/omit';
+import pick from 'lodash/pick';
 import type { EngineRequest, IDataObject } from 'n8n-workflow';
 import { NodeConnectionTypes } from 'n8n-workflow';
 
@@ -11,7 +13,12 @@ import type {
 	ToolCallRequest,
 	ToolMetadata,
 } from './types';
-import { isGeminiThoughtSignatureBlock, isRedactedThinkingBlock, isThinkingBlock } from './types';
+import {
+	isGeminiThoughtSignatureBlock,
+	isRedactedThinkingBlock,
+	isThinkingBlock,
+	INTERNAL_TOOL_ARG_STASH_KEY,
+} from './types';
 
 export function hasGatedToolNodeName(
 	metadata: unknown,
@@ -34,6 +41,43 @@ export function extractHitlMetadata(
 		toolName,
 		originalInput: toolInput.toolParameters as IDataObject,
 	};
+}
+
+/** Keys of a Zod object (`shape`) or of a JSON Schema object (`properties`). */
+function getSchemaKeys(schema: unknown): string[] | undefined {
+	if (!isRecord(schema)) return undefined;
+	if (isRecord(schema.shape)) return Object.keys(schema.shape);
+	if (isRecord(schema.properties)) return Object.keys(schema.properties);
+	return undefined;
+}
+
+function getDeclaredHitlKeys(schema: unknown): string[] | undefined {
+	if (!isRecord(schema)) return undefined;
+	const fields = isRecord(schema.shape) ? schema.shape : schema.properties;
+	return isRecord(fields) ? getSchemaKeys(fields.hitlParameters) : undefined;
+}
+
+/**
+ * Builds the input of the HITL node for one gated tool call.
+ * Keeps only the HITL parameters that the HITL node declares in the tool schema,
+ * or all of them when the schema declares none.
+ * Drops an object-valued `query`, because `$tool` resolves its keys first.
+ * Sets the tool name and the tool parameters last.
+ */
+export function buildHitlNodeInput(
+	tool: { schema: unknown },
+	hitlParameters: IDataObject | null | undefined,
+	toolName: string,
+	toolParameters: IDataObject,
+): IDataObject {
+	const declaredKeys = getDeclaredHitlKeys(tool.schema);
+	const declared: IDataObject = isObject(hitlParameters)
+		? declaredKeys
+			? pick(hitlParameters, declaredKeys)
+			: { ...hitlParameters }
+		: {};
+	if (isObject(declared.query)) delete declared.query;
+	return { ...declared, tool: toolName, toolParameters };
 }
 
 /**
@@ -76,6 +120,13 @@ function extractThinkingMetadata(
 				thoughtSignature = signatures.find((s) => s && s.length > 0);
 			}
 		}
+	}
+
+	// Extract DeepSeek reasoning_content (must be echoed back on tool-calling turns)
+	let reasoningContent: string | undefined;
+	if (effectiveAdditionalKwargs) {
+		const rc = effectiveAdditionalKwargs.reasoning_content;
+		if (typeof rc === 'string' && rc.length > 0) reasoningContent = rc;
 	}
 
 	// Extract thinking content and additional thought signatures from messageLog
@@ -153,7 +204,19 @@ function extractThinkingMetadata(
 					}
 				}
 
-				if (thoughtSignature || thinkingContent) break;
+				// DeepSeek reasoning_content (fallback for the non-streaming path, where
+				// ToolCallRequest.additionalKwargs isn't populated from the raw AIMessage).
+				// Independent of the thoughtSignature gate above - must run regardless of
+				// whether a Gemini signature was found.
+				if (!reasoningContent && 'additional_kwargs' in message) {
+					const msgAdditionalKwargs = message.additional_kwargs as
+						| Record<string, unknown>
+						| undefined;
+					const rc = msgAdditionalKwargs?.reasoning_content;
+					if (typeof rc === 'string' && rc.length > 0) reasoningContent = rc;
+				}
+
+				if (thoughtSignature || thinkingContent !== undefined || reasoningContent) break;
 			}
 		}
 	}
@@ -163,7 +226,8 @@ function extractThinkingMetadata(
 		result.google = { thoughtSignature };
 	}
 
-	if (thinkingContent && thinkingType) {
+	// Empty thinking text is valid because the signature carries the reasoning.
+	if (thinkingContent !== undefined && thinkingType) {
 		result.anthropic = {
 			thinkingContent,
 			thinkingType,
@@ -171,7 +235,26 @@ function extractThinkingMetadata(
 		};
 	}
 
+	if (reasoningContent) {
+		result.deepseek = { reasoningContent };
+	}
+
 	return result;
+}
+
+/**
+ * Returns the text the model wrote in the turn that requested the tool call.
+ * The rebuilt history must replay it, or the model sees a turn it did not write.
+ */
+function extractModelText(
+	toolCall: ToolCallRequest,
+	sharedMessageLog: unknown[] | undefined,
+): string | undefined {
+	const messageLog =
+		toolCall.messageLog && toolCall.messageLog.length > 0 ? toolCall.messageLog : sharedMessageLog;
+	// `text` joins the text blocks only, so thinking and tool_use blocks stay out
+	const text = messageLog?.find(isBaseMessage)?.text;
+	return text?.trim() ? text : undefined;
 }
 
 /**
@@ -216,19 +299,31 @@ export function createEngineRequests(
 			const metadata = (foundTool.metadata ?? {}) as ToolMetadata;
 			const toolInput = toolCall.toolInput as IDataObject;
 			const hitlMetadata = extractHitlMetadata(metadata, toolCall.tool, toolInput);
+			const modelText = extractModelText(toolCall, sharedMessageLog);
 
 			let input: IDataObject = toolInput;
 			if (metadata.isFromToolkit) {
-				input = { ...input, tool: toolCall.tool };
+				input = { ...input };
+				delete input[INTERNAL_TOOL_ARG_STASH_KEY];
+				if (metadata.isMcpTool) {
+					const stashedArguments: IDataObject = {};
+					if ('tool' in input) stashedArguments.tool = input.tool;
+					if ('toolCallId' in input) stashedArguments.toolCallId = input.toolCallId;
+					if (Object.keys(stashedArguments).length > 0) {
+						input[INTERNAL_TOOL_ARG_STASH_KEY] = stashedArguments;
+					}
+				}
+				input.tool = toolCall.tool;
 			}
 			if (hitlMetadata) {
-				// This input will be used as HITL node input
-				input = {
-					// omit hitlParameters, because they are destructured into the input instead
-					...omit(input, 'hitlParameters'),
-					...(input.hitlParameters as IDataObject),
-					toolParameters: input.toolParameters,
-				};
+				// HITL node input. Tool name and parameters come from the tool call itself and are
+				// set last, so the approval message shows the call that runs after approval.
+				input = buildHitlNodeInput(
+					foundTool,
+					toolInput.hitlParameters as IDataObject | undefined,
+					toolCall.tool,
+					hitlMetadata.originalInput,
+				);
 			}
 
 			return {
@@ -240,6 +335,8 @@ export function createEngineRequests(
 				metadata: {
 					itemIndex,
 					hitl: hitlMetadata,
+					toolName: toolCall.tool,
+					...(modelText && { modelText }),
 					...extractThinkingMetadata(toolCall, sharedMessageLog, sharedAdditionalKwargs),
 				},
 			};

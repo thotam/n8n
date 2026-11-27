@@ -1,12 +1,13 @@
 <script setup lang="ts">
+import { useZIndex } from 'element-plus';
 import {
+	TooltipContent,
+	TooltipPortal,
 	TooltipProvider,
 	TooltipRoot,
 	TooltipTrigger,
-	TooltipContent,
-	TooltipPortal,
 } from 'reka-ui';
-import { computed, ref, watch } from 'vue';
+import { computed, ref, useAttrs, watch } from 'vue';
 
 import type { N8nTooltipProps } from './Tooltip.types';
 import { useInjectTooltipAppendTo } from '../../composables/useTooltipAppendTo';
@@ -15,9 +16,13 @@ import N8nButton from '../N8nButton';
 
 defineOptions({
 	name: 'N8nTooltip',
+	inheritAttrs: false,
 });
 
+const attrs = useAttrs();
+
 const props = withDefaults(defineProps<N8nTooltipProps>(), {
+	asChild: false,
 	placement: 'top',
 	showAfter: 0,
 	enterable: true,
@@ -27,6 +32,13 @@ const props = withDefaults(defineProps<N8nTooltipProps>(), {
 	justifyButtons: 'flex-end',
 	avoidCollisions: true,
 });
+
+const emit = defineEmits<{
+	/** Emitted when the tooltip starts to open */
+	'before-show': [];
+	/** Emitted when the tooltip closes */
+	hide: [];
+}>();
 
 // Get append-to target from composable, defaulting to body for proper z-index stacking
 const injectedAppendTo = useInjectTooltipAppendTo();
@@ -54,6 +66,20 @@ const disableHoverableContent = computed(() => !props.enterable);
 
 // Handle controlled visibility
 const isOpen = ref(false);
+const { nextZIndex } = useZIndex();
+const zIndex = ref<number>();
+
+// Emit on every open state change, from user interaction or from the `visible` prop.
+// Consumers use these events to lazy-load the tooltip content.
+// Register before the `visible` watcher so that a tooltip mounted open also emits.
+watch(isOpen, (open, wasOpen) => {
+	if (open === wasOpen) return;
+	if (open) {
+		emit('before-show');
+	} else {
+		emit('hide');
+	}
+});
 
 watch(
 	() => props.visible,
@@ -61,6 +87,15 @@ watch(
 		if (newVisible !== undefined) {
 			isOpen.value = newVisible;
 		}
+	},
+	{ immediate: true },
+);
+
+watch(
+	isOpen,
+	(open) => {
+		// Allocate on each open so tooltips stay above Element Plus menus.
+		if (open) zIndex.value = nextZIndex();
 	},
 	{ immediate: true },
 );
@@ -82,13 +117,22 @@ const handleOpenChange = (open: boolean) => {
 			:disable-hoverable-content="disableHoverableContent"
 			@update:open="handleOpenChange"
 		>
-			<TooltipTrigger as="span" :class="{ [$style.disabledTrigger]: disabled }">
+			<TooltipTrigger
+				v-if="asChild"
+				as-child
+				v-bind="attrs"
+				:class="{ [$style.disabledTrigger]: disabled && !asChild }"
+			>
+				<slot />
+			</TooltipTrigger>
+			<TooltipTrigger v-else as="span" :class="{ [$style.disabledTrigger]: disabled }">
 				<slot />
 			</TooltipTrigger>
 			<TooltipPortal :to="teleported ? appendTo : undefined" :disabled="!teleported">
 				<TooltipContent
 					data-test-id="tooltip-content"
 					:class="['n8n-tooltip', contentClass]"
+					:style="{ '--tooltip--z': zIndex }"
 					:side="placementParts.side"
 					:align="placementParts.align"
 					:side-offset="offset"
@@ -116,8 +160,6 @@ const handleOpenChange = (open: boolean) => {
 </template>
 
 <style lang="scss" module>
-@use '../../css/common/var';
-
 .buttons {
 	display: flex;
 	align-items: center;
@@ -135,7 +177,7 @@ const handleOpenChange = (open: boolean) => {
 
 // Global styles for teleported tooltip content
 :global(.n8n-tooltip) {
-	z-index: var.$index-popper;
+	z-index: var(--tooltip--z);
 	max-width: 180px;
 	padding: var(--spacing--4xs) var(--spacing--3xs);
 	min-height: var(--height--sm);
@@ -147,7 +189,7 @@ const handleOpenChange = (open: boolean) => {
 	background: var(--color--neutral-black);
 	color: var(--color--neutral-100);
 	box-shadow: var(--shadow--sm);
-	word-wrap: break-word;
+	overflow-wrap: anywhere;
 	display: flex;
 	align-items: center;
 	justify-content: center;

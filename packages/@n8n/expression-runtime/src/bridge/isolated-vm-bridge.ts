@@ -1,15 +1,32 @@
 import type ivm from 'isolated-vm';
-import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
-import type { RuntimeBridge, BridgeConfig, ExecuteOptions } from '../types';
+import type { RuntimeBridge, BridgeConfig, ExecuteOptions, WorkflowData } from '../types';
 import { DEFAULT_BRIDGE_CONFIG, TimeoutError, MemoryLimitError } from '../types';
-import type { ErrorSentinel } from '../runtime/lazy-proxy';
+import { readToAsciiCharmapJson } from '../extensions/to-ascii';
+import { TO_ASCII_CHARMAP_HOST_FUNCTION } from '../runtime/host-function-names';
+import type { BatchRequest, ErrorSentinel } from '../runtime/lazy-proxy';
+import { unwrapTransferredValue } from '../runtime/transfer-codec';
+import { BATCH_READ_LIMITS, batchReadBudget, readBatchAtPath } from './batch-read';
+import type { BatchReadBudget } from './batch-read';
+import { HostDataResolver } from './host-data-resolver';
+import {
+	dispatchHostCall,
+	escapeHostResult,
+	getArrayElement,
+	getValueAtPath,
+	isErrorSentinel,
+	reconstructError,
+	serializeError,
+} from './host-functions';
 
 // Lazy-loaded isolated-vm — avoids loading the native binary when the barrel
 // file is statically imported (e.g. for error classes). The native module is
 // only loaded when IsolatedVmBridge is actually constructed.
 type IsolatedVm = typeof import('isolated-vm');
 let _ivm: IsolatedVm | null = null;
+/** Runtime bundle source, read once per process by loadRuntimeBundle(). */
+let _runtimeBundle: string | null = null;
 
 function getIvm(): IsolatedVm {
 	if (!_ivm) {
@@ -21,38 +38,61 @@ function getIvm(): IsolatedVm {
 
 const BUNDLE_RELATIVE_PATH = path.join('dist', 'bundle', 'runtime.iife.js');
 
-/** Check if a value is an error sentinel returned by serializeError. */
-function isErrorSentinel(value: unknown): value is ErrorSentinel {
-	return (
-		typeof value === 'object' &&
-		value !== null &&
-		(value as Record<string, unknown>).__isError === true
-	);
+// Captured at module load so values rendered into generated code stay stable
+// even if the global is later replaced.
+const safeStringify = JSON.stringify;
+
+// V8 compile cache for the runtime bundle (BridgeConfig.compileCache): the
+// first bundle compile produces it, later builds consume it and skip
+// re-parsing. V8 validates the data and recompiles when it is stale.
+let _bundleCachedData: ivm.ExternalCopy<ArrayBuffer> | null = null;
+
+// The runtime sets Script.cachedData when produceCachedData is passed, but
+// ivm's typings omit the property (CachedDataResult exists unattached).
+function producedCachedData(script: ivm.Script): ivm.ExternalCopy<ArrayBuffer> | null {
+	const data: unknown = Reflect.get(script, 'cachedData');
+	return data instanceof getIvm().ExternalCopy ? data : null;
+}
+
+/** Globals the runtime bundle must define. Verified after every bundle load. */
+const RUNTIME_GLOBALS = [
+	'DateTime',
+	'extend',
+	'createDeepLazyProxy',
+	'SafeObject',
+	'SafeError',
+	'buildContext',
+];
+
+/** Evaluates inside the isolate to a JSON array of the RUNTIME_GLOBALS that are missing. */
+const MISSING_RUNTIME_GLOBALS_SOURCE = `JSON.stringify(${JSON.stringify(RUNTIME_GLOBALS)}.filter((name) => typeof globalThis[name] === 'undefined'))`;
+
+function assertRuntimeGlobals(missingJson: unknown): void {
+	const missing: unknown = typeof missingJson === 'string' ? JSON.parse(missingJson) : missingJson;
+	if (Array.isArray(missing) && missing.length > 0) {
+		throw new Error(`Runtime bundle verification failed: missing ${missing.join(', ')}`);
+	}
 }
 
 /**
- * Serialize an error into a transferable metadata object.
- *
- * Host-side callbacks (getValueAtPath, etc.) catch errors and return this
- * sentinel instead of letting the error cross the isolate boundary (which
- * strips custom class identity and properties). The isolate-side proxy
- * detects __isError and reconstructs a proper Error to throw.
+ * The E() error handler injected into every isolate; see injectErrorHandler()
+ * for the two exception-handling layers it participates in.
  */
-function serializeError(err: unknown): ErrorSentinel {
-	if (err instanceof Error) {
-		const extra = Object.fromEntries(
-			Object.entries(err).filter(([key]) => key !== 'name' && key !== 'message' && key !== 'stack'),
-		);
-		return {
-			__isError: true,
-			name: err.name,
-			message: err.message,
-			stack: err.stack,
-			extra,
+const ERROR_HANDLER_SOURCE = `
+	if (typeof E === 'undefined') {
+		globalThis.E = function(error, _context) {
+			// Re-throw ExpressionError / ExpressionExtensionError to match
+			// the legacy handler in expression.ts. Errors from host callbacks
+			// arrive as sentinels (not class instances), so check by name.
+			const name = error?.name;
+			if (name === 'ExpressionError' || name === 'ExpressionExtensionError') {
+				throw error;
+			}
+			// Swallow everything else (TypeErrors, generic Errors, etc.)
+			return undefined;
 		};
 	}
-	return { __isError: true, name: 'Error', message: String(err), extra: {} };
-}
+`;
 
 /**
  * Read the runtime IIFE bundle by walking up from `__dirname` until
@@ -62,11 +102,13 @@ function serializeError(err: unknown): ErrorSentinel {
  *   - `src/bridge/`               (vitest running against source)
  *   - `dist/cjs/bridge/`          (CJS build)
  */
-async function readRuntimeBundle(): Promise<string> {
+function loadRuntimeBundle(): string {
+	if (_runtimeBundle !== null) return _runtimeBundle;
 	let dir = __dirname;
 	while (dir !== path.dirname(dir)) {
 		try {
-			return await readFile(path.join(dir, BUNDLE_RELATIVE_PATH), 'utf-8');
+			_runtimeBundle = readFileSync(path.join(dir, BUNDLE_RELATIVE_PATH), 'utf-8');
+			return _runtimeBundle;
 		} catch {}
 		dir = path.dirname(dir);
 	}
@@ -133,18 +175,18 @@ export class IsolatedVmBridge implements RuntimeBridge {
 		// This allows code in isolate to access 'global.something'
 		await jail.set('global', jail.derefInto());
 
+		// The runtime bundle takes this function off the global object when it loads.
+		await jail.set(TO_ASCII_CHARMAP_HOST_FUNCTION, new (getIvm().Callback)(readToAsciiCharmapJson));
+
 		// Load runtime bundle (DateTime, extend, SafeObject, proxy system)
 		await this.loadVendorLibraries();
-
-		// Verify proxy system loaded correctly
-		await this.verifyProxySystem();
 
 		// Inject E() error handler needed by tournament-generated try-catch code
 		await this.injectErrorHandler();
 
 		this.initialized = true;
 
-		this.logger.info('[IsolatedVmBridge] Initialized successfully');
+		this.logger.debug('[IsolatedVmBridge] Initialized successfully');
 	}
 
 	/**
@@ -166,65 +208,26 @@ export class IsolatedVmBridge implements RuntimeBridge {
 
 		try {
 			// Load runtime bundle (includes vendor libraries + proxy system)
-			const runtimeBundle = await readRuntimeBundle();
+			const runtimeBundle = loadRuntimeBundle();
 
 			// Evaluate bundle in isolate context
 			// This makes all exported globals available (DateTime, extend, extendOptional, SafeObject, SafeError, createDeepLazyProxy, buildContext)
-			await this.context.eval(runtimeBundle);
-
-			this.logger.info('[IsolatedVmBridge] Runtime bundle loaded');
-
-			// Verify vendor libraries loaded correctly
-			const hasDateTime = await this.context.eval('typeof DateTime !== "undefined"');
-			const hasExtend = await this.context.eval('typeof extend !== "undefined"');
-
-			if (!hasDateTime || !hasExtend) {
-				throw new Error(
-					`Library verification failed: DateTime=${hasDateTime}, extend=${hasExtend}`,
+			if (this.config.compileCache) {
+				const script = await this.isolate.compileScript(
+					runtimeBundle,
+					_bundleCachedData ? { cachedData: _bundleCachedData } : { produceCachedData: true },
 				);
+				if (!_bundleCachedData) _bundleCachedData = producedCachedData(script);
+				await script.run(this.context);
+			} else {
+				await this.context.eval(runtimeBundle);
 			}
 
-			this.logger.info('[IsolatedVmBridge] Vendor libraries verified successfully');
+			assertRuntimeGlobals(await this.context.eval(MISSING_RUNTIME_GLOBALS_SOURCE));
+			this.logger.debug('[IsolatedVmBridge] Runtime bundle loaded and verified');
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			throw new Error(`Failed to load runtime bundle: ${errorMessage}`);
-		}
-	}
-
-	/**
-	 * Verify the proxy system loaded correctly.
-	 *
-	 * The proxy system is loaded as part of the runtime bundle in loadVendorLibraries().
-	 * This method verifies all required components are available.
-	 *
-	 * @private
-	 * @throws {Error} If context not initialized or proxy system verification fails
-	 */
-	private async verifyProxySystem(): Promise<void> {
-		if (!this.context) {
-			throw new Error('Context not initialized');
-		}
-
-		try {
-			// Verify proxy system components loaded correctly
-			const hasProxyCreator = await this.context.eval('typeof createDeepLazyProxy !== "undefined"');
-			const hasSafeObject = await this.context.eval('typeof SafeObject !== "undefined"');
-			const hasSafeError = await this.context.eval('typeof SafeError !== "undefined"');
-			const hasBuildContext = await this.context.eval('typeof buildContext !== "undefined"');
-
-			if (!hasProxyCreator || !hasSafeObject || !hasSafeError || !hasBuildContext) {
-				throw new Error(
-					`Proxy system verification failed: ` +
-						`createDeepLazyProxy=${hasProxyCreator}, ` +
-						`SafeObject=${hasSafeObject}, SafeError=${hasSafeError}, ` +
-						`buildContext=${hasBuildContext}`,
-				);
-			}
-
-			this.logger.info('[IsolatedVmBridge] Proxy system verified successfully');
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			throw new Error(`Failed to verify proxy system: ${errorMessage}`);
 		}
 	}
 
@@ -256,92 +259,66 @@ export class IsolatedVmBridge implements RuntimeBridge {
 			throw new Error('Context not initialized');
 		}
 
-		await this.context.eval(`
-			if (typeof E === 'undefined') {
-				globalThis.E = function(error, _context) {
-					// Re-throw ExpressionError / ExpressionExtensionError to match
-					// the legacy handler in expression.ts. Errors from host callbacks
-					// arrive as sentinels (not class instances), so check by name.
-					const name = error?.name;
-					if (name === 'ExpressionError' || name === 'ExpressionExtensionError') {
-						throw error;
-					}
-					// Swallow everything else (TypeErrors, generic Errors, etc.)
-					return undefined;
-				};
-			}
-		`);
+		await this.context.eval(ERROR_HANDLER_SOURCE);
 
-		this.logger.info('[IsolatedVmBridge] Error handler injected successfully');
+		this.logger.debug('[IsolatedVmBridge] Error handler injected successfully');
 	}
 
 	/**
-	 * Create an ivm.Reference callback for getting value/metadata at a path.
+	 * Synchronous variant of initialize(): the same steps through isolated-vm's
+	 * sync APIs, for on-demand creation inside the synchronous evaluate() path
+	 * (lazy acquisition with an exhausted pool). Blocks the event loop for the
+	 * duration of one isolate setup — pool warmup should stay on the async
+	 * initialize().
+	 */
+	initializeSync(): void {
+		if (this.initialized) return;
+
+		try {
+			this.context = this.isolate.createContextSync();
+			const jail = this.context.global;
+			jail.setSync('global', jail.derefInto());
+			jail.setSync(TO_ASCII_CHARMAP_HOST_FUNCTION, new (getIvm().Callback)(readToAsciiCharmapJson));
+
+			if (this.config.compileCache) {
+				const script = this.isolate.compileScriptSync(
+					loadRuntimeBundle(),
+					_bundleCachedData ? { cachedData: _bundleCachedData } : { produceCachedData: true },
+				);
+				if (!_bundleCachedData) _bundleCachedData = producedCachedData(script);
+				script.runSync(this.context);
+			} else {
+				this.context.evalSync(loadRuntimeBundle());
+			}
+
+			assertRuntimeGlobals(this.context.evalSync(MISSING_RUNTIME_GLOBALS_SOURCE));
+
+			this.context.evalSync(ERROR_HANDLER_SOURCE);
+		} catch (error) {
+			// A failed cold start must not retain the native isolate. dispose()
+			// has no awaits before the isolate is released, so not awaiting it
+			// here is safe.
+			void this.dispose();
+			throw error;
+		}
+
+		this.initialized = true;
+		this.logger.debug('[IsolatedVmBridge] Initialized synchronously');
+	}
+
+	/**
+	 * Create an ivm.Callback for getting value/metadata at a path.
 	 *
-	 * Used by createDeepLazyProxy when accessing properties. Returns metadata
-	 * markers for functions, arrays, and objects, or the primitive value directly.
+	 * Thin wrapper around the shared getValueAtPath (see host-functions.ts
+	 * for navigation and guard semantics); errors are caught and returned
+	 * as sentinels instead of crossing the isolate boundary.
 	 *
-	 * @param data - Current workflow data to use for callback responses
 	 * @private
 	 */
-	private createGetValueAtPathRef(data: Record<string, unknown>): ivm.Reference {
-		return new (getIvm().Reference)((path: string[]) => {
+	private createGetValueAtPathRef(resolver: HostDataResolver): ivm.Callback {
+		return new (getIvm().Callback)((pathArr: string[]) => {
 			try {
-				// Navigate to value
-				// Special-case: paths starting with ['$item', index] call data.$item(index)
-				// to get the sub-proxy for that item, then continue navigating the rest.
-				let value: unknown = data;
-				let startIndex = 0;
-				const itemFn = (data as Record<string, unknown>).$item;
-				if (path.length >= 2 && path[0] === '$item' && typeof itemFn === 'function') {
-					const itemIndex = parseInt(path[1], 10);
-					if (!isNaN(itemIndex)) {
-						value = (itemFn as (i: number) => unknown)(itemIndex);
-						startIndex = 2;
-					}
-				} else {
-					const dollarFn = (data as Record<string, unknown>).$;
-					if (path.length >= 2 && path[0] === '$' && typeof dollarFn === 'function') {
-						value = (dollarFn as (name: string) => unknown)(path[1]);
-						startIndex = 2;
-					}
-				}
-				for (let i = startIndex; i < path.length; i++) {
-					value = (value as Record<string, unknown>)?.[path[i]];
-					if (value === undefined || value === null) {
-						return value;
-					}
-				}
-
-				// Handle functions - return metadata marker
-				if (typeof value === 'function') {
-					const fnString = value.toString();
-					// Block native functions for security
-					if (fnString.includes('[native code]')) {
-						return undefined;
-					}
-					return { __isFunction: true, __name: path[path.length - 1] };
-				}
-
-				// Handle arrays - always lazy, only transfer length
-				if (Array.isArray(value)) {
-					return {
-						__isArray: true,
-						__length: value.length,
-						__data: null,
-					};
-				}
-
-				// Handle objects - return metadata with keys
-				if (value !== null && typeof value === 'object') {
-					return {
-						__isObject: true,
-						__keys: Object.keys(value),
-					};
-				}
-
-				// Primitive value
-				return value;
+				return getValueAtPath(resolver, pathArr);
 			} catch (err) {
 				return serializeError(err);
 			}
@@ -349,64 +326,18 @@ export class IsolatedVmBridge implements RuntimeBridge {
 	}
 
 	/**
-	 * Create an ivm.Reference callback for getting array elements at an index.
+	 * Create an ivm.Callback for getting array elements at an index.
 	 *
-	 * Used by array proxy when accessing numeric indices.
+	 * Thin wrapper around the shared getArrayElement (see host-functions.ts
+	 * for navigation and guard semantics); errors are caught and returned
+	 * as sentinels instead of crossing the isolate boundary.
 	 *
-	 * @param data - Current workflow data to use for callback responses
 	 * @private
 	 */
-	private createGetArrayElementRef(data: Record<string, unknown>): ivm.Reference {
-		return new (getIvm().Reference)((path: string[], index: number) => {
+	private createGetArrayElementRef(resolver: HostDataResolver): ivm.Callback {
+		return new (getIvm().Callback)((pathArr: string[], index: number) => {
 			try {
-				// Navigate to array
-				// Special-case: paths starting with ['$item', index] call data.$item(index)
-				let arr: unknown = data;
-				let startIndex = 0;
-				const itemFn = (data as Record<string, unknown>).$item;
-				if (path.length >= 2 && path[0] === '$item' && typeof itemFn === 'function') {
-					const itemIndex = parseInt(path[1], 10);
-					if (!isNaN(itemIndex)) {
-						arr = (itemFn as (i: number) => unknown)(itemIndex);
-						startIndex = 2;
-					}
-				} else {
-					const dollarFn = (data as Record<string, unknown>).$;
-					if (path.length >= 2 && path[0] === '$' && typeof dollarFn === 'function') {
-						arr = (dollarFn as (name: string) => unknown)(path[1]);
-						startIndex = 2;
-					}
-				}
-				for (let i = startIndex; i < path.length; i++) {
-					arr = (arr as Record<string, unknown>)?.[path[i]];
-					if (arr === undefined || arr === null) {
-						return undefined;
-					}
-				}
-
-				if (!Array.isArray(arr)) {
-					return undefined;
-				}
-
-				const element = arr[index];
-
-				// If element is object/array, return metadata
-				if (element !== null && typeof element === 'object') {
-					if (Array.isArray(element)) {
-						return {
-							__isArray: true,
-							__length: element.length,
-							__data: null,
-						};
-					}
-					return {
-						__isObject: true,
-						__keys: Object.keys(element),
-					};
-				}
-
-				// Primitive element
-				return element;
+				return getArrayElement(resolver, pathArr, index);
 			} catch (err) {
 				return serializeError(err);
 			}
@@ -414,41 +345,54 @@ export class IsolatedVmBridge implements RuntimeBridge {
 	}
 
 	/**
-	 * Create an ivm.Reference callback for calling functions at a path.
+	 * Create an ivm.Callback that reads a batch of item data values in one call.
 	 *
-	 * Used when expressions invoke functions from workflow data.
+	 * Thin wrapper around the shared readBatchAtPath (see batch-read.ts);
+	 * errors are caught and returned as sentinels instead of crossing the
+	 * isolate boundary.
 	 *
-	 * @param data - Current workflow data to use for callback responses
 	 * @private
 	 */
-	private createCallFunctionAtPathRef(data: Record<string, unknown>): ivm.Reference {
-		return new (getIvm().Reference)((path: string[], ...args: unknown[]) => {
+	private createReadBatchRef(resolver: HostDataResolver, budget: BatchReadBudget): ivm.Callback {
+		return new (getIvm().Callback)(
+			(pathArr: string[], start: number, step: number, request: BatchRequest) => {
+				try {
+					return readBatchAtPath(
+						resolver,
+						pathArr,
+						start,
+						step,
+						request,
+						BATCH_READ_LIMITS,
+						budget,
+					);
+				} catch (err) {
+					return serializeError(err);
+				}
+			},
+		);
+	}
+
+	/**
+	 * Create the ivm.Callback for the typed-RPC `callHost` channel.
+	 *
+	 * Thin wrapper around the shared dispatchHostCall (see host-functions.ts
+	 * for envelope validation and per-message rationale); errors — including
+	 * zod parse failures — are caught and returned as sentinels instead of
+	 * crossing the isolate boundary.
+	 *
+	 * Return-value note: the dispatcher returns plain, structured-clone-able
+	 * data. Results cross into the isolate through an ivm.Callback, which
+	 * copies them via the structured-clone algorithm — JSON-shaped values,
+	 * not isolated-vm objects (`Reference`/`ExternalCopy`) or other
+	 * non-cloneable values.
+	 *
+	 * @private
+	 */
+	private createCallHostRef(resolver: HostDataResolver): ivm.Callback {
+		return new (getIvm().Callback)((rawMsg: unknown) => {
 			try {
-				// Navigate to function, tracking parent to preserve `this` context
-				let fn: unknown = data;
-				let parent: unknown = undefined;
-				let startIndex = 0;
-				const dollarFn = (data as Record<string, unknown>).$;
-				if (path.length >= 2 && path[0] === '$' && typeof dollarFn === 'function') {
-					fn = (dollarFn as (name: string) => unknown)(path[1]);
-					startIndex = 2;
-				}
-				for (let i = startIndex; i < path.length; i++) {
-					parent = fn;
-					fn = (fn as Record<string, unknown>)?.[path[i]];
-				}
-
-				if (typeof fn !== 'function') {
-					throw new Error(`${path.join('.')} is not a function`);
-				}
-
-				// Block native functions for security (same check as getValueAtPath)
-				if (fn.toString().includes('[native code]')) {
-					throw new Error(`${path.join('.')} is a native function and cannot be called`);
-				}
-
-				// Execute function with parent as `this` to preserve method context
-				return (fn as (...fnArgs: unknown[]) => unknown).call(parent, ...args);
+				return escapeHostResult(dispatchHostCall(rawMsg, resolver));
 			} catch (err) {
 				return serializeError(err);
 			}
@@ -459,42 +403,77 @@ export class IsolatedVmBridge implements RuntimeBridge {
 	 * Execute JavaScript code in the isolated context.
 	 *
 	 * Flow:
-	 * 1. Create three ivm.Reference callbacks scoped to the current data
-	 * 2. Use evalClosureSync to run the code in a closure where $0/$1/$2
-	 *    are the callback references — no global mutable state
+	 * 1. Create four ivm.Callback instances scoped to the current data:
+	 *    `getValueAtPath`, `getArrayElement`, `callHost`, `readBatch`.
+	 * 2. Use evalClosureSync to run the code in a closure where `$0` to `$3`
+	 *    are the callback references — no global mutable state.
 	 * 3. buildContext() inside the isolate creates a fresh evaluation context
-	 *    from the closure-scoped references
+	 *    from the closure-scoped references.
 	 *
 	 * Each call gets its own closure, so nested and concurrent evaluations
-	 * cannot interfere with each other.
+	 * cannot see each other's data. Time is the exception: a nested call runs
+	 * on what is left of the enclosing call's budget (see `elapsedMs`).
 	 *
 	 * @param code - JavaScript expression to evaluate
 	 * @param data - Workflow data (e.g., { $json: {...}, $runIndex: 0 })
 	 * @returns Result of the expression
 	 * @throws {Error} If bridge not initialized or execution fails
 	 */
-	execute(code: string, data: Record<string, unknown>, options?: ExecuteOptions): unknown {
+	execute(code: string, data: WorkflowData, options?: ExecuteOptions): unknown {
 		if (!this.initialized || !this.context) {
 			throw new Error('Bridge not initialized. Call initialize() first.');
 		}
 
-		const getValueAtPath = this.createGetValueAtPathRef(data);
-		const getArrayElement = this.createGetArrayElementRef(data);
-		const callFunctionAtPath = this.createCallFunctionAtPathRef(data);
+		// A nested call runs on what is left of the configured timeout, so the
+		// chain shares one budget: subtracting elapsed makes every frame's
+		// deadline the same instant. A configured timeout of 0 means "no limit",
+		// so there is nothing to share. A positive elapsed is the only nested
+		// case that needs handling — a frame that has spent nothing is owed the
+		// full timeout anyway.
+		const elapsedMs = options?.elapsedMs ?? 0;
+		const nested = elapsedMs > 0 && this.config.timeout > 0;
+		let timeout = this.config.timeout;
+		if (nested) {
+			// isolated-vm rejects a fractional timeout and reads 0 or less as "no
+			// timeout at all", so truncate, and fail here rather than pass on a
+			// budget that is already gone.
+			timeout = Math.trunc(this.config.timeout - elapsedMs);
+			if (timeout <= 0) throw this.timeoutError(true);
+		}
+
+		// Host callbacks are ivm.Callback instances: inside the isolate they
+		// arrive as plain functions with structured-clone marshaling, so the
+		// runtime invokes them directly. isolated-vm frees a callback only at the
+		// next isolated-vm call in the process, even after the isolate is disposed.
+		// So the callbacks read the data from a resolver that `finally` disposes.
+		const resolver = new HostDataResolver(data);
+		const budget = batchReadBudget(this.config.memoryLimit, BATCH_READ_LIMITS);
 
 		try {
-			const timezone = options?.timezone ? JSON.stringify(options.timezone) : 'undefined';
+			const getValueAtPath = this.createGetValueAtPathRef(resolver);
+			const getArrayElement = this.createGetArrayElementRef(resolver);
+			const callHost = this.createCallHostRef(resolver);
+			const readBatch = this.createReadBatchRef(resolver, budget);
+			const timezone = options?.timezone ? safeStringify(options.timezone) : 'undefined';
 
 			// Wrap transformed code so 'this' === the closure-scoped context.
 			// Tournament generates: this.$json.email, this.$items(), etc.
 			// buildContext() creates a fresh context with lazy proxies from the
-			// closure-scoped callback references ($0, $1, $2) — no globals touched.
+			// closure-scoped callback references — no globals touched. The bundle
+			// is passed as a single object so adding typed RPCs doesn't churn the
+			// evalClosureSync signature; new operations land as new schemas in
+			// bridge-messages.ts and new cases in the callHost dispatcher.
 			// The outer try-catch serializes errors into a sentinel object and returns
 			// it as the result. Errors from host callbacks arrive as sentinels already
 			// (via serializeError), so we pass them through. This avoids a round-trip
 			// callback and keeps Error reconstruction on the host side only.
 			const wrappedCode = `
-var __ctx = buildContext($0, $1, $2, ${timezone});
+var __ctx = buildContext({
+  getValueAtPath: $0,
+  getArrayElement: $1,
+  callHost: $2,
+  readBatch: $3,
+}, ${timezone});
 try {
   var __result = (function() {
     ${code}
@@ -518,17 +497,19 @@ try {
 
 			const result = this.context.evalClosureSync(
 				wrappedCode,
-				[getValueAtPath, getArrayElement, callFunctionAtPath],
-				{ result: { copy: true }, timeout: this.config.timeout },
+				[getValueAtPath, getArrayElement, callHost, readBatch],
+				{ result: { copy: true }, timeout },
 			);
 
 			if (isErrorSentinel(result)) {
-				throw this.reconstructError(result);
+				throw reconstructError(result);
 			}
 
 			this.logger.debug('[IsolatedVmBridge] Expression executed successfully');
 
-			return result;
+			// The structured clone above drops the prototype of a class instance, so
+			// rebuild the luxon and Error instances from the markers the isolate sent.
+			return unwrapTransferredValue(result);
 		} catch (error) {
 			// Re-throw reconstructed errors as-is.
 			// Note: TypeError is intentionally NOT included here — the isolate's
@@ -543,7 +524,7 @@ try {
 			}
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			if (errorMessage.includes('Script execution timed out')) {
-				throw new TimeoutError(`Expression timed out after ${this.config.timeout}ms`, {});
+				throw this.timeoutError(nested);
 			}
 			if (errorMessage.includes('memory limit')) {
 				throw new MemoryLimitError(
@@ -553,31 +534,21 @@ try {
 			}
 			throw new Error(`Expression evaluation failed: ${errorMessage}`);
 		} finally {
-			getValueAtPath.release();
-			getArrayElement.release();
-			callFunctionAtPath.release();
+			resolver.dispose();
 		}
 	}
 
 	/**
-	 * Reconstruct an error from serialized isolate data.
-	 *
-	 * Maps error names back to their host-side classes and restores
-	 * custom properties that would otherwise be lost crossing the boundary.
+	 * Always names the configured limit, never the reduced budget a nested call
+	 * ran on — reporting "timed out after 137ms" would misstate the limit.
 	 */
-	private reconstructError(data: ErrorSentinel): Error {
-		const error = new Error(data.message);
-		error.name = data.name || 'Error';
-		if (data.stack) {
-			error.stack = data.stack;
-		}
-
-		// Restore custom properties transferred via copy: true
-		if (data.extra) {
-			Object.assign(error, data.extra);
-		}
-
-		return error;
+	private timeoutError(nested: boolean): TimeoutError {
+		return new TimeoutError(
+			nested
+				? `Nested expressions timed out after sharing the ${this.config.timeout}ms limit`
+				: `Expression timed out after ${this.config.timeout}ms`,
+			{},
+		);
 	}
 
 	/**
@@ -598,7 +569,7 @@ try {
 		this.disposed = true;
 		this.initialized = false;
 
-		this.logger.info('[IsolatedVmBridge] Disposed');
+		this.logger.debug('[IsolatedVmBridge] Disposed');
 	}
 
 	/**

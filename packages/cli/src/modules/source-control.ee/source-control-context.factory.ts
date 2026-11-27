@@ -2,7 +2,6 @@ import { ProjectRepository, WorkflowRepository } from '@n8n/db';
 import type { Project, User, WorkflowEntity } from '@n8n/db';
 import { Service } from '@n8n/di';
 import { hasGlobalScope } from '@n8n/permissions';
-// eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
 import { In, type FindOptionsWhere } from '@n8n/typeorm';
 
 import { SourceControlContext } from './types/source-control-context';
@@ -41,7 +40,8 @@ export class SourceControlContextFactory {
 				.leftJoinAndSelect('pr.role', 'role')
 				.leftJoinAndSelect('pr.user', 'user')
 				.where('project.id IN (:...ids)', { ids: personalProjectIds })
-				.select(['project.id', 'pr.userId', 'pr.projectId', 'role.slug', 'user.email'])
+				// `user.kind` lets TypeORM load the owner as a `Person`, which has the email.
+				.select(['project.id', 'pr.userId', 'pr.projectId', 'role.slug', 'user.email', 'user.kind'])
 				.getMany();
 
 			const relationsById = new Map(ownerRelations.map((p) => [p.id, p.projectRelations]));

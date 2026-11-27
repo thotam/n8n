@@ -1,16 +1,22 @@
 import type { LicenseState } from '@n8n/backend-common';
-import type { User, CredentialsEntity, Project } from '@n8n/db';
-import type { SharedCredentials, SharedCredentialsRepository } from '@n8n/db';
-import { mock } from 'jest-mock-extended';
+import type {
+	User,
+	CredentialsEntity,
+	Project,
+	SharedCredentials,
+	SharedCredentialsRepository,
+} from '@n8n/db';
+import { mock } from 'vitest-mock-extended';
 
-import type { CredentialsFinderService } from '@/credentials/credentials-finder.service';
+import type { CredentialConnectionStatusProxy } from '@/credentials/credential-connection-status-proxy';
+import { type CredentialsFinderService, type RoleService } from '@n8n/backend-services';
 import type { CredentialsService } from '@/credentials/credentials.service';
 import { EnterpriseCredentialsService } from '@/credentials/credentials.service.ee';
 import type { ExternalSecretsConfig } from '@/modules/external-secrets.ee/external-secrets.config';
 import type { SecretsProviderAccessCheckService } from '@/modules/external-secrets.ee/secret-provider-access-check.service.ee';
+import type { PolicyEnforcementService } from '@/policy/policy-enforcement.service';
 import type { OwnershipService } from '@/services/ownership.service';
 import type { ProjectService } from '@/services/project.service.ee';
-import type { RoleService } from '@/services/role.service';
 
 describe('EnterpriseCredentialsService', () => {
 	const sharedCredentialsRepository = mock<SharedCredentialsRepository>();
@@ -22,6 +28,8 @@ describe('EnterpriseCredentialsService', () => {
 	const externalSecretsConfig = mock<ExternalSecretsConfig>();
 	const externalSecretsProviderAccessCheckService = mock<SecretsProviderAccessCheckService>();
 	const licenseState = mock<LicenseState>();
+	const connectionStatusProxy = mock<CredentialConnectionStatusProxy>();
+	const policyEnforcementService = mock<PolicyEnforcementService>();
 
 	const service = new EnterpriseCredentialsService(
 		sharedCredentialsRepository,
@@ -33,10 +41,30 @@ describe('EnterpriseCredentialsService', () => {
 		externalSecretsConfig,
 		externalSecretsProviderAccessCheckService,
 		licenseState,
+		connectionStatusProxy,
+		policyEnforcementService,
 	);
 
 	beforeEach(() => {
-		jest.resetAllMocks();
+		vi.resetAllMocks();
+	});
+
+	describe('shareWithProjects', () => {
+		it('rejects credentials that are not available to workflows', async () => {
+			const manager = {
+				exists: vi.fn().mockResolvedValue(false),
+				find: vi.fn(),
+				save: vi.fn(),
+			};
+
+			// @ts-expect-error - Mocking manager for testing
+			sharedCredentialsRepository.manager = manager;
+
+			await expect(
+				service.shareWithProjects(mock<User>(), 'credential-id', ['project-id']),
+			).rejects.toThrow('Credential not found');
+			expect(manager.find).not.toHaveBeenCalled();
+		});
 	});
 
 	/**
@@ -44,14 +72,14 @@ describe('EnterpriseCredentialsService', () => {
 	 */
 	const mockTransactionManager = () => {
 		const mockManager = {
-			remove: jest.fn().mockResolvedValue(undefined),
-			save: jest.fn().mockResolvedValue(undefined),
-			create: jest.fn().mockImplementation((_, data) => data),
+			remove: vi.fn().mockResolvedValue(undefined),
+			save: vi.fn().mockResolvedValue(undefined),
+			create: vi.fn().mockImplementation((_, data) => data),
 		};
 
 		// @ts-expect-error - Mocking manager for testing
 		sharedCredentialsRepository.manager = {
-			transaction: jest.fn().mockImplementation(async (callback) => {
+			transaction: vi.fn().mockImplementation(async (callback) => {
 				return await callback(mockManager);
 			}),
 		};
@@ -97,6 +125,16 @@ describe('EnterpriseCredentialsService', () => {
 			projectService.getProjectWithScope.mockResolvedValue(destinationProject);
 			externalSecretsConfig.externalSecretsForProjects = true;
 			licenseState.isExternalSecretsLicensed.mockReturnValue(true);
+		});
+
+		describe('policy', () => {
+			it('moves the credential without asking the transfer policy', async () => {
+				mockTransactionManager();
+
+				await service.transferOne(user, credentialId, destinationProjectId);
+
+				expect(policyEnforcementService.enforceCredentialTransfer).not.toHaveBeenCalled();
+			});
 		});
 
 		describe('external secrets', () => {
@@ -186,6 +224,149 @@ describe('EnterpriseCredentialsService', () => {
 					externalSecretsProviderAccessCheckService.isProviderAvailableInProject,
 				).not.toHaveBeenCalled();
 			});
+		});
+
+		describe('previewTransfer', () => {
+			beforeEach(() => {
+				policyEnforcementService.evaluateCredentialTransfer.mockResolvedValue({ violations: [] });
+			});
+
+			it('refuses an end-user credential the user cannot manage in the destination', async () => {
+				credentialsFinderService.findCredentialForUser.mockResolvedValue(
+					mock<CredentialsEntity>({
+						id: credentialId,
+						type: 'testApi',
+						shared: [ownerSharing],
+						isResolvable: true,
+					}),
+				);
+				const refusal = new Error('cannot manage end-user credentials');
+				credentialsService.ensureCanManageEndUserCredential.mockRejectedValue(refusal);
+
+				await expect(
+					service.previewTransfer(user, credentialId, destinationProjectId),
+				).rejects.toThrow(refusal);
+				expect(policyEnforcementService.evaluateCredentialTransfer).not.toHaveBeenCalled();
+			});
+
+			it('refuses when the destination cannot reach a referenced secret provider', async () => {
+				credentialsService.decrypt.mockResolvedValue({ apiKey: '={{ $secrets.vault.myApiKey }}' });
+				externalSecretsProviderAccessCheckService.isProviderAvailableInProject.mockResolvedValue(
+					false,
+				);
+
+				await expect(
+					service.previewTransfer(user, credentialId, destinationProjectId),
+				).rejects.toThrow('The secret provider "vault" used in "apiKey" does not exist');
+				expect(policyEnforcementService.evaluateCredentialTransfer).not.toHaveBeenCalled();
+			});
+		});
+
+		describe('per-user connection reconciliation', () => {
+			beforeEach(() => {
+				// keep the external-secrets branch out of the way
+				externalSecretsConfig.externalSecretsForProjects = false;
+			});
+
+			it('reconciles connections for every project that shared the credential', async () => {
+				const sharee = mock<SharedCredentials>({
+					credentialsId: credentialId,
+					projectId: 'shared-project-id',
+					role: 'credential:user',
+				});
+				credentialsFinderService.findCredentialForUser.mockResolvedValue(
+					mock<CredentialsEntity>({
+						id: credentialId,
+						name: 'Test Credential',
+						type: 'testApi',
+						data: 'encrypted-data',
+						shared: [ownerSharing, sharee],
+					}),
+				);
+				const trx = mockTransactionManager();
+
+				await service.transferOne(user, credentialId, destinationProjectId);
+
+				expect(connectionStatusProxy.cleanupOrphanedEntriesForProjects).toHaveBeenCalledWith(
+					credentialId,
+					[sourceProjectId, 'shared-project-id'],
+					trx,
+				);
+			});
+		});
+	});
+
+	describe('getOneForUser', () => {
+		const user = mock<User>({ id: 'user-id' });
+		const credentialId = 'cred-id';
+
+		const makeCredential = (isResolvable: boolean) =>
+			mock<CredentialsEntity>({
+				id: credentialId,
+				name: 'Cred',
+				type: 'oAuth2Api',
+				data: 'encrypted',
+				isResolvable,
+				shared: [],
+			});
+
+		beforeEach(() => {
+			ownershipService.addSharingWithAccountKinds.mockImplementation(async (c) => c as never);
+			credentialsService.populateConnectedByMe.mockResolvedValue(undefined);
+			credentialsService.countConnectedUsers.mockResolvedValue(0);
+		});
+
+		it('returns redacted data to a connect-capable user of a private credential without edit rights', async () => {
+			const credential = makeCredential(true);
+			const redacted = { clientId: 'abc', clientSecret: '__redacted__' };
+			credentialsFinderService.findCredentialForUser.mockImplementation(
+				async (_id, _user, scopes) => (scopes.includes('credential:update') ? null : credential),
+			);
+			credentialsService.decrypt.mockResolvedValue(redacted);
+
+			const result = await service.getOneForUser(user, credentialId, true);
+
+			expect(credentialsService.decrypt).toHaveBeenCalledWith(credential);
+			expect(credentialsFinderService.findCredentialForUser).toHaveBeenCalledWith(
+				credentialId,
+				user,
+				['credential:connect'],
+				{ includeInstanceCredentials: true },
+			);
+			expect(result).toHaveProperty('data', redacted);
+		});
+
+		it('does not return data to a read-only user without connect on a private credential', async () => {
+			const credential = makeCredential(true);
+			credentialsFinderService.findCredentialForUser.mockImplementation(
+				async (_id, _user, scopes) =>
+					scopes.includes('credential:update') || scopes.includes('credential:connect')
+						? null
+						: credential,
+			);
+
+			const result = await service.getOneForUser(user, credentialId, true);
+
+			expect(credentialsService.decrypt).not.toHaveBeenCalled();
+			expect(result).not.toHaveProperty('data');
+		});
+
+		it('does not attempt to decrypt a static credential for a read-only user', async () => {
+			const credential = makeCredential(false);
+			credentialsFinderService.findCredentialForUser.mockImplementation(
+				async (_id, _user, scopes) => (scopes.includes('credential:update') ? null : credential),
+			);
+
+			const result = await service.getOneForUser(user, credentialId, true);
+
+			expect(credentialsService.decrypt).not.toHaveBeenCalled();
+			expect(credentialsFinderService.findCredentialForUser).not.toHaveBeenCalledWith(
+				credentialId,
+				user,
+				['credential:connect'],
+				{ includeInstanceCredentials: true },
+			);
+			expect(result).not.toHaveProperty('data');
 		});
 	});
 });

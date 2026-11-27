@@ -1,25 +1,28 @@
 import { randomBytes } from 'crypto';
 import type { IHookFunctions, IWebhookFunctions } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import { FormstackTrigger } from '../FormstackTrigger.node';
 import { verifySignature } from '../FormstackTriggerHelpers';
 import { apiRequest } from '../GenericFunctions';
+import type { Mock, Mocked } from 'vitest';
+import type * as _importType0 from 'crypto';
 
-jest.mock('../GenericFunctions');
-jest.mock('../FormstackTriggerHelpers');
-jest.mock('crypto', () => ({
-	...jest.requireActual('crypto'),
-	randomBytes: jest.fn(),
+vi.mock('../GenericFunctions');
+vi.mock('../FormstackTriggerHelpers');
+vi.mock('crypto', async () => ({
+	...(await vi.importActual<typeof _importType0>('crypto')),
+	randomBytes: vi.fn(),
 }));
 
 describe('FormstackTrigger', () => {
 	let trigger: FormstackTrigger;
 	let mockHookFunctions: Pick<
-		jest.Mocked<IHookFunctions>,
+		Mocked<IHookFunctions>,
 		'getNodeWebhookUrl' | 'getNodeParameter' | 'getWorkflowStaticData'
 	>;
 	let mockWebhookFunctions: Pick<
-		jest.Mocked<IWebhookFunctions>,
+		Mocked<IWebhookFunctions>,
 		| 'getNodeParameter'
 		| 'getBodyData'
 		| 'getRequestObject'
@@ -29,23 +32,23 @@ describe('FormstackTrigger', () => {
 	>;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		trigger = new FormstackTrigger();
 
 		mockHookFunctions = {
-			getNodeWebhookUrl: jest.fn(),
-			getNodeParameter: jest.fn(),
-			getWorkflowStaticData: jest.fn(),
+			getNodeWebhookUrl: vi.fn(),
+			getNodeParameter: vi.fn(),
+			getWorkflowStaticData: vi.fn(),
 		};
 
 		mockWebhookFunctions = {
-			getNodeParameter: jest.fn(),
-			getBodyData: jest.fn(),
-			getRequestObject: jest.fn(),
-			getResponseObject: jest.fn(),
-			getWorkflowStaticData: jest.fn(),
+			getNodeParameter: vi.fn(),
+			getBodyData: vi.fn(),
+			getRequestObject: vi.fn(),
+			getResponseObject: vi.fn(),
+			getWorkflowStaticData: vi.fn(),
 			helpers: {
-				returnJsonArray: jest.fn((data) => data),
+				returnJsonArray: vi.fn((data) => data),
 			} as any,
 		};
 	});
@@ -63,10 +66,10 @@ describe('FormstackTrigger', () => {
 			const webhookData: any = {};
 			mockHookFunctions.getWorkflowStaticData.mockReturnValue(webhookData);
 
-			(randomBytes as jest.Mock).mockReturnValue({
-				toString: jest.fn().mockReturnValue(webhookSecret),
+			(randomBytes as Mock).mockReturnValue({
+				toString: vi.fn().mockReturnValue(webhookSecret),
 			});
-			(apiRequest as jest.Mock).mockResolvedValue({ id: webhookId });
+			(apiRequest as Mock).mockResolvedValue({ id: webhookId });
 
 			const result = await trigger.webhookMethods.default.create.call(
 				mockHookFunctions as unknown as IHookFunctions,
@@ -74,7 +77,7 @@ describe('FormstackTrigger', () => {
 
 			expect(result).toBe(true);
 			expect(randomBytes).toHaveBeenCalledWith(32);
-			expect(apiRequest).toHaveBeenCalledWith('POST', `form/${formId}/webhook.json`, {
+			expect(apiRequest).toHaveBeenCalledWith('POST', requestPath`form/${formId}/webhook.json`, {
 				url: webhookUrl,
 				standardize_field_values: true,
 				include_field_type: true,
@@ -95,14 +98,14 @@ describe('FormstackTrigger', () => {
 			};
 
 			mockHookFunctions.getWorkflowStaticData.mockReturnValue(webhookData);
-			(apiRequest as jest.Mock).mockResolvedValue({});
+			(apiRequest as Mock).mockResolvedValue({});
 
 			const result = await trigger.webhookMethods.default.delete.call(
 				mockHookFunctions as unknown as IHookFunctions,
 			);
 
 			expect(result).toBe(true);
-			expect(apiRequest).toHaveBeenCalledWith('DELETE', `webhook/${webhookId}.json`, {});
+			expect(apiRequest).toHaveBeenCalledWith('DELETE', requestPath`webhook/${webhookId}.json`, {});
 			expect(webhookData.webhookId).toBeUndefined();
 			expect(webhookData.webhookSecret).toBeUndefined();
 		});
@@ -122,12 +125,12 @@ describe('FormstackTrigger', () => {
 	describe('webhook', () => {
 		it('should return 401 when signature verification fails', async () => {
 			const mockResponse = {
-				status: jest.fn().mockReturnThis(),
-				send: jest.fn().mockReturnThis(),
-				end: jest.fn(),
+				status: vi.fn().mockReturnThis(),
+				send: vi.fn().mockReturnThis(),
+				end: vi.fn(),
 			};
 
-			(verifySignature as jest.Mock).mockReturnValue(false);
+			(verifySignature as Mock).mockReturnValue(false);
 			mockWebhookFunctions.getResponseObject.mockReturnValue(mockResponse as any);
 
 			const result = await trigger.webhook.call(
@@ -148,7 +151,7 @@ describe('FormstackTrigger', () => {
 				field1: { value: 'foo' },
 			};
 
-			(verifySignature as jest.Mock).mockReturnValue(true);
+			(verifySignature as Mock).mockReturnValue(true);
 			mockWebhookFunctions.getNodeParameter.mockReturnValue(true);
 			mockWebhookFunctions.getBodyData.mockReturnValue(bodyData as any);
 

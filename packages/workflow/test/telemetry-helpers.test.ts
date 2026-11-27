@@ -6,9 +6,11 @@ import type { NodeTypes } from './node-types';
 import {
 	MCP_CLIENT_NODE_TYPE,
 	MCP_CLIENT_TOOL_NODE_TYPE,
+	MESSAGE_AN_AGENT_NODE_TYPE,
+	MESSAGE_AN_AGENT_TOOL_NODE_TYPE,
 	STICKY_NODE_TYPE,
 } from '../src/constants';
-import { ApplicationError, ExpressionError, NodeApiError } from '../src/errors';
+import { ExpressionError, NodeApiError, UnexpectedError } from '../src/errors';
 import type {
 	IConnections,
 	INode,
@@ -1356,7 +1358,7 @@ describe('generateNodesGraph', () => {
 		const workflow = mock<IWorkflowBase>({ nodes: [{ type: STICKY_NODE_TYPE }], connections: {} });
 
 		vi.mocked(nodeHelpers.getNodeParameters).mockImplementationOnce(() => {
-			throw new ApplicationError('Could not find property option');
+			throw new UnexpectedError('Could not find property option');
 		});
 
 		expect(() => generateNodesGraph(workflow, nodeTypes)).not.toThrow();
@@ -2025,6 +2027,112 @@ describe('generateNodesGraph', () => {
 		});
 	});
 
+	describe('MCP server domain telemetry', () => {
+		// captures registrable domain only, never the full URL
+		test.each([
+			{
+				name: 'v1 sseEndpoint',
+				typeVersion: 1,
+				parameters: { authentication: 'bearerAuth', sseEndpoint: 'https://my-mcp.example.com/sse' },
+				expected: 'example.com',
+			},
+			{
+				name: 'v1.1 endpointUrl',
+				typeVersion: 1.1,
+				parameters: { authentication: 'none', endpointUrl: 'https://sub.example.org/mcp' },
+				expected: 'example.org',
+			},
+			{
+				name: 'no server URL configured',
+				typeVersion: 1,
+				parameters: { authentication: 'none' },
+				expected: undefined,
+			},
+			{
+				name: 'URL is an expression',
+				typeVersion: 1.1,
+				parameters: { authentication: 'none', endpointUrl: '=https://{{ $json.host }}/mcp' },
+				expected: undefined,
+			},
+		])('should capture $expected for $name', ({ typeVersion, parameters, expected }) => {
+			const workflow: Partial<IWorkflowBase> = {
+				nodes: [
+					{
+						parameters,
+						id: 'mcp-client-tool-node-id',
+						name: 'MCP Client Tool Node',
+						type: MCP_CLIENT_TOOL_NODE_TYPE,
+						typeVersion,
+						position: [100, 100],
+					},
+				],
+				connections: {},
+				pinData: {},
+			};
+
+			const nodeItem = generateNodesGraph(workflow, nodeTypes).nodeGraph.nodes['0'];
+			expect(nodeItem.mcp_server_domain_base).toBe(expected);
+		});
+	});
+
+	describe('Message an Agent telemetry', () => {
+		const agentRl = (value: string) => ({ __rl: true, mode: 'list', value });
+
+		test.each([
+			{
+				name: 'referenced agent',
+				parameters: { agentSource: 'referenced', agentId: agentRl('agent-1') },
+				expected: { agent_source: 'referenced', agent_id: 'agent-1' },
+			},
+			{
+				name: 'no stored agentSource',
+				parameters: { agentId: agentRl('agent-1') },
+				expected: { agent_source: 'referenced', agent_id: 'agent-1' },
+			},
+			{
+				name: 'no agent picked',
+				parameters: { agentSource: 'referenced', agentId: agentRl('') },
+				expected: { agent_source: 'referenced', agent_id: undefined },
+			},
+			{
+				name: 'agent id from an expression',
+				parameters: { agentSource: 'referenced', agentId: agentRl('={{ $json.agentId }}') },
+				expected: { agent_source: 'referenced', agent_id: undefined },
+			},
+			{
+				name: 'inline agent',
+				parameters: {
+					agentSource: 'inline',
+					agentId: agentRl('agent-1'),
+					inlineAgent: { instructions: 'Secret instructions' },
+				},
+				expected: { agent_source: 'inline', agent_id: undefined },
+			},
+		])('should report $expected for $name', ({ parameters, expected }) => {
+			for (const type of [MESSAGE_AN_AGENT_NODE_TYPE, MESSAGE_AN_AGENT_TOOL_NODE_TYPE]) {
+				const workflow: Partial<IWorkflowBase> = {
+					nodes: [
+						{
+							parameters,
+							id: 'message-an-agent-node-id',
+							name: 'Message an Agent',
+							type,
+							typeVersion: 3.1,
+							position: [100, 100],
+						},
+					],
+					connections: {},
+					pinData: {},
+				};
+
+				const nodeItem = generateNodesGraph(workflow, nodeTypes).nodeGraph.nodes['0'];
+				expect(nodeItem.agent_source).toBe(expected.agent_source);
+				expect(nodeItem.agent_id).toBe(expected.agent_id);
+				expect(JSON.stringify(nodeItem)).not.toContain('Secret instructions');
+			}
+		});
+	});
+
 	describe('ai_model telemetry', () => {
 		test('should capture ai_model for LM node with plain string model param', () => {
 			const workflow: Partial<IWorkflowBase> = {
@@ -2292,6 +2400,41 @@ describe('generateNodesGraph', () => {
 			const result = generateNodesGraph(workflow, nodeTypes, { runData });
 			expect(result.nodeGraph.nodes['0'].ai_input_tokens).toBe(450);
 			expect(result.nodeGraph.nodes['0'].ai_output_tokens).toBe(250);
+		});
+
+		test('should skip missing runs when the run data array has holes', () => {
+			const workflow: Partial<IWorkflowBase> = {
+				nodes: [
+					{
+						parameters: { model: 'gpt-4o' },
+						id: 'lm-node-id',
+						name: 'LM Node',
+						type: '@n8n/n8n-nodes-langchain.lmChatOpenAi',
+						typeVersion: 1,
+						position: [100, 100],
+					},
+				],
+				connections: {},
+				pinData: {},
+			};
+
+			const runs: IRunData[string] = [];
+			runs[1] = {
+				startTime: 0,
+				executionTime: 100,
+				executionIndex: 0,
+				executionStatus: 'success',
+				data: {
+					[NodeConnectionTypes.AiLanguageModel]: [
+						[{ json: { tokenUsage: { promptTokens: 150, completionTokens: 80 } } }],
+					],
+				},
+				source: [],
+			};
+
+			const result = generateNodesGraph(workflow, nodeTypes, { runData: { 'LM Node': runs } });
+			expect(result.nodeGraph.nodes['0'].ai_input_tokens).toBe(150);
+			expect(result.nodeGraph.nodes['0'].ai_output_tokens).toBe(80);
 		});
 
 		test('should not set token fields when no runData is provided', () => {

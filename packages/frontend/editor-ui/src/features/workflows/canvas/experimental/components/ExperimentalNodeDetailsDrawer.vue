@@ -34,7 +34,7 @@ const nodeSettingsViewKey = computed(() => [node.id, ndvCloseTimes.value].join('
 
 // Track closing NDV
 watch(
-	() => ndvStore.activeNodeName,
+	() => ndvStore.value.activeNodeName,
 	(name, oldName) => {
 		if (name === null && oldName !== null) {
 			ndvCloseTimes.value += 1;
@@ -52,7 +52,7 @@ provide(ExpressionLocalResolveContextSymbol, expressionResolveCtx);
 			<ul :class="$style.multipleNodesActions">
 				<li v-for="action of contextMenuItems" :key="action.id" :class="$style.multipleNodesAction">
 					<N8nButton
-						variant="subtle"
+						variant="outline"
 						:disabled="action.disabled"
 						@click="emit('contextMenuAction', action.id, nodeIds)"
 					>

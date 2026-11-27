@@ -546,7 +546,7 @@ function onOptionMouseEnter(idx: number) {
 						icon-only
 						:disabled="isFirstQuestion"
 						data-test-id="plan-mode-pagination-back"
-						aria-label="Previous question"
+						:aria-label="i18n.baseText('aiAssistant.builder.planMode.questions.previousQuestion')"
 						@click="goToPrevious"
 					>
 						<N8nIcon icon="chevron-left" size="xsmall" />
@@ -562,7 +562,7 @@ function onOptionMouseEnter(idx: number) {
 						icon-only
 						:disabled="isLastQuestion"
 						data-test-id="plan-mode-pagination-forward"
-						aria-label="Next question"
+						:aria-label="i18n.baseText('aiAssistant.builder.planMode.questions.nextQuestion')"
 						@click="goToNextWithoutAnswer"
 					>
 						<N8nIcon icon="chevron-right" size="xsmall" />
@@ -583,7 +583,6 @@ function onOptionMouseEnter(idx: number) {
 
 					<N8nButton
 						v-if="showNextButton"
-						:type="isNextEnabled ? 'primary' : 'secondary'"
 						size="small"
 						:disabled="disabled || isSubmitted || !isNextEnabled"
 						data-test-id="plan-mode-questions-next"
@@ -685,7 +684,7 @@ function onOptionMouseEnter(idx: number) {
 	background-color: var(--color--foreground--tint-1);
 	color: var(--color--text);
 	font-size: var(--font-size--2xs);
-	font-weight: var(--font-weight--bold);
+	font-weight: var(--font-weight--medium);
 	flex-shrink: 0;
 }
 

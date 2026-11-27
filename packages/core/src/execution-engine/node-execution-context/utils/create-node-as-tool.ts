@@ -1,5 +1,11 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
-import type { IDataObject, INode, INodeType, FromAIArgument } from 'n8n-workflow';
+import type {
+	IDataObject,
+	INode,
+	INodeType,
+	FromAIArgument,
+	ISupplyDataFunctions,
+} from 'n8n-workflow';
 import {
 	generateZodSchema,
 	NodeOperationError,
@@ -12,7 +18,15 @@ import { z } from 'zod';
 export type CreateNodeAsToolOptions = {
 	node: INode;
 	nodeType: INodeType;
-	handleToolInvocation: (toolArgs: IDataObject) => Promise<unknown>;
+	/** `signal` aborts when the caller cancels the tool call. */
+	handleToolInvocation: (toolArgs: IDataObject, signal?: AbortSignal) => Promise<unknown>;
+	/**
+	 * Optional supply-data context used to resolve n8n expressions in the
+	 * user-provided `toolDescription` parameter against the upstream input data.
+	 * When omitted, the raw description value is used (no expression evaluation).
+	 */
+	context?: ISupplyDataFunctions;
+	itemIndex?: number;
 };
 
 /**
@@ -94,22 +108,30 @@ export function getSchema(node: INode) {
  * @returns A DynamicStructuredTool instance.
  */
 function createTool(options: CreateNodeAsToolOptions) {
-	const { node, nodeType, handleToolInvocation } = options;
+	const { node, nodeType, handleToolInvocation, context, itemIndex } = options;
 
 	const schema = getSchema(node);
-	const description = NodeHelpers.getToolDescriptionForNode(node, nodeType);
+	const resolveToolDescription =
+		context && typeof itemIndex === 'number'
+			? () => context.getNodeParameter('toolDescription', itemIndex, '') as string
+			: undefined;
+	const description = NodeHelpers.getToolDescriptionForNode(node, nodeType, resolveToolDescription);
 	const nodeName = nodeNameToToolName(node);
 	const name = nodeName || nodeType.description.name;
+	const attribution = node.parameters.toolAttribution;
 
 	return new DynamicStructuredTool({
 		name,
 		description,
 		schema,
-		func: async (toolArgs: z.infer<typeof schema>) => await handleToolInvocation(toolArgs),
+		func: async (toolArgs: z.infer<typeof schema>, _runManager, config) =>
+			await handleToolInvocation(toolArgs, config?.signal),
 		// Include sourceNodeName in metadata for engine request routing
 		// This is required for HITL tools to know which node to execute after approval
 		metadata: {
 			sourceNodeName: node.name,
+			// A node may declare a hidden `toolAttribution` parameter; the agent appends it to the reply when the tool was called
+			...(typeof attribution === 'string' && attribution && { attribution }),
 		},
 	});
 }

@@ -1,4 +1,6 @@
 import type { IExecuteFunctions } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+import type { MockInstance } from 'vitest';
 import { mockDeep } from 'vitest-mock-extended';
 import { z } from 'zod';
 
@@ -11,11 +13,13 @@ import * as transport from './transport';
 
 describe('Ollama Node', () => {
 	const executeFunctionsMock = mockDeep<IExecuteFunctions>();
-	const apiRequestMock = vi.spyOn(transport, 'apiRequest');
-	const getConnectedToolsMock = vi.spyOn(helpers, 'getConnectedTools');
+	let apiRequestMock: MockInstance;
+	let getConnectedToolsMock: MockInstance;
 
 	beforeEach(() => {
 		vi.resetAllMocks();
+		apiRequestMock = vi.spyOn(transport, 'apiRequest');
+		getConnectedToolsMock = vi.spyOn(helpers, 'getConnectedTools');
 	});
 
 	describe('Text -> Message', () => {
@@ -57,7 +61,7 @@ describe('Ollama Node', () => {
 					pairedItem: { item: 0 },
 				},
 			]);
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/api/chat', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/api/chat`, {
 				body: {
 					model: 'llama3.2:latest',
 					messages: [
@@ -140,7 +144,6 @@ describe('Ollama Node', () => {
 				}
 			});
 			executeFunctionsMock.getNodeInputs.mockReturnValue([{ type: 'main' }, { type: 'ai_tool' }]);
-			// @ts-expect-error: Mocking a tool, we do not implement the full interface
 			getConnectedToolsMock.mockResolvedValue([mockTool]);
 
 			apiRequestMock.mockResolvedValueOnce({
@@ -203,7 +206,6 @@ describe('Ollama Node', () => {
 				}
 			});
 			executeFunctionsMock.getNodeInputs.mockReturnValue([{ type: 'main' }, { type: 'ai_tool' }]);
-			// @ts-expect-error: Mocking a tool, we do not implement the full interface
 			getConnectedToolsMock.mockResolvedValue([mockTool]);
 
 			apiRequestMock.mockResolvedValueOnce({
@@ -273,7 +275,7 @@ describe('Ollama Node', () => {
 
 			await text.message.execute.call(executeFunctionsMock, 0);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/api/chat', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/api/chat`, {
 				body: {
 					model: 'llama3.2:latest',
 					messages: [{ role: 'user', content: 'Generate text' }],
@@ -335,7 +337,7 @@ describe('Ollama Node', () => {
 
 			await text.message.execute.call(executeFunctionsMock, 0);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/api/chat', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/api/chat`, {
 				body: {
 					model: 'llama3.2:latest',
 					messages: [{ role: 'user', content: 'Test with options' }],
@@ -417,7 +419,7 @@ describe('Ollama Node', () => {
 					pairedItem: { item: 0 },
 				},
 			]);
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/api/chat', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/api/chat`, {
 				body: {
 					model: 'llava:latest',
 					messages: [
@@ -482,7 +484,7 @@ describe('Ollama Node', () => {
 				url: 'https://example.com/test-image.jpg',
 				encoding: 'arraybuffer',
 			});
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/api/chat', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/api/chat`, {
 				body: {
 					model: 'llava:latest',
 					messages: [
@@ -543,7 +545,7 @@ describe('Ollama Node', () => {
 				},
 			]);
 			expect(executeFunctionsMock.helpers.httpRequest).toHaveBeenCalledTimes(2);
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/api/chat', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/api/chat`, {
 				body: {
 					model: 'llava:latest',
 					messages: [
@@ -658,7 +660,7 @@ describe('Ollama Node', () => {
 
 			await image.analyze.execute.call(executeFunctionsMock, 0);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/api/chat', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/api/chat`, {
 				body: {
 					model: 'llava:latest',
 					messages: [

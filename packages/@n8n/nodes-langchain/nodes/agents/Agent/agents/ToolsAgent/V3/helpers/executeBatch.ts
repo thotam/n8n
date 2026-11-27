@@ -3,6 +3,7 @@ import type { BaseChatMemory } from '@langchain/classic/memory';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { processHitlResponses } from '@utils/agent-execution';
 import type { RequestResponseMetadata } from '@utils/agent-execution/types';
+import { wrapLangChainParserError } from '@utils/output_parsers/langchainParserError';
 import { getOptionalOutputParser } from '@utils/output_parsers/N8nOutputParser';
 import { NodeOperationError, assertParamIsNumber } from 'n8n-workflow';
 import type {
@@ -17,6 +18,7 @@ import type { AgentResult } from '../types';
 import { checkMaxIterations } from './checkMaxIterations';
 import { createAgentSequence } from './createAgentSequence';
 import { finalizeResult } from './finalizeResult';
+import { mergeRequestMetadata } from './mergeRequestMetadata';
 import { prepareItemContext } from './prepareItemContext';
 import { runAgent } from './runAgent';
 
@@ -55,7 +57,7 @@ export async function executeBatch(
 
 	// Process HITL (Human-in-the-Loop) tool responses before running the agent
 	// If there are approved HITL tools, we need to execute the gated tools first
-	const hitlResult = processHitlResponses(response, startIndex);
+	const hitlResult = processHitlResponses(response, startIndex, batch.length);
 
 	if (hitlResult.hasApprovedHitlTools && hitlResult.pendingGatedToolRequest) {
 		// Return the gated tool request immediately
@@ -79,9 +81,9 @@ export async function executeBatch(
 
 		checkMaxIterations(response, maxIterations, ctx.getNode());
 
-		const itemContext = await prepareItemContext(ctx, itemIndex, processedResponse);
+		const itemContext = await prepareItemContext(ctx, itemIndex, processedResponse, model);
 
-		const { tools, prompt, options, outputParser } = itemContext;
+		const { tools, prompt, options, outputParser, steps } = itemContext;
 
 		// Create executors for primary and fallback models
 		const executor: AgentRunnableSequence = createAgentSequence(
@@ -92,6 +94,7 @@ export async function executeBatch(
 			outputParser,
 			memory,
 			fallbackModel,
+			options.forceToolCallOnFirstIteration === true && steps.length === 0,
 		);
 
 		// Run the agent with processed response
@@ -106,7 +109,9 @@ export async function executeBatch(
 	batchResults.forEach((result, index) => {
 		const itemIndex = startIndex + index;
 		if (result.status === 'rejected') {
-			const error = result.reason as Error;
+			const error = wrapLangChainParserError(result.reason, ctx.getNode(), itemIndex, {
+				enrichNonParserErrors: true,
+			});
 			if (ctx.continueOnFail()) {
 				returnData.push({
 					json: { error: error.message },
@@ -131,6 +136,8 @@ export async function executeBatch(
 				};
 			} else {
 				request.actions.push.apply(request.actions, batchResult.actions);
+				// Preserve each item's previousRequests so buildSteps can rebuild conversation history per item
+				request.metadata = mergeRequestMetadata(request.metadata, batchResult.metadata);
 			}
 			return;
 		}

@@ -1,7 +1,6 @@
 import { Logger } from '@n8n/backend-common';
-import { ProjectRepository } from '@n8n/db';
+import { type OperationContext, ProjectRepository } from '@n8n/db';
 import { Service } from '@n8n/di';
-import { In } from '@n8n/typeorm';
 import { Expression, type IDataObject } from 'n8n-workflow';
 
 import { withProjectContext } from './claims-context.builder';
@@ -25,8 +24,9 @@ export class RoleResolverService {
 	async resolveRoles(
 		config: RoleMappingConfig,
 		context: RoleResolverContext,
+		ctx: OperationContext = {},
 	): Promise<ResolvedRoles> {
-		const projects = await this.collectProjectInfoForRules(config.projectRoleRules);
+		const projects = await this.collectProjectInfoForRules(config.projectRoleRules, ctx);
 
 		const instanceRole = this.resolveInstanceRole(
 			config.instanceRoleRules,
@@ -41,6 +41,7 @@ export class RoleResolverService {
 
 	private async collectProjectInfoForRules(
 		rules: RoleMappingRule[],
+		ctx: OperationContext,
 	): Promise<Map<string, ProjectInfo>> {
 		const projectIds = [
 			...new Set(rules.filter((r) => r.enabled && r.projectId).map((r) => r.projectId as string)),
@@ -50,10 +51,7 @@ export class RoleResolverService {
 			return new Map();
 		}
 
-		const projects = await this.projectRepository.find({
-			where: { id: In(projectIds) },
-			select: ['id', 'name', 'type', 'description'],
-		});
+		const projects = await this.projectRepository.findTeamProjectInfoByIds(projectIds, ctx);
 
 		const map = new Map<string, ProjectInfo>();
 		for (const project of projects) {
@@ -74,7 +72,7 @@ export class RoleResolverService {
 	): ResolvedInstanceRole {
 		for (const rule of rules) {
 			if (!rule.enabled) continue;
-			if (this.evaluateExpression(rule.expression, context)) {
+			if (this.evaluateExpression(rule.expression, context, rule.id)) {
 				return {
 					role: rule.role,
 					matchedRuleId: rule.id,
@@ -101,13 +99,13 @@ export class RoleResolverService {
 			const project = projects.get(rule.projectId);
 			if (!project) {
 				this.logger.warn(
-					`Skipping role mapping rule "${rule.id}": project "${rule.projectId}" not found`,
+					`Skipping role mapping rule "${rule.id}": project "${rule.projectId}" not found or not a team project`,
 				);
 				continue;
 			}
 
 			const enrichedContext = withProjectContext(context, project);
-			if (this.evaluateExpression(rule.expression, enrichedContext)) {
+			if (this.evaluateExpression(rule.expression, enrichedContext, rule.id)) {
 				matched.set(rule.projectId, {
 					projectId: rule.projectId,
 					role: rule.role,
@@ -120,15 +118,26 @@ export class RoleResolverService {
 		return matched;
 	}
 
-	private evaluateExpression(expression: string, context: RoleResolverContext): boolean {
+	private evaluateExpression(
+		expression: string,
+		context: RoleResolverContext,
+		ruleId: string,
+	): boolean {
 		try {
 			const result = Expression.resolveWithoutWorkflow(
 				expression,
 				context as unknown as IDataObject,
 			);
-			return String(result) === 'true';
+			const matched = String(result) === 'true';
+			this.logger.debug('Role mapping rule evaluated', {
+				ruleId,
+				matched,
+				resultType: typeof result,
+			});
+			return matched;
 		} catch (error) {
 			this.logger.warn('Role resolver expression evaluation failed, treating as false', {
+				ruleId,
 				expression,
 				error: error instanceof Error ? error.message : String(error),
 			});

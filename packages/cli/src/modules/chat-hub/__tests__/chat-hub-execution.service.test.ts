@@ -1,13 +1,16 @@
 import type { Logger } from '@n8n/backend-common';
-import type { ExecutionRepository } from '@n8n/db';
-import { mock } from 'jest-mock-extended';
+import type { ExecutionRepository, User } from '@n8n/db';
+import type { Response } from 'express';
 import type { InstanceSettings } from 'n8n-core';
-import type { IRun, IRunExecutionData } from 'n8n-workflow';
+import type { IRun, IRunExecutionData, IWorkflowBase } from 'n8n-workflow';
 import { NodeConnectionTypes } from 'n8n-workflow';
+import { mock } from 'vitest-mock-extended';
 
 import type { ActiveExecutions } from '@/active-executions';
 import type { ChatExecutionManager } from '@/chat/chat-execution-manager';
+import type { ExecutionPersistence } from '@/executions/execution-persistence';
 import type { ExecutionService } from '@/executions/execution.service';
+import { StreamingWebhookResponseHeartbeat } from '@/webhooks/streaming-webhook-response-heartbeat';
 import type { WorkflowExecutionService } from '@/workflows/workflow-execution.service';
 
 import type { ChatHubExecutionStore } from '../chat-hub-execution-store.service';
@@ -23,9 +26,10 @@ describe('ChatHubExecutionService', () => {
 	const executionService = mock<ExecutionService>();
 	const workflowExecutionService = mock<WorkflowExecutionService>();
 	const executionRepository = mock<ExecutionRepository>();
+	const executionPersistence = mock<ExecutionPersistence>();
 	const executionManager = mock<ChatExecutionManager>();
 	const activeExecutions = mock<ActiveExecutions>();
-	const instanceSettings = mock<InstanceSettings>();
+	const instanceSettings = mock<InstanceSettings>({ isMultiMain: false });
 	const chatStreamService = mock<ChatStreamService>();
 	const chatHubWorkflowService = mock<ChatHubWorkflowService>();
 	const chatHubExecutionStore = mock<ChatHubExecutionStore>();
@@ -34,13 +38,14 @@ describe('ChatHubExecutionService', () => {
 	let service: ChatHubExecutionService;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 
 		service = new ChatHubExecutionService(
 			logger,
 			executionService,
 			workflowExecutionService,
 			executionRepository,
+			executionPersistence,
 			executionManager,
 			activeExecutions,
 			instanceSettings,
@@ -331,6 +336,34 @@ describe('ChatHubExecutionService', () => {
 			} as unknown as IRunExecutionData;
 
 			expect(service.extractErrorMessage(runData)).toBeUndefined();
+		});
+	});
+
+	describe('streaming response adapter', () => {
+		it('should let the streaming heartbeat stop without an error', async () => {
+			let adapter: Response | undefined;
+			workflowExecutionService.executeChatWorkflow.mockImplementation(
+				async (_user, _workflowData, _executionData, httpResponse) => {
+					adapter = httpResponse;
+					return { executionId: '1' };
+				},
+			);
+			activeExecutions.getPostExecutePromise.mockResolvedValue({ status: 'success' } as IRun);
+
+			await service.executeChatWorkflowWithCleanup(
+				mock<User>({ id: 'user-1' }),
+				{ provider: 'anthropic', model: 'claude-sonnet-5-5' },
+				mock<IWorkflowBase>({ id: 'workflow-1', name: 'Chat' }),
+				mock<IRunExecutionData>(),
+				'session-1',
+				'previous-message-1',
+				null,
+				'streaming',
+			);
+
+			expect(adapter).toBeDefined();
+			const heartbeat = new StreamingWebhookResponseHeartbeat(adapter as Response);
+			expect(() => heartbeat.stop()).not.toThrow();
 		});
 	});
 });

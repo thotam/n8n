@@ -1,6 +1,10 @@
 import { DynamicStructuredTool, type DynamicStructuredToolInput } from '@langchain/core/tools';
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { CompatibilityCallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+	CompatibilityCallToolResultSchema,
+	type CallToolResult,
+} from '@modelcontextprotocol/sdk/types.js';
+import { isRecord } from '@n8n/utils/is-record';
 import { type IDataObject } from 'n8n-workflow';
 import { z } from 'zod';
 
@@ -8,7 +12,7 @@ import { convertJsonSchemaToZod } from '@utils/schemaParsing';
 
 import type { McpToolIncludeMode } from './types';
 import type { McpTool } from '../shared/types';
-import { isStructuredContent } from '../shared/utils';
+import { isMcpContentArray, isStructuredContent } from '../shared/utils';
 
 export function getSelectedTools({
 	mode,
@@ -71,11 +75,15 @@ export const createCallTool =
 
 		let result: Awaited<ReturnType<Client['callTool']>>;
 
-		function handleError(error: unknown) {
+		function handleError(error: unknown): CallToolResult {
 			const errorDescription =
 				getErrorDescriptionFromToolCall(error) ?? `Failed to execute tool "${name}"`;
 			onError(errorDescription);
-			return errorDescription;
+			const content =
+				isRecord(error) && isMcpContentArray(error.content)
+					? error.content
+					: [{ type: 'text' as const, text: errorDescription }];
+			return { isError: true, content };
 		}
 
 		try {
@@ -122,21 +130,32 @@ export function buildMcpToolName(serverName: string, toolName: string): string {
 	return maxPrefixLen > 0 ? `${sanitizedServerName.slice(0, maxPrefixLen)}_${toolName}` : toolName;
 }
 
+export function isZodObjectSchema(schema: z.ZodTypeAny): schema is z.ZodObject<z.ZodRawShape> {
+	// zod v4 exposes internals under `_zod.def` (type: 'object'); zod v3 under `_def` (typeName: 'ZodObject').
+	const internals = schema as {
+		_zod?: { def?: { type?: unknown } };
+		_def?: { typeName?: unknown };
+	};
+	if (internals._zod?.def) return internals._zod.def.type === 'object';
+	return internals._def?.typeName === 'ZodObject';
+}
+
 export function mcpToolToDynamicTool(
 	tool: McpTool,
 	onCallTool: DynamicStructuredToolInput['func'],
+	attribution?: string,
 ): DynamicStructuredTool {
 	const rawSchema = convertJsonSchemaToZod(tool.inputSchema);
 
 	// Ensure we always have an object schema for structured tools
-	const objectSchema =
-		rawSchema instanceof z.ZodObject ? rawSchema : z.object({ value: rawSchema });
+	const objectSchema = isZodObjectSchema(rawSchema) ? rawSchema : z.object({ value: rawSchema });
 
 	return new DynamicStructuredTool({
 		name: tool.name,
 		description: tool.description ?? '',
 		schema: objectSchema,
 		func: onCallTool,
-		metadata: { isFromToolkit: true },
+		// The agent reads `attribution` to append it to its final reply.
+		metadata: { isFromToolkit: true, isMcpTool: true, ...(attribution && { attribution }) },
 	});
 }

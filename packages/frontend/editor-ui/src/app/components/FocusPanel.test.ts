@@ -22,9 +22,18 @@ import FocusPanel from './FocusPanel.vue';
 
 vi.mock('vue-router', () => ({
 	useRouter: () => ({}),
-	useRoute: () => reactive({}),
+	useRoute: () => reactive({ params: {} }),
 	RouterLink: vi.fn(),
 }));
+
+vi.mock('@/app/composables/useWorkflowId', async () => {
+	const { computed } = await import('vue');
+	const { useWorkflowsStore } = await import('@/app/stores/workflows.store');
+	return {
+		useWorkflowId: () => computed(() => useWorkflowsStore().workflowId),
+		useRouteWorkflowId: () => computed(() => useWorkflowsStore().workflowId),
+	};
+});
 
 vi.mock('@/app/stores/workflowDocument.store', async (importOriginal) => ({
 	...(await importOriginal()),
@@ -118,6 +127,25 @@ describe('FocusPanel', () => {
 			expect(rendered.getByText('N0')).toBeInTheDocument(); // title in header
 			expect(rendered.getByText('P0')).toBeInTheDocument(); // title in header
 			expect(rendered.getByDisplayValue('v0')).toBeInTheDocument(); // current value of the parameter
+		});
+
+		it('should render the parameter focus input read-only for a deprecated node', async () => {
+			nodeTypesStore.setNodeTypes([
+				mockNodeTypeDescription({
+					name: SET_NODE_TYPE,
+					properties: [parameter0, parameter1],
+					deprecated: true,
+				}),
+			]);
+			const rendered = renderComponent({});
+
+			focusPanelStore.openWithFocusedNodeParameter({
+				nodeId: 'n0',
+				parameter: parameter0,
+				parameterPath: 'parameters.p0',
+			});
+
+			expect(await rendered.findByDisplayValue('v0')).toHaveAttribute('readonly');
 		});
 
 		it('should render node parameters when a node is selected on canvas', async () => {

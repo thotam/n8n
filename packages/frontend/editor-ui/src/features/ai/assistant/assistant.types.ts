@@ -10,7 +10,7 @@ import type {
 	IRunExecutionData,
 	ITaskData,
 } from 'n8n-workflow';
-import type { ChatUI } from '@n8n/design-system/types/assistant';
+import type { ChatUI } from '@n8n/design-system';
 import type { FrontendSettings, QuickReplyType } from '@n8n/api-types';
 
 export namespace ChatRequest {
@@ -124,9 +124,7 @@ export namespace ChatRequest {
 	}
 
 	export interface BuilderFeatureFlags {
-		templateExamples?: boolean;
 		pinData?: boolean;
-		planMode?: boolean;
 		mergeAskBuild?: boolean;
 	}
 
@@ -161,7 +159,7 @@ export namespace ChatRequest {
 			name: VIEWS;
 			description?: string;
 		};
-		aiUsageSettings?: FrontendSettings['ai'];
+		aiUsageSettings?: Pick<FrontendSettings['ai'], 'allowSendingParameterValues'>;
 	}
 
 	export type AssistantContext = UserContext & WorkflowContext;

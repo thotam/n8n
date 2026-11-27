@@ -91,6 +91,14 @@ export class OAuth2Api implements ICredentialType {
 			required: true,
 		},
 		{
+			// Hidden ordering anchor: lets extending credentials (e.g. microsoftOAuth2Api) render a
+			// secret/certificate selector right after Client ID by overriding this field. Inert here.
+			displayName: 'Authentication',
+			name: 'clientCredentialType',
+			type: 'hidden',
+			default: 'clientSecret',
+		},
+		{
 			displayName: 'Client Secret',
 			name: 'clientSecret',
 			type: 'string',
@@ -104,6 +112,26 @@ export class OAuth2Api implements ICredentialType {
 			},
 			default: '',
 			required: true,
+		},
+		{
+			// Hidden ordering anchors (see `clientCredentialType` above): let extending credentials
+			// render the certificate fields right after Client Secret instead of appended at the end.
+			displayName: 'Private Key',
+			name: 'privateKey',
+			type: 'hidden',
+			typeOptions: {
+				password: true,
+			},
+			default: '',
+		},
+		{
+			displayName: 'Certificate',
+			name: 'certificate',
+			type: 'hidden',
+			typeOptions: {
+				password: true,
+			},
+			default: '',
 		},
 		// WARNING: if you are extending from this credentials and allow user to set their own scopes
 		// you HAVE TO add it to GENERIC_OAUTH2_CREDENTIALS_WITH_EDITABLE_SCOPE in packages/cli/src/constants.ts
@@ -210,7 +238,6 @@ export class OAuth2Api implements ICredentialType {
 			default: false,
 			description:
 				'Whether the IdP returns tokens encrypted as JWE to the public key at this instance’s JWKS endpoint. The response must contain at least one JWE-encrypted token (access or ID token); fully plaintext responses are rejected.',
-			envFeatureFlag: 'OAUTH2_JWE',
 			doNotInherit: true,
 		},
 		{
@@ -231,6 +258,21 @@ export class OAuth2Api implements ICredentialType {
 			displayOptions: {
 				show: {
 					jweEnabled: [true],
+				},
+			},
+			doNotInherit: true,
+		},
+		{
+			displayName: 'Inline JWKS in Client Registration',
+			name: 'inlineJwks',
+			type: 'boolean',
+			default: false,
+			description:
+				'Whether to send the public keys directly in the dynamic client registration payload instead of advertising a JWKS URI. Enable this when the IdP cannot reach this instance (e.g. when self-hosted behind a firewall).',
+			displayOptions: {
+				show: {
+					jweEnabled: [true],
+					useDynamicClientRegistration: [true],
 				},
 			},
 			doNotInherit: true,

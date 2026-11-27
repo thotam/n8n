@@ -3,30 +3,44 @@ import { N8nCommandBar } from '@n8n/design-system';
 import { computed, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { VIEWS } from '@/app/constants';
-import { useStyles } from '@/app/composables/useStyles';
 import { useCommandBar } from '@/features/shared/commandBar/composables/useCommandBar';
 import { hasPermission } from '@/app/utils/rbac/permissions';
+import { commandBarEventBus } from '@/features/shared/commandBar/commandBar.eventBus';
+import { useSettingsStore } from '@n8n/stores/settings.store';
 
 const route = useRoute();
-const { APP_Z_INDEXES } = useStyles();
+const settingsStore = useSettingsStore();
 
 const {
-	initialize: initializeCommandBar,
-	items,
+	isOpen,
+	query,
+	activeTab,
+	tabs,
+	sections,
 	placeholder,
-	context,
-	onCommandBarChange,
-	onCommandBarNavigateTo,
-	isLoading: isCommandBarLoading,
+	breadcrumb,
+	isLoading,
+	hasMore,
+	select,
+	back,
+	loadMore,
 } = useCommandBar();
 
 const isDemoMode = computed(() => route.name === VIEWS.DEMO);
 
-const showCommandBar = computed(() => hasPermission(['authenticated']) && !isDemoMode.value);
+const showCommandBar = computed(
+	() => hasPermission(['authenticated']) && !isDemoMode.value && !settingsStore.isCanvasOnly,
+);
 
-watch(showCommandBar, (newVal) => {
-	if (newVal) {
-		void initializeCommandBar();
+watch(showCommandBar, (show) => {
+	if (!show) {
+		isOpen.value = false;
+	}
+});
+
+watch(isOpen, (open) => {
+	if (open) {
+		commandBarEventBus.emit('open');
 	}
 });
 </script>
@@ -34,12 +48,17 @@ watch(showCommandBar, (newVal) => {
 <template>
 	<N8nCommandBar
 		v-if="showCommandBar"
-		:items="items"
+		v-model:open="isOpen"
+		v-model:query="query"
+		v-model:active-tab="activeTab"
+		:tabs="tabs"
+		:sections="sections"
 		:placeholder="placeholder"
-		:context="context"
-		:is-loading="isCommandBarLoading"
-		:z-index="APP_Z_INDEXES.COMMAND_BAR"
-		@input-change="onCommandBarChange"
-		@navigate-to="onCommandBarNavigateTo"
+		:breadcrumb="breadcrumb"
+		:is-loading="isLoading"
+		:has-more="hasMore"
+		@select="select"
+		@back="back"
+		@load-more="loadMore"
 	/>
 </template>

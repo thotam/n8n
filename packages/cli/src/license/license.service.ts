@@ -1,15 +1,17 @@
 import { LicenseState, Logger } from '@n8n/backend-common';
-import type { User } from '@n8n/db';
+import { OutboundHttp, type HttpRequestClient, isHttpRequestError } from '@n8n/backend-network';
+import { EventService, UrlService } from '@n8n/backend-services';
+import { Time } from '@n8n/constants';
+import type { Person, User } from '@n8n/db';
 import { WorkflowRepository } from '@n8n/db';
 import { Service } from '@n8n/di';
-import axios, { AxiosError } from 'axios';
-import { ensureError } from 'n8n-workflow';
+import { ensureError } from '@n8n/utils/errors/ensure-error';
 
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
+import { BadRequestError } from '@n8n/errors';
 import { LicenseEulaRequiredError } from '@/errors/response-errors/license-eula-required.error';
-import { EventService } from '@/events/event.service';
 import { License } from '@/license';
-import { UrlService } from '@/services/url.service';
+
+const REQUEST_TIMEOUT_MS = 30 * Time.seconds.toMilliseconds;
 
 export const LicenseErrors = {
 	SCHEMA_VALIDATION: 'Activation key is in the wrong format',
@@ -22,6 +24,8 @@ export const LicenseErrors = {
 
 @Service()
 export class LicenseService {
+	private readonly http: HttpRequestClient;
+
 	constructor(
 		private readonly logger: Logger,
 		private readonly license: License,
@@ -29,7 +33,13 @@ export class LicenseService {
 		private readonly workflowRepository: WorkflowRepository,
 		private readonly urlService: UrlService,
 		private readonly eventService: EventService,
-	) {}
+		outboundHttp: OutboundHttp,
+	) {
+		this.http = outboundHttp.requests({
+			useDefaultSsrfPolicy: 'unsafe', // Fixed, n8n-controlled host
+			timeout: REQUEST_TIMEOUT_MS,
+		});
+	}
 
 	async getLicenseData() {
 		const triggerCount = await this.workflowRepository.getActiveTriggerCount();
@@ -41,6 +51,7 @@ export class LicenseService {
 			usage: {
 				activeWorkflowTriggers: {
 					value: triggerCount,
+					// oxlint-disable-next-line typescript/no-deprecated - Tech debt, tests fail if we move to this.licenseState.getMaxActiveWorkflows
 					limit: this.license.getTriggerLimit(),
 					warningThreshold: 0.8,
 				},
@@ -56,13 +67,18 @@ export class LicenseService {
 		};
 	}
 
-	async requestEnterpriseTrial(user: User) {
-		await axios.post('https://enterprise.n8n.io/enterprise-trial', {
-			licenseType: 'enterprise',
-			firstName: user.firstName,
-			lastName: user.lastName,
-			email: user.email,
-			instanceUrl: this.urlService.getWebhookBaseUrl(),
+	async requestEnterpriseTrial(person: Person) {
+		await this.http.request({
+			url: 'https://enterprise.n8n.io/enterprise-trial',
+			method: 'POST',
+			body: {
+				licenseType: 'enterprise',
+				firstName: person.firstName,
+				lastName: person.lastName,
+				email: person.email,
+				instanceUrl: this.urlService.getWebhookBaseUrl(),
+			},
+			json: true,
 		});
 	}
 
@@ -80,23 +96,27 @@ export class LicenseService {
 		licenseType: string;
 	}): Promise<{ title: string; text: string }> {
 		try {
-			const {
-				data: { licenseKey, ...rest },
-			} = await axios.post<{ title: string; text: string; licenseKey: string }>(
-				'https://enterprise.n8n.io/community-registered',
-				{
+			const { licenseKey, ...rest } = await this.http.request<{
+				title: string;
+				text: string;
+				licenseKey: string;
+			}>({
+				url: 'https://enterprise.n8n.io/community-registered',
+				method: 'POST',
+				body: {
 					email,
 					instanceId,
 					instanceUrl,
 					licenseType,
 				},
-			);
+				json: true,
+			});
 			this.eventService.emit('license-community-plus-registered', { userId, email, licenseKey });
 			return rest;
 		} catch (e: unknown) {
-			if (e instanceof AxiosError) {
-				const error = e as AxiosError<{ message: string }>;
-				const errorMsg = error.response?.data?.message ?? e.message;
+			if (isHttpRequestError(e)) {
+				const data = e.response?.data as { message?: string } | undefined;
+				const errorMsg = data?.message ?? e.message;
 				throw new BadRequestError('Failed to register community edition: ' + errorMsg);
 			} else {
 				this.logger.error('Failed to register community edition', { error: ensureError(e) });

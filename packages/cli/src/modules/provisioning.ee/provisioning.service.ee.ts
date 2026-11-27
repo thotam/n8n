@@ -1,7 +1,13 @@
-import { ProvisioningConfigDto, ProvisioningConfigPatchDto } from '@n8n/api-types';
+import {
+	BLOCK_ACCESS_ASSIGNMENT,
+	ProvisioningConfigDto,
+	ProvisioningConfigPatchDto,
+} from '@n8n/api-types';
 import { Logger } from '@n8n/backend-common';
+import { EventService, Publisher } from '@n8n/backend-services';
 import { GlobalConfig } from '@n8n/config';
 import {
+	type Person,
 	RoleRepository,
 	RoleMappingRuleRepository,
 	Settings,
@@ -14,18 +20,19 @@ import {
 } from '@n8n/db';
 import { OnPubSubEvent } from '@n8n/decorators';
 import { Service } from '@n8n/di';
+import { GLOBAL_OWNER_ROLE_SLUG, isReservedGlobalRole } from '@n8n/permissions';
 import { Not, In } from '@n8n/typeorm';
 import { InstanceSettings } from 'n8n-core';
 import { jsonParse } from 'n8n-workflow';
 import { ZodError } from 'zod';
 
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
-import { EventService } from '@/events/event.service';
-import { Publisher } from '@/scaling/pubsub/publisher.service';
+import { BadRequestError } from '@n8n/errors';
 import { ProjectService } from '@/services/project.service.ee';
 import { UserService } from '@/services/user.service';
+import { isSamlOrOidcLoginEnabled } from '@/sso.ee/sso-helpers';
 
 import { PROVISIONING_PREFERENCES_DB_KEY } from './constants';
+import { SsoAccessDeniedError } from './errors/sso-access-denied.error';
 import { RoleMappingRuleService } from './role-mapping-rule.service.ee';
 import type { RoleMappingConfig, ResolvedRoles, RoleResolverContext } from './role-resolver-types';
 import { RoleResolverService } from './role-resolver.service.ee';
@@ -68,35 +75,17 @@ export class ProvisioningService {
 			return;
 		}
 
-		const globalOwnerRoleSlug = 'global:owner';
+		const globalOwnerRoleSlug = GLOBAL_OWNER_ROLE_SLUG;
 
-		if (typeof roleSlug !== 'string') {
-			this.logger.warn(
-				`skipping instance role provisioning. Invalid role type: expected string, received ${typeof roleSlug}`,
-				{
-					userId: user.id,
-					roleSlug,
-				},
-			);
+		const dbRole = await this.resolveClaimedInstanceRole(user, roleSlug);
+		if (!dbRole) {
 			return;
 		}
 
-		let dbRole: Role;
-
-		try {
-			dbRole = await this.roleRepository.findOneOrFail({ where: { slug: roleSlug } });
-		} catch (error) {
+		if (isReservedGlobalRole(dbRole.slug) && user.role.slug !== dbRole.slug) {
 			this.logger.warn(
-				`Skipping instance role provisioning, a role matching the slug ${roleSlug} was not found`,
-				{ userId: user.id, roleSlug, error },
-			);
-			return;
-		}
-
-		if (dbRole.roleType !== 'global') {
-			this.logger.warn(
-				`Skipping instance role provisioning. Role ${roleSlug} is not a global role`,
-				{ userId: user.id, roleSlug },
+				`Skipping instance role provisioning. Cannot assign reserved role: ${dbRole.slug} to user: ${user.id}`,
+				{ userId: user.id, roleSlug: dbRole.slug },
 			);
 			return;
 		}
@@ -113,7 +102,7 @@ export class ProvisioningService {
 			if (otherOwners === 0) {
 				this.logger.warn(
 					`Skipping instance role provisioning. Cannot remove last owner role: ${globalOwnerRoleSlug} from user: ${user.id}`,
-					{ userId: user.id, roleSlug },
+					{ userId: user.id, roleSlug: dbRole.slug },
 				);
 				return;
 			}
@@ -128,6 +117,54 @@ export class ProvisioningService {
 				role: dbRole.slug,
 			});
 		}
+	}
+
+	/**
+	 * Resolves the role claim sent by the IdP to an assignable global role,
+	 * applying the configured default condition when the claim is missing or
+	 * unrecognised. Returns null when no role should be assigned.
+	 */
+	private async resolveClaimedInstanceRole(user: User, roleSlug: unknown): Promise<Role | null> {
+		if (typeof roleSlug === 'string') {
+			const dbRole = await this.roleRepository.findOne({ where: { slug: roleSlug } });
+			if (dbRole?.roleType === 'global') {
+				return dbRole;
+			}
+			this.logger.warn(
+				dbRole
+					? `Instance role claim ${roleSlug} is not a global role`
+					: `A role matching the claimed slug ${roleSlug} was not found`,
+				{ userId: user.id, roleSlug },
+			);
+		} else if (roleSlug !== undefined && roleSlug !== null) {
+			this.logger.warn(
+				`Invalid instance role claim: expected string, received ${typeof roleSlug}`,
+				{ userId: user.id, roleSlug },
+			);
+		}
+
+		const { defaultInstanceRole } = await this.getConfig();
+		// Block access is enforced before login in assertSsoLoginAllowed and is never assigned
+		if (!defaultInstanceRole || defaultInstanceRole === BLOCK_ACCESS_ASSIGNMENT) {
+			return null;
+		}
+
+		const fallbackRole = await this.roleRepository.findOne({
+			where: { slug: defaultInstanceRole },
+		});
+		if (fallbackRole?.roleType !== 'global' || isReservedGlobalRole(fallbackRole.slug)) {
+			this.logger.warn(
+				`Skipping instance role provisioning. Default condition role ${defaultInstanceRole} is not an assignable global role`,
+				{ userId: user.id },
+			);
+			return null;
+		}
+
+		this.logger.debug('Applying default condition instance role', {
+			userId: user.id,
+			role: fallbackRole.slug,
+		});
+		return fallbackRole;
 	}
 
 	/**
@@ -151,92 +188,115 @@ export class ProvisioningService {
 			return;
 		}
 
-		let projectRoleMap: Record<string, string>;
-		try {
-			projectRoleMap = {};
-			for (const entry of projectIdToRoles) {
-				if (typeof entry !== 'string') {
-					this.logger.warn(
-						`Skipping invalid project role mapping entry. Expected string, received ${typeof entry}.`,
-						{ userId, entry },
-					);
-					continue;
-				}
-
-				const [projectId, roleSlugSuffix] = entry.split(':');
-				if (!projectId || !roleSlugSuffix) {
-					this.logger.warn(
-						`Skipping invalid project role mapping entry. Expected format "projectId:displayName", received "${entry}".`,
-						{ userId, entry },
-					);
-					continue;
-				}
-
-				// This means that if the external SSO setup has two roles configured
-				// for the same projectId, we only provision the one we see last in the sent list.
-				projectRoleMap[projectId] = `project:${roleSlugSuffix}`;
-			}
-		} catch (error) {
-			this.logger.warn(
-				'Skipping project role provisioning. Failed to parse project to role mapping.',
-				{ userId, projectIdToRoles },
-			);
-			return;
-		}
-
-		const projectIds = Object.keys(projectRoleMap);
-		const roleSlugs = [...new Set(Object.values(projectRoleMap))];
-
-		if (projectIds.length === 0) {
-			return;
-		}
-
-		const [existingProjects, existingRoles] = await Promise.all([
-			this.projectRepository.find({
-				where: { id: In(projectIds), type: Not('personal') },
-				select: ['id'],
-			}),
-			this.roleRepository.find({
-				where: {
-					slug: In(roleSlugs),
-					roleType: 'project',
-				},
-				select: ['displayName', 'slug'],
-			}),
-		]);
-		const existingProjectIds = new Set(existingProjects.map((project) => project.id));
-
-		const validProjectToRoleMappings: Array<{ projectId: string; roleSlug: string }> = [];
-
-		// populate validProjectToRoleMappings
-		for (const [projectId, roleSlug] of Object.entries(projectRoleMap)) {
-			if (!existingProjectIds.has(projectId)) {
+		const projectRoleMap = new Map<string, string>();
+		let hasMalformedEntry = false;
+		for (const entry of projectIdToRoles) {
+			if (typeof entry !== 'string') {
+				hasMalformedEntry = true;
 				this.logger.warn(
-					`Skipped provisioning project role for project with ID ${projectId}, because project does not exist or is a personal project.`,
-					{ userId, projectId, roleSlug },
-				);
-				continue;
-			}
-			const role = existingRoles.find((role) => role.slug === roleSlug);
-			if (!role) {
-				this.logger.warn(
-					`Skipping project role provisioning for role with slug ${roleSlug}, because role does not exist or is not specific to projects.`,
-					{ userId, projectId, roleSlug },
+					`Skipping invalid project role mapping entry. Expected string, received ${typeof entry}.`,
+					{ userId, entry },
 				);
 				continue;
 			}
 
-			validProjectToRoleMappings.push({ projectId, roleSlug: role.slug });
+			const [projectId, roleSlugSuffix] = entry.split(':');
+			if (!projectId || !roleSlugSuffix) {
+				hasMalformedEntry = true;
+				this.logger.warn(
+					`Skipping invalid project role mapping entry. Expected format "projectId:displayName", received "${entry}".`,
+					{ userId, entry },
+				);
+				continue;
+			}
+
+			// This means that if the external SSO setup has two roles configured
+			// for the same projectId, we only provision the one we see last in the sent list.
+			projectRoleMap.set(projectId, `project:${roleSlugSuffix}`);
 		}
 
-		if (validProjectToRoleMappings.length === 0) {
-			this.logger.warn(
-				'Skipping project role provisioning altogether. No valid project to role mappings found.',
-				{ userId, projectRoleMap },
-			);
+		// No-colon entries are malformed just like non-string entries. A claim
+		// without any well-formed entry is not an authoritative "no project roles"
+		// signal, so leave existing access untouched. If well-formed entries exist
+		// but none resolve, a malformed sibling keeps the claim non-authoritative;
+		// otherwise the shared reconciler removes stale access.
+		if (projectRoleMap.size === 0 && hasMalformedEntry) {
 			return;
 		}
 
+		await this.reconcileProjectRoles(userId, projectRoleMap, {
+			skipWhenNoValidMappings: hasMalformedEntry,
+			logNoValidMappings: true,
+		});
+	}
+
+	/**
+	 * Reconcile a user's team-project memberships with a desired project→role map.
+	 *
+	 * Existing projects and roles are resolved first; mappings that do not resolve
+	 * are skipped. Team-project relations outside the resolved map are removed and
+	 * the resolved mappings are added. Personal projects are never touched.
+	 */
+	private async reconcileProjectRoles(
+		userId: string,
+		projectRoleMap: Map<string, string>,
+		options: {
+			logPrefix?: string;
+			skipWhenNoValidMappings?: boolean;
+			logNoValidMappings?: boolean;
+		} = {},
+	): Promise<void> {
+		const logPrefix = options.logPrefix ?? '';
+		const validMappings: Array<{ projectId: string; roleSlug: string }> = [];
+
+		if (projectRoleMap.size > 0) {
+			const projectIds = [...projectRoleMap.keys()];
+			const roleSlugs = [...new Set(projectRoleMap.values())];
+
+			const [existingProjects, existingRoles] = await Promise.all([
+				this.projectRepository.find({
+					where: { id: In(projectIds), type: Not('personal') },
+					select: ['id'],
+				}),
+				this.roleRepository.find({
+					where: { slug: In(roleSlugs), roleType: 'project' },
+					select: ['displayName', 'slug'],
+				}),
+			]);
+
+			const existingProjectIds = new Set(existingProjects.map((project) => project.id));
+
+			for (const [projectId, roleSlug] of projectRoleMap.entries()) {
+				if (!existingProjectIds.has(projectId)) {
+					this.logger.warn(
+						`${logPrefix}Skipped provisioning project role for project with ID ${projectId}, because project does not exist or is a personal project.`,
+						{ userId, projectId, roleSlug },
+					);
+					continue;
+				}
+				const role = existingRoles.find((candidate) => candidate.slug === roleSlug);
+				if (!role) {
+					this.logger.warn(
+						`${logPrefix}Skipping project role provisioning for role with slug ${roleSlug}, because role does not exist or is not specific to projects.`,
+						{ userId, projectId, roleSlug },
+					);
+					continue;
+				}
+				validMappings.push({ projectId, roleSlug: role.slug });
+			}
+		}
+
+		if (validMappings.length === 0 && options.skipWhenNoValidMappings) {
+			return;
+		}
+		if (validMappings.length === 0 && options.logNoValidMappings) {
+			this.logger.warn(
+				`${logPrefix}No valid project to role mappings found. Removing existing project access.`,
+				{ userId, projectRoleMap: Object.fromEntries(projectRoleMap) },
+			);
+		}
+
+		// Fetch existing access even when the map is empty so revocation runs.
 		const currentlyAccessibleProjects = await this.projectRepository.find({
 			where: {
 				type: Not('personal'),
@@ -247,17 +307,21 @@ export class ProvisioningService {
 			relations: ['projectRelations'],
 		});
 
-		const validProjectIds = new Set(validProjectToRoleMappings.map((m) => m.projectId));
+		const validProjectIds = new Set(validMappings.map((mapping) => mapping.projectId));
 		const projectsToRemoveAccessFrom = currentlyAccessibleProjects.filter(
 			(project) => !validProjectIds.has(project.id),
 		);
+
+		if (projectsToRemoveAccessFrom.length === 0 && validMappings.length === 0) {
+			return;
+		}
 
 		await this.projectRepository.manager.transaction(async (tx) => {
 			for (const project of projectsToRemoveAccessFrom) {
 				await tx.delete(ProjectRelation, { projectId: project.id, userId });
 			}
 
-			for (const { projectId, roleSlug } of validProjectToRoleMappings) {
+			for (const { projectId, roleSlug } of validMappings) {
 				await this.projectService.addUser(projectId, { userId, role: roleSlug }, tx);
 			}
 		});
@@ -291,6 +355,7 @@ export class ProvisioningService {
 			'scopesInstanceRoleClaimName',
 			'scopesProjectsRolesClaimName',
 			'scopesUseExpressionMapping',
+			'defaultInstanceRole',
 		] as const;
 
 		const { deleteProjectRules: explicitDeleteProjectRules, ...configPatch } = patchConfig;
@@ -316,6 +381,8 @@ export class ProvisioningService {
 		}
 
 		ProvisioningConfigDto.parse(updatedConfig);
+
+		await this.validateDefaultInstanceRole(updatedConfig.defaultInstanceRole);
 
 		const previousProjectRoleManaged =
 			currentConfig.scopesProvisionProjectRoles || currentConfig.scopesUseExpressionMapping;
@@ -357,6 +424,22 @@ export class ProvisioningService {
 		}
 
 		return await this.getConfig();
+	}
+
+	/** The default condition must be Block access or an assignable global role. */
+	private async validateDefaultInstanceRole(value: unknown): Promise<void> {
+		if (value === undefined || value === BLOCK_ACCESS_ASSIGNMENT) return;
+
+		const role =
+			typeof value === 'string'
+				? await this.roleRepository.findOne({ where: { slug: value } })
+				: null;
+
+		if (!role || role.roleType !== 'global' || isReservedGlobalRole(role.slug)) {
+			throw new BadRequestError(
+				`defaultInstanceRole must be "${BLOCK_ACCESS_ASSIGNMENT}" or the slug of an assignable global role`,
+			);
+		}
 	}
 
 	@OnPubSubEvent('reload-sso-provisioning-configuration')
@@ -437,15 +520,33 @@ export class ProvisioningService {
 		return provisioningConfig.scopesUseExpressionMapping;
 	}
 
+	/**
+	 * Expression mapping is a single global toggle covering both scopes, so it only marks a scope
+	 * as managed when rules for that specific scope actually exist.
+	 */
+	private async hasRoleMappingRulesOfType(type: 'instance' | 'project'): Promise<boolean> {
+		return (await this.roleMappingRuleRepository.count({ where: { type } })) > 0;
+	}
+
+	/**
+	 * The provisioning settings stay when an admin turns SAML or OIDC sign-in
+	 * off, but then no sign-in applies the mapped roles. So the manual role
+	 * lock applies only while SAML or OIDC sign-in is on.
+	 */
 	async isInstanceRoleManaged(): Promise<boolean> {
+		if (!isSamlOrOidcLoginEnabled()) return false;
+		if (await this.isInstanceRoleProvisioningEnabled()) return true;
 		return (
-			(await this.isInstanceRoleProvisioningEnabled()) || (await this.isExpressionMappingEnabled())
+			(await this.isExpressionMappingEnabled()) &&
+			(await this.hasRoleMappingRulesOfType('instance'))
 		);
 	}
 
 	async isProjectRoleManaged(): Promise<boolean> {
+		if (!isSamlOrOidcLoginEnabled()) return false;
+		if (await this.isProjectRolesProvisioningEnabled()) return true;
 		return (
-			(await this.isProjectRolesProvisioningEnabled()) || (await this.isExpressionMappingEnabled())
+			(await this.isExpressionMappingEnabled()) && (await this.hasRoleMappingRulesOfType('project'))
 		);
 	}
 
@@ -479,17 +580,34 @@ export class ProvisioningService {
 			}
 		}
 
-		return { instanceRoleRules, projectRoleRules, fallbackInstanceRole: 'global:member' };
+		const { defaultInstanceRole } = await this.getConfig();
+
+		return {
+			instanceRoleRules,
+			projectRoleRules,
+			fallbackInstanceRole: defaultInstanceRole ?? 'global:member',
+		};
 	}
 
-	private async applyExpressionMappedRoles(user: User, resolved: ResolvedRoles): Promise<void> {
-		const projectRolesMap = new Map<string, string>();
-		for (const [projectId, pr] of resolved.projectRoles) {
-			projectRolesMap.set(projectId, pr.role);
+	async applyResolvedRoles(
+		user: User,
+		resolved: ResolvedRoles,
+		managed: { instanceRole: boolean; projectRoles: boolean },
+	): Promise<void> {
+		// Reconcile a scope only when its mapping rules exist — the same predicate as
+		// isInstanceRoleManaged()/isProjectRoleManaged(). Otherwise using expression mapping for one
+		// scope would revoke manually-assigned roles in the other scope on every SSO login.
+		if (managed.instanceRole) {
+			await this.applyExpressionMappedInstanceRole(user, resolved.instanceRole.role);
 		}
 
-		await this.applyExpressionMappedInstanceRole(user, resolved.instanceRole.role);
-		await this.applyExpressionMappedProjectRoles(user.id, projectRolesMap);
+		if (managed.projectRoles) {
+			const projectRolesMap = new Map<string, string>();
+			for (const [projectId, pr] of resolved.projectRoles) {
+				projectRolesMap.set(projectId, pr.role);
+			}
+			await this.applyExpressionMappedProjectRoles(user.id, projectRolesMap);
+		}
 	}
 
 	private async getPreviousProjectRoles(userId: string): Promise<Record<string, string>> {
@@ -511,6 +629,12 @@ export class ProvisioningService {
 		user: User,
 		instanceRoleSlug: string,
 	): Promise<void> {
+		// Block access is enforced before login in assertSsoLoginAllowed; it can
+		// only reach this point if rules changed mid-login, and is never assigned.
+		if (instanceRoleSlug === BLOCK_ACCESS_ASSIGNMENT) {
+			return;
+		}
+
 		let dbRole: Role;
 		try {
 			dbRole = await this.roleRepository.findOneOrFail({ where: { slug: instanceRoleSlug } });
@@ -530,10 +654,17 @@ export class ProvisioningService {
 			return;
 		}
 
-		const globalOwnerRoleSlug = 'global:owner';
-		if (user.role.slug === globalOwnerRoleSlug && dbRole.slug !== globalOwnerRoleSlug) {
+		if (isReservedGlobalRole(dbRole.slug) && user.role.slug !== dbRole.slug) {
+			this.logger.warn(
+				`Skipping instance role provisioning. Cannot assign reserved role: ${dbRole.slug} to user: ${user.id}`,
+				{ userId: user.id, roleSlug: dbRole.slug },
+			);
+			return;
+		}
+
+		if (user.role.slug === GLOBAL_OWNER_ROLE_SLUG && dbRole.slug !== GLOBAL_OWNER_ROLE_SLUG) {
 			const otherOwners = await this.userRepository.count({
-				where: { role: { slug: globalOwnerRoleSlug }, id: Not(user.id) },
+				where: { role: { slug: GLOBAL_OWNER_ROLE_SLUG }, id: Not(user.id) },
 			});
 			if (otherOwners === 0) {
 				this.logger.warn(
@@ -557,105 +688,129 @@ export class ProvisioningService {
 		userId: string,
 		projectRoleMap: Map<string, string>,
 	): Promise<void> {
-		// Fetch existing access first so revocation always runs, even when projectRoleMap is empty
-		const currentlyAccessibleProjects = await this.projectRepository.find({
-			where: { type: Not('personal'), projectRelations: { userId } },
-			relations: ['projectRelations'],
-		});
-
-		const validMappings: Array<{ projectId: string; roleSlug: string }> = [];
-
-		if (projectRoleMap.size > 0) {
-			const projectIds = [...projectRoleMap.keys()];
-			const roleSlugs = [...new Set(projectRoleMap.values())];
-
-			const [existingProjects, existingRoles] = await Promise.all([
-				this.projectRepository.find({
-					where: { id: In(projectIds), type: Not('personal') },
-					select: ['id'],
-				}),
-				this.roleRepository.find({
-					where: { slug: In(roleSlugs), roleType: 'project' },
-					select: ['displayName', 'slug'],
-				}),
-			]);
-
-			const existingProjectIds = new Set(existingProjects.map((p) => p.id));
-
-			for (const [projectId, roleSlug] of projectRoleMap.entries()) {
-				if (!existingProjectIds.has(projectId)) {
-					this.logger.warn(
-						`Expression mapping: skipping project ${projectId}, not found or is a personal project`,
-						{ userId, projectId, roleSlug },
-					);
-					continue;
-				}
-				const role = existingRoles.find((r) => r.slug === roleSlug);
-				if (!role) {
-					this.logger.warn(
-						`Expression mapping: skipping role "${roleSlug}", not found or not a project role`,
-						{ userId, projectId, roleSlug },
-					);
-					continue;
-				}
-				validMappings.push({ projectId, roleSlug: role.slug });
-			}
-		}
-
-		const validProjectIds = new Set(validMappings.map((m) => m.projectId));
-		const projectsToRemoveAccessFrom = currentlyAccessibleProjects.filter(
-			(p) => !validProjectIds.has(p.id),
-		);
-
-		if (projectsToRemoveAccessFrom.length === 0 && validMappings.length === 0) return;
-
-		await this.projectRepository.manager.transaction(async (tx) => {
-			for (const project of projectsToRemoveAccessFrom) {
-				await tx.delete(ProjectRelation, { projectId: project.id, userId });
-			}
-			for (const { projectId, roleSlug } of validMappings) {
-				await this.projectService.addUser(projectId, { userId, role: roleSlug }, tx);
-			}
-		});
-
-		this.eventService.emit('sso-user-project-access-updated', {
-			projectsAdded: validProjectIds.size,
-			projectsRemoved: projectsToRemoveAccessFrom.length,
-			userId,
+		await this.reconcileProjectRoles(userId, projectRoleMap, {
+			logPrefix: 'Expression mapping: ',
 		});
 	}
 
+	/**
+	 * Denies an SSO login when role mapping resolves to "Block access".
+	 * Must run before account creation and before the session is issued, so a
+	 * blocked login creates no account and an existing user's account is left
+	 * untouched — they are denied per-login, never deactivated.
+	 */
+	async assertSsoLoginAllowed(
+		context: RoleResolverContext,
+		instanceRoleClaim: unknown,
+	): Promise<void> {
+		if (await this.isExpressionMappingEnabled()) {
+			// With no instance rules the default condition alone decides. Block is an
+			// access policy and applies whenever configured; a role-valued default
+			// is still only assigned while the scope is managed (rules exist), so
+			// it cannot stomp manually-assigned roles.
+			if (!(await this.hasRoleMappingRulesOfType('instance'))) {
+				const { defaultInstanceRole } = await this.getConfig();
+				if (defaultInstanceRole === BLOCK_ACCESS_ASSIGNMENT) {
+					this.logger.warn('SSO login blocked by role mapping', {
+						provider: context.$provider,
+						matchedRuleId: null,
+						isFallback: true,
+					});
+					throw new SsoAccessDeniedError();
+				}
+				return;
+			}
+
+			const config = await this.buildRoleMappingConfig();
+			const resolved = await this.roleResolverService.resolveRoles(
+				{ ...config, projectRoleRules: [] },
+				context,
+			);
+
+			if (resolved.instanceRole.role === BLOCK_ACCESS_ASSIGNMENT) {
+				this.logger.warn('SSO login blocked by role mapping', {
+					provider: context.$provider,
+					matchedRuleId: resolved.instanceRole.matchedRuleId,
+					isFallback: resolved.instanceRole.isFallback,
+				});
+				throw new SsoAccessDeniedError();
+			}
+			return;
+		}
+
+		const config = await this.getConfig();
+		if (!config.scopesProvisionInstanceRole) return;
+		if (config.defaultInstanceRole !== BLOCK_ACCESS_ASSIGNMENT) return;
+
+		if (!(await this.isAssignableGlobalRole(instanceRoleClaim))) {
+			this.logger.warn('SSO login blocked: no recognised instance role claim', {
+				provider: context.$provider,
+			});
+			throw new SsoAccessDeniedError();
+		}
+	}
+
+	private async isAssignableGlobalRole(roleSlug: unknown): Promise<boolean> {
+		if (typeof roleSlug !== 'string' || roleSlug.length === 0) return false;
+		// Provisioning can never assign a reserved role, so such a claim does not
+		// count as a role assignment and cannot bypass a Block default condition.
+		if (isReservedGlobalRole(roleSlug)) return false;
+		const role = await this.roleRepository.findOne({ where: { slug: roleSlug } });
+		return role?.roleType === 'global';
+	}
+
 	async provisionExpressionMappedRolesForUser(
-		user: User,
+		person: Person,
 		context: RoleResolverContext,
 	): Promise<void> {
 		if (!(await this.isExpressionMappingEnabled())) return;
 
-		const previousInstanceRole = user.role.slug;
-		const previousProjectRoles = await this.getPreviousProjectRoles(user.id);
+		const previousInstanceRole = person.role.slug;
+		const previousProjectRoles = await this.getPreviousProjectRoles(person.id);
 
 		const config = await this.buildRoleMappingConfig();
 		const resolved = await this.roleResolverService.resolveRoles(config, context);
 
-		await this.applyExpressionMappedRoles(user, resolved);
+		// Only reconcile a scope whose mapping rules exist, matching the manual-management guards.
+		const [instanceRolesManaged, projectRolesManaged] = await Promise.all([
+			this.hasRoleMappingRulesOfType('instance'),
+			this.hasRoleMappingRulesOfType('project'),
+		]);
+
+		this.logger.debug('SSO role resolution complete', {
+			userId: person.id,
+			provider: context.$provider,
+			claimKeys: Object.keys(context.$claims ?? {}).sort(),
+			matchedInstanceRuleId: resolved.instanceRole.matchedRuleId,
+			isFallback: resolved.instanceRole.isFallback,
+			matchedProjectRuleIds: [...resolved.projectRoles.values()].map((r) => r.matchedRuleId),
+		});
+
+		await this.applyResolvedRoles(person, resolved, {
+			instanceRole: instanceRolesManaged,
+			projectRoles: projectRolesManaged,
+		});
 
 		const newInstanceRole = resolved.instanceRole;
-		const projectRoles = [...resolved.projectRoles.values()].map((pr) => {
-			const prev = previousProjectRoles[pr.projectId] ?? null;
-			return { ...pr, previousRole: prev, changed: prev !== pr.role };
-		});
-		const removedProjectIds = Object.keys(previousProjectRoles).filter(
-			(id) => !resolved.projectRoles.has(id),
-		);
+		// Report only what was actually applied, so an unmanaged scope doesn't emit phantom changes.
+		const projectRoles = projectRolesManaged
+			? [...resolved.projectRoles.values()].map((pr) => {
+					const prev = previousProjectRoles[pr.projectId] ?? null;
+					return { ...pr, previousRole: prev, changed: prev !== pr.role };
+				})
+			: [];
+		const removedProjectIds = projectRolesManaged
+			? Object.keys(previousProjectRoles).filter((id) => !resolved.projectRoles.has(id))
+			: [];
 
 		this.eventService.emit('expression-mapping-roles-resolved', {
-			userId: user.id,
-			userEmail: user.email,
+			userId: person.id,
+			userEmail: person.email,
 			provider: context.$provider,
 			instanceRole: {
 				...newInstanceRole,
 				previousRole: previousInstanceRole,
-				changed: newInstanceRole.role !== previousInstanceRole,
+				changed: instanceRolesManaged && newInstanceRole.role !== previousInstanceRole,
 			},
 			projectRoles,
 			removedProjectIds,

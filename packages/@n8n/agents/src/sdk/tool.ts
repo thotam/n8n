@@ -1,21 +1,47 @@
 import type { JSONSchema7 } from 'json-schema';
 import { z } from 'zod';
 
-import type { BuiltTool, InterruptibleToolContext, ToolContext } from '../types';
+import type {
+	BuiltTool,
+	InterruptibleToolContext,
+	LegacyCallConverter,
+	ToolContext,
+} from '../types';
+import { AgentEvent } from '../types/runtime/event';
 import type { AgentMessage } from '../types/sdk/message';
 import type { ToolDescriptor } from '../types/sdk/tool-descriptor';
 import type { JSONObject } from '../types/utils/json';
 import { isZodSchema, zodToJsonSchema } from '../utils/zod';
 
-const APPROVAL_SUSPEND_SCHEMA = z.object({
+export const APPROVAL_SUSPEND_SCHEMA = z.object({
 	type: z.literal('approval'),
 	toolName: z.string(),
+	displayName: z.string().optional(),
+	description: z.string().optional(),
+	supportsSessionApproval: z.boolean().optional(),
 	args: z.unknown(),
 });
 
-const APPROVAL_RESUME_SCHEMA = z.object({
+export type ApprovalSuspendPayload = z.infer<typeof APPROVAL_SUSPEND_SCHEMA>;
+
+export const APPROVAL_RESUME_SCHEMA = z.object({
 	approved: z.boolean(),
+	scope: z.enum(['once', 'session']).optional(),
+	/** Why the action was declined. The agent reads it, so it can explain the decline. */
+	reason: z.string().optional(),
 });
+
+export type ApprovalResumePayload = z.infer<typeof APPROVAL_RESUME_SCHEMA>;
+
+const APPROVAL_GATE_CONTINUATION_SCHEMA = z
+	.object({
+		__n8nApprovalGate: z.literal(true),
+	})
+	.strict();
+
+const APPROVAL_GATE_CONTINUATION = {
+	__n8nApprovalGate: true,
+} satisfies z.infer<typeof APPROVAL_GATE_CONTINUATION_SCHEMA>;
 
 type ZodOrJsonSchema = z.ZodType | JSONSchema7;
 
@@ -23,51 +49,166 @@ type OutputType<TOutput> = TOutput extends z.ZodType ? z.infer<TOutput> : unknow
 
 export interface ApprovalConfig {
 	requireApproval?: boolean;
+	/** Additional context shown in the approval request. */
+	approvalNotice?: string;
+	/** Set false when each call needs a separate decision. */
+	allowSessionApproval?: boolean;
 	needsApprovalFn?: (args: unknown) => Promise<boolean> | boolean;
+}
+
+function emitToolExecutionStart(
+	tool: BuiltTool,
+	input: unknown,
+	ctx: InterruptibleToolContext,
+): void {
+	if (!ctx.toolCallId) return;
+	ctx.emitEvent?.({
+		type: AgentEvent.ToolExecutionStart,
+		toolCallId: ctx.toolCallId,
+		toolName: tool.name,
+		args: input,
+	});
+}
+
+export function getToolApprovalDisplayName(tool: BuiltTool): string | undefined {
+	const metadata = tool.metadata;
+	const displayName = metadata?.displayName ?? metadata?.workflowName;
+	return typeof displayName === 'string' && displayName.length > 0 ? displayName : undefined;
+}
+
+function combineInterruptSchemas(
+	approvalSchema: z.ZodType,
+	innerSchema: BuiltTool['suspendSchema'],
+): z.ZodType | JSONSchema7 {
+	if (innerSchema === undefined) return approvalSchema;
+	if (isZodSchema(innerSchema)) return z.union([innerSchema, approvalSchema]);
+
+	const approvalJsonSchema = zodToJsonSchema(approvalSchema);
+	return approvalJsonSchema ? { anyOf: [approvalJsonSchema, innerSchema] } : innerSchema;
+}
+
+function isApprovalGateContinuation(value: unknown): boolean {
+	return APPROVAL_GATE_CONTINUATION_SCHEMA.safeParse(value).success;
 }
 
 /**
  * Wrap a BuiltTool with an approval gate that suspends before execution and
  * waits for human confirmation. Used by Tool.build() (when .requireApproval()
- * or .needsApprovalFn() is set) and by Agent.build() (for global approval).
+ * or .needsApprovalFn() is set) and per-tool JSON config reconstruction.
  *
  * The wrapped tool has suspendSchema/resumeSchema set, making it an
  * interruptible tool that uses the existing suspend/resume mechanism.
- * No validation is done here — all schema validation happens in the runtime.
  */
 
 export function wrapToolForApproval(tool: BuiltTool, config: ApprovalConfig): BuiltTool {
 	const originalHandler = tool.handler!;
+	const originalOnCancellation = tool.onCancellation;
+	const hasConditionalApproval = config.needsApprovalFn !== undefined;
+	const onCancellation: BuiltTool['onCancellation'] =
+		originalOnCancellation === undefined
+			? undefined
+			: async (input, ctx) => {
+					if (isApprovalGateContinuation(ctx.continuation)) return;
+					await originalOnCancellation(input, ctx);
+				};
 
 	return {
 		...tool,
-		withDefaultApproval: true,
-		suspendSchema: APPROVAL_SUSPEND_SCHEMA,
-		resumeSchema: APPROVAL_RESUME_SCHEMA,
-		handler: async (input, ctx) => {
+		onCancellation,
+		approval: {
+			required: config.requireApproval === true,
+			...(hasConditionalApproval ? { conditional: true } : {}),
+		},
+		suspendSchema: combineInterruptSchemas(APPROVAL_SUSPEND_SCHEMA, tool.suspendSchema),
+		resumeSchema: combineInterruptSchemas(APPROVAL_RESUME_SCHEMA, tool.resumeSchema),
+		async handler(this: BuiltTool | undefined, input, ctx) {
+			const currentTool = this ?? tool;
 			// This handler is always called with InterruptibleToolContext because
 			// wrapToolForApproval adds suspendSchema/resumeSchema.
 			const interruptCtx = ctx as InterruptibleToolContext;
+			const resumingInnerTool =
+				tool.suspendSchema !== undefined &&
+				interruptCtx.suspendPayload !== undefined &&
+				!isApprovalGateContinuation(interruptCtx.continuation);
+			if (resumingInnerTool) {
+				return await originalHandler(input, interruptCtx);
+			}
+			const grantKey = JSON.stringify(['tool', currentTool.name]);
+			const approvalContext = interruptCtx.approvalContext;
 			if (interruptCtx.resumeData === undefined) {
+				if (config.allowSessionApproval !== false && approvalContext?.approvedKeys.has(grantKey)) {
+					if (config.requireApproval || hasConditionalApproval) {
+						emitToolExecutionStart(currentTool, input, interruptCtx);
+					}
+					return await originalHandler(input, interruptCtx);
+				}
 				let needs = config.requireApproval ?? false;
 				if (!needs && config.needsApprovalFn) {
 					needs = await config.needsApprovalFn(input);
 				}
 				if (needs) {
-					return await interruptCtx.suspend({ type: 'approval', toolName: tool.name, args: input });
+					const displayName = getToolApprovalDisplayName(currentTool);
+					const description = [interruptCtx.approvalDescription, config.approvalNotice]
+						.filter(Boolean)
+						.join('\n\n');
+					return await interruptCtx.suspend(
+						{
+							type: 'approval',
+							toolName: currentTool.name,
+							...(description ? { description } : {}),
+							...(approvalContext && config.allowSessionApproval !== false
+								? { supportsSessionApproval: true }
+								: {}),
+							...(displayName ? { displayName } : {}),
+							args: approvalContext?.getDisplayArgs
+								? approvalContext.getDisplayArgs(currentTool.name, input)
+								: input,
+						},
+						{
+							resumeSchema: APPROVAL_RESUME_SCHEMA,
+							continuation: APPROVAL_GATE_CONTINUATION,
+						},
+					);
 				}
-				return await originalHandler(input, {
-					parentTelemetry: interruptCtx.parentTelemetry,
-				} as ToolContext);
+				if (hasConditionalApproval) {
+					emitToolExecutionStart(currentTool, input, interruptCtx);
+				}
+				return await originalHandler(input, interruptCtx);
 			}
 
-			const { approved } = interruptCtx.resumeData as z.infer<typeof APPROVAL_RESUME_SCHEMA>;
-			if (!approved) {
-				return { declined: true, message: `Tool "${tool.name}" was not approved` };
+			const decision = APPROVAL_RESUME_SCHEMA.parse(interruptCtx.resumeData);
+			if (
+				decision.scope === 'session' &&
+				(!approvalContext || config.allowSessionApproval === false)
+			) {
+				throw new Error('Session approvals are not available for this tool.');
 			}
-			return await originalHandler(input, {
-				parentTelemetry: interruptCtx.parentTelemetry,
-			} as ToolContext);
+			await approvalContext?.onDecision(grantKey, decision);
+			interruptCtx.abortSignal?.throwIfAborted();
+			if (!decision.approved) {
+				const message = `Tool "${currentTool.name}" was not approved`;
+				return {
+					declined: true,
+					message: decision.reason ? `${message}: ${decision.reason}` : message,
+				};
+			}
+			if (tool.suspendSchema === undefined) {
+				return await originalHandler(input, interruptCtx);
+			}
+			const initialInnerContext: InterruptibleToolContext = {
+				...interruptCtx,
+				suspend: async (payload, options) =>
+					await interruptCtx.suspend(payload, {
+						...options,
+						continuation: options?.continuation,
+						resumeSchema: options?.resumeSchema ?? tool.resumeSchema,
+					}),
+				resumeData: undefined,
+				suspendPayload: undefined,
+				continuation: undefined,
+				resumeSchema: undefined,
+			};
+			return await originalHandler(input, initialInnerContext);
 		},
 	};
 }
@@ -123,7 +264,17 @@ export class Tool<
 
 	private toModelOutputFn?: (output: OutputType<TOutput>) => unknown;
 
+	private toTraceOutputFn?: (output: OutputType<TOutput>) => unknown;
+
+	private outputTrustValue?: BuiltTool['outputTrust'];
+
+	private requiresWorkspaceValue?: true;
+
+	private endsTurnFn?: (output: OutputType<TOutput>) => boolean;
+
 	private providerOptionsValue?: Record<string, JSONObject>;
+
+	private handleCancellationValue?: boolean;
 
 	private requireApprovalValue?: boolean;
 
@@ -131,8 +282,47 @@ export class Tool<
 
 	private systemInstructionText?: string;
 
+	private legacyNamesValue?: string[];
+
+	private legacyActionsValue?: Record<string, string[]>;
+
+	private legacyResumeOnlyValue?: { convert: LegacyCallConverter };
+
 	constructor(name: string) {
 		this.name = name;
+	}
+
+	/**
+	 * Declare former names of this tool. Suspended calls and message history
+	 * persisted under a former name still resolve to this tool.
+	 */
+	legacyNames(...names: string[]): this {
+		this.legacyNamesValue = [...(this.legacyNamesValue ?? []), ...names];
+		return this;
+	}
+
+	/**
+	 * Declare that calls of a former tool resolve to this tool when their
+	 * `action` input is one of `actions`. Use it when a multi-action tool became
+	 * one tool for each action.
+	 */
+	legacyActions(legacyName: string, ...actions: string[]): this {
+		const current = this.legacyActionsValue?.[legacyName] ?? [];
+		this.legacyActionsValue = {
+			...this.legacyActionsValue,
+			[legacyName]: [...current, ...actions],
+		};
+		return this;
+	}
+
+	/**
+	 * Keep the former names and former actions for resume only. A suspended
+	 * call under a former name resumes here with `convert(formerName, input)`
+	 * as its input. A new model call under a former name fails as an unknown tool.
+	 */
+	legacyForResumeOnly(convert: LegacyCallConverter): this {
+		this.legacyResumeOnlyValue = { convert };
+		return this;
 	}
 
 	/** Set the tool description. Required before building. */
@@ -214,6 +404,42 @@ export class Tool<
 		return this;
 	}
 
+	/**
+	 * Derive data for the host's execution trace from the handler output.
+	 * The `tool-result` stream chunk carries it as `traceOutput`. The model never sees it.
+	 */
+	toTraceOutput(fn: (output: OutputType<TOutput>) => unknown): this {
+		this.toTraceOutputFn = fn;
+		return this;
+	}
+
+	/** End the run, without another model call, when `fn` returns true for an output. */
+	endsTurnWhen(fn: (output: OutputType<TOutput>) => boolean): this {
+		this.endsTurnFn = fn;
+		return this;
+	}
+
+	/** Treat every model-facing result and error from this tool as external reference data. */
+	untrustedOutput(): this {
+		this.outputTrustValue = 'untrusted';
+		return this;
+	}
+
+	/** Mark the handler as one that uses the agent's workspace, so the runtime prepares it early. */
+	requiresWorkspace(): this {
+		this.requiresWorkspaceValue = true;
+		return this;
+	}
+
+	/**
+	 * Opt in to handle cancellations in the tool handler (`ctx.cancellation`).
+	 * By default, the runtime bypasses the handler and injects the steering message directly.
+	 */
+	handleCancellation(): this {
+		this.handleCancellationValue = true;
+		return this;
+	}
+
 	/** Require human approval before this tool executes. Mutually exclusive with .suspend()/.resume(). */
 	requireApproval(): this {
 		this.requireApprovalValue = true;
@@ -266,6 +492,9 @@ export class Tool<
 		if (hasResume && !hasSuspend) {
 			throw new Error(`Tool "${this.name}" has .resume() but missing .suspend()`);
 		}
+		if (this.endsTurnFn && this.toModelOutputFn) {
+			throw new Error(`Tool "${this.name}" cannot combine .endsTurnWhen() with .toModelOutput()`);
+		}
 
 		const hasApproval =
 			(this.requireApprovalValue ?? false) || this.needsApprovalFnValue !== undefined;
@@ -277,12 +506,20 @@ export class Tool<
 
 		const built: BuiltTool = {
 			name: this.name,
+			...(this.legacyNamesValue?.length ? { legacyNames: this.legacyNamesValue } : {}),
+			...(this.legacyActionsValue ? { legacyActions: this.legacyActionsValue } : {}),
+			...(this.legacyResumeOnlyValue ? { legacyResumeOnly: this.legacyResumeOnlyValue } : {}),
 			description: this.desc,
 			systemInstruction: this.systemInstructionText,
 			suspendSchema: this.suspendSchemaValue,
 			resumeSchema: this.resumeSchemaValue,
+			handleCancellation: this.handleCancellationValue,
 			toMessage: this.toMessageFn as (output: unknown) => AgentMessage | undefined,
 			toModelOutput: this.toModelOutputFn as ((output: unknown) => unknown) | undefined,
+			toTraceOutput: this.toTraceOutputFn as ((output: unknown) => unknown) | undefined,
+			outputTrust: this.outputTrustValue,
+			...(this.requiresWorkspaceValue ? { requiresWorkspace: true } : {}),
+			endsTurn: this.endsTurnFn as ((output: unknown) => boolean) | undefined,
 			handler: this.handlerFn as (
 				input: unknown,
 				ctx: ToolContext | InterruptibleToolContext,
@@ -330,7 +567,24 @@ export class Tool<
 			hasResume: this.resumeSchemaValue !== undefined,
 			hasToMessage: this.toMessageFn !== undefined,
 			requireApproval: this.requireApprovalValue ?? false,
+			outputTrust: this.outputTrustValue ?? null,
 			providerOptions: this.providerOptionsValue ?? null,
 		};
 	}
+}
+
+const MAX_TOOL_NAME_LENGTH = 64;
+
+/**
+ * Coerce an arbitrary string into a provider-safe tool name
+ * (`[a-zA-Z0-9_-]`, max 64 chars — OpenAI's limit). Mirrors
+ * `nodeNameToToolName` in `n8n-workflow`; keep the two in sync — the SDK
+ * deliberately has no dependency on that package.
+ */
+export function sanitizeToolName(name: string): string {
+	let toolName = name.replace(/[^a-zA-Z0-9_-]+/g, '_');
+	if (toolName.length > MAX_TOOL_NAME_LENGTH) {
+		toolName = toolName.slice(0, MAX_TOOL_NAME_LENGTH).replace(/[_-]+$/, '');
+	}
+	return toolName;
 }

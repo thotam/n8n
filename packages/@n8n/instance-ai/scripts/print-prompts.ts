@@ -2,9 +2,9 @@
 // ---------------------------------------------------------------------------
 // Print Prompts CLI
 //
-// Renders the final system prompt for the main Instance Agent and every
-// orchestration sub-agent, then writes one markdown file per agent variant
-// into `.output/prompts/<agent>/<variant>.md` (gitignored). Useful for
+// Renders the final system prompt for the main Instance Agent and the generic
+// sub-agent prompt template, then writes one markdown file per agent variant into
+// `.output/prompts/<agent>/<variant>.md` (gitignored). Useful for
 // auditing the full prompt verbatim, diffing prompts across branches, or
 // sharing them outside the codebase.
 // ---------------------------------------------------------------------------
@@ -14,14 +14,13 @@ import { join, resolve } from 'path';
 
 import { buildSubAgentPrompt } from '../src/agent/sub-agent-factory';
 import { getSystemPrompt } from '../src/agent/system-prompt';
-import { buildBrowserAgentPrompt } from '../src/tools/orchestration/browser-credential-setup.prompt';
 import {
-	BUILDER_AGENT_PROMPT,
-	createSandboxBuilderAgentPrompt,
-} from '../src/tools/orchestration/build-workflow-agent.prompt';
-import { DATA_TABLE_AGENT_PROMPT } from '../src/tools/orchestration/data-table-agent.prompt';
-import { PLANNER_AGENT_PROMPT } from '../src/tools/orchestration/plan-agent-prompt';
-import { RESEARCH_AGENT_PROMPT } from '../src/tools/orchestration/research-agent-prompt';
+	assertInstanceAiPromptVersion,
+	describePromptProfile,
+	getVersionedSystemPrompt,
+	resolvePromptProfile,
+} from '../src/prompts/prompt-profiles';
+import { loadInstanceAiPromptSkills } from '../src/skills/skills';
 
 interface Variant {
 	/** File name (without extension) inside the agent's folder. */
@@ -39,9 +38,10 @@ interface AgentEntry {
 	variants: Variant[];
 }
 
-function parseArgs(argv: string[]): { outDir: string } {
+function parseArgs(argv: string[]): { outDir: string; promptVersion?: string } {
 	const args = argv.slice(2);
 	let outDir = resolve(__dirname, '..', '.output', 'prompts');
+	let promptVersion: string | undefined;
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === '--out' || args[i] === '-o') {
 			const next = args[i + 1];
@@ -51,13 +51,18 @@ function parseArgs(argv: string[]): { outDir: string } {
 			}
 			outDir = resolve(next);
 			i++;
+		} else if (args[i] === '--profile') {
+			promptVersion = args[++i];
+			if (!promptVersion) throw new Error('--profile requires a version');
+			assertInstanceAiPromptVersion(promptVersion);
 		} else if (args[i] === '--help' || args[i] === '-h') {
-			console.log('Usage: pnpm prompts:print [--out <dir>]');
+			console.log('Usage: pnpm prompts:print [--out <dir>] [--profile <version>]');
 			console.log('  --out, -o   Output directory (default: <package>/.output/prompts)');
+			console.log('  --profile   Export a prompt profile and its selected skills');
 			process.exit(0);
 		}
 	}
-	return { outDir };
+	return { outDir, promptVersion };
 }
 
 function collectAgents(): AgentEntry[] {
@@ -70,23 +75,20 @@ function collectAgents(): AgentEntry[] {
 				{
 					file: 'all-features',
 					label:
-						'all features enabled (research, filesystem, gateway connected, tool-search, browser, sample license hint)',
+						'all features enabled (research, filesystem, tool-search, browser connected, sample license hint)',
 					body: getSystemPrompt({
-						researchMode: true,
-						webhookBaseUrl: 'https://your-instance.example.com',
 						filesystemAccess: true,
-						localGateway: { status: 'connected', capabilities: ['filesystem', 'browser'] },
+						browserUseState: { status: 'connected' },
 						toolSearchEnabled: true,
 						licenseHints: ['<sample license hint — replace with real hint at runtime>'],
 						timeZone: 'UTC',
-						browserAvailable: true,
 						branchReadOnly: false,
 					}),
 				},
 				{
 					file: 'default',
 					label:
-						'no options set — what a fresh OSS install sees (no webhook URL, no filesystem, no gateway, no browser, no tool search)',
+						'no options set — what a fresh OSS install sees (no filesystem, no browser, no tool search)',
 					body: getSystemPrompt({}),
 				},
 				{
@@ -96,95 +98,24 @@ function collectAgents(): AgentEntry[] {
 					body: getSystemPrompt({ branchReadOnly: true }),
 				},
 				{
-					file: 'computer-use-prompting',
+					file: 'browser-use-prompting',
 					label:
-						"localGateway disconnected with filesystem + browser capabilities — renders the 'install Computer Use' pitch and 'Browser Automation (Unavailable)' note",
+						"Browser Use available but not connected — renders the 'connect Browser Use' pitch for the + menu entry",
 					body: getSystemPrompt({
-						webhookBaseUrl: 'https://your-instance.example.com',
-						localGateway: { status: 'disconnected' },
-						browserAvailable: false,
-					}),
-				},
-				{
-					file: 'gateway-no-browser',
-					label:
-						"localGateway connected, filesystemAccess: true, browserAvailable: false — renders 'Project Filesystem Access' and 'Browser Automation (Disabled in Computer Use)'",
-					body: getSystemPrompt({
-						webhookBaseUrl: 'https://your-instance.example.com',
-						filesystemAccess: true,
-						localGateway: { status: 'connected', capabilities: ['filesystem'] },
-						browserAvailable: false,
+						browserUseState: { status: 'disconnected' },
 					}),
 				},
 			],
 		},
 		{
-			folder: 'planner',
-			displayName: 'Sub-Agent — Workflow Planner',
-			source: 'src/tools/orchestration/plan-agent-prompt.ts → PLANNER_AGENT_PROMPT',
-			variants: [{ file: 'prompt', body: PLANNER_AGENT_PROMPT }],
-		},
-		{
-			folder: 'builder',
-			displayName: 'Sub-Agent — Workflow Builder',
-			source: 'src/tools/orchestration/build-workflow-agent.prompt.ts',
-			variants: [
-				{
-					file: 'tool',
-					label: 'tool mode (no sandbox) → BUILDER_AGENT_PROMPT',
-					body: BUILDER_AGENT_PROMPT,
-				},
-				{
-					file: 'sandbox',
-					label: 'sandbox mode → createSandboxBuilderAgentPrompt(workspaceRoot: /workspace)',
-					body: createSandboxBuilderAgentPrompt('/workspace'),
-				},
-			],
-		},
-		{
-			folder: 'researcher',
-			displayName: 'Sub-Agent — Web Researcher',
-			source: 'src/tools/orchestration/research-agent-prompt.ts → RESEARCH_AGENT_PROMPT',
-			variants: [{ file: 'prompt', body: RESEARCH_AGENT_PROMPT }],
-		},
-		{
-			folder: 'data-table',
-			displayName: 'Sub-Agent — Data Table Manager',
-			source: 'src/tools/orchestration/data-table-agent.prompt.ts → DATA_TABLE_AGENT_PROMPT',
-			variants: [{ file: 'prompt', body: DATA_TABLE_AGENT_PROMPT }],
-		},
-		{
-			folder: 'browser-credential-setup',
-			displayName: 'Sub-Agent — Browser Credential Setup',
-			source:
-				'src/tools/orchestration/browser-credential-setup.prompt.ts → buildBrowserAgentPrompt',
-			variants: [
-				{
-					file: 'gateway',
-					label: "source: 'gateway' (local gateway browser tools)",
-					body: buildBrowserAgentPrompt('gateway'),
-				},
-				{
-					file: 'chrome-mcp',
-					label: "source: 'chrome-devtools-mcp' (Chrome DevTools MCP server)",
-					body: buildBrowserAgentPrompt('chrome-devtools-mcp'),
-				},
-			],
-		},
-		{
-			folder: 'delegate',
-			displayName: 'Sub-Agent — Generic Delegate (template)',
+			folder: 'sub-agent-template',
+			displayName: 'Sub-Agent Prompt Template',
 			source: 'src/agent/sub-agent-factory.ts → buildSubAgentPrompt',
 			variants: [
 				{
 					file: 'template',
-					label:
-						'placeholder role/instructions — orchestrator fills these per delegation at runtime',
-					body: buildSubAgentPrompt(
-						'<example-role>',
-						'<example task instructions — orchestrator fills this in per delegation>',
-						'UTC',
-					),
+					label: 'placeholder role/instructions used by specialized background agents',
+					body: buildSubAgentPrompt('<example-role>', '<example task instructions>', 'UTC'),
 				},
 			],
 		},
@@ -200,8 +131,36 @@ function renderFile(agent: AgentEntry, variant: Variant): string {
 	return header.join('\n') + variant.body;
 }
 
-function main(): void {
-	const { outDir } = parseArgs(process.argv);
+async function main(): Promise<void> {
+	const { outDir, promptVersion } = parseArgs(process.argv);
+	if (promptVersion) {
+		const selected = resolvePromptProfile({ version: promptVersion });
+		const { source, disabledTools } = await loadInstanceAiPromptSkills(selected.profile);
+		const directory = join(outDir, promptVersion);
+		mkdirSync(join(directory, 'skills'), { recursive: true });
+		writeFileSync(
+			join(directory, 'system.md'),
+			getVersionedSystemPrompt(selected.profile.systemPromptVersion, {}),
+		);
+		writeFileSync(
+			join(directory, 'manifest.json'),
+			JSON.stringify(
+				{
+					...describePromptProfile(selected, source),
+					disabledTools,
+					skills: source.registry.skills.map(({ id, version, hash }) => ({ id, version, hash })),
+				},
+				null,
+				2,
+			),
+		);
+		for (const entry of source.registry.skills) {
+			const skill = await source.loadSkill(entry.id);
+			if (skill) writeFileSync(join(directory, 'skills', `${entry.id}.md`), skill.instructions);
+		}
+		console.log(`Wrote profile ${promptVersion} to ${directory}`);
+		return;
+	}
 	const agents = collectAgents();
 
 	const written: Array<{ relPath: string; chars: number }> = [];
@@ -226,4 +185,4 @@ function main(): void {
 	}
 }
 
-main();
+void main();

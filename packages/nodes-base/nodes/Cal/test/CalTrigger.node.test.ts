@@ -1,44 +1,48 @@
 import { randomBytes } from 'crypto';
 import type { IHookFunctions, IWebhookFunctions } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import { CalTrigger } from '../CalTrigger.node';
 import { verifySignature } from '../CalTriggerHelpers';
 import { calApiRequest } from '../GenericFunctions';
+import type { CalTriggerV1 } from '../v1/CalTriggerV1.node';
+import type { Mock, Mocked } from 'vitest';
+import type * as _importType0 from 'crypto';
 
-jest.mock('../GenericFunctions');
-jest.mock('../CalTriggerHelpers');
-jest.mock('crypto', () => ({
-	...jest.requireActual('crypto'),
-	randomBytes: jest.fn(),
+vi.mock('../GenericFunctions');
+vi.mock('../CalTriggerHelpers');
+vi.mock('crypto', async () => ({
+	...(await vi.importActual<typeof _importType0>('crypto')),
+	randomBytes: vi.fn(),
 }));
 
 describe('CalTrigger', () => {
-	let trigger: CalTrigger;
+	let trigger: CalTriggerV1;
 	let mockHookFunctions: Pick<
-		jest.Mocked<IHookFunctions>,
+		Mocked<IHookFunctions>,
 		'getNodeWebhookUrl' | 'getNodeParameter' | 'getWorkflowStaticData' | 'helpers'
 	>;
 	let mockWebhookFunctions: Pick<
-		jest.Mocked<IWebhookFunctions>,
+		Mocked<IWebhookFunctions>,
 		'getRequestObject' | 'getResponseObject' | 'helpers'
 	>;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
-		trigger = new CalTrigger();
+		vi.clearAllMocks();
+		trigger = new CalTrigger().getNodeType(2) as CalTriggerV1;
 
 		mockHookFunctions = {
-			getNodeWebhookUrl: jest.fn(),
-			getNodeParameter: jest.fn(),
-			getWorkflowStaticData: jest.fn(),
+			getNodeWebhookUrl: vi.fn(),
+			getNodeParameter: vi.fn(),
+			getWorkflowStaticData: vi.fn(),
 			helpers: {} as any,
 		};
 
 		mockWebhookFunctions = {
-			getRequestObject: jest.fn(),
-			getResponseObject: jest.fn(),
+			getRequestObject: vi.fn(),
+			getResponseObject: vi.fn(),
 			helpers: {
-				returnJsonArray: jest.fn((data) => data),
+				returnJsonArray: vi.fn((data) => data),
 			} as any,
 		};
 	});
@@ -61,10 +65,10 @@ describe('CalTrigger', () => {
 			const webhookData: any = {};
 			mockHookFunctions.getWorkflowStaticData.mockReturnValue(webhookData);
 
-			(randomBytes as jest.Mock).mockReturnValue({
-				toString: jest.fn().mockReturnValue(webhookSecret),
+			(randomBytes as Mock).mockReturnValue({
+				toString: vi.fn().mockReturnValue(webhookSecret),
 			});
-			(calApiRequest as jest.Mock).mockResolvedValue({
+			(calApiRequest as Mock).mockResolvedValue({
 				webhook: { id: webhookId },
 			});
 
@@ -74,7 +78,7 @@ describe('CalTrigger', () => {
 
 			expect(result).toBe(true);
 			expect(randomBytes).toHaveBeenCalledWith(32);
-			expect(calApiRequest).toHaveBeenCalledWith('POST', '/webhooks', {
+			expect(calApiRequest).toHaveBeenCalledWith('POST', requestPath`/webhooks`, {
 				subscriberUrl,
 				eventTriggers: events,
 				active: true,
@@ -101,10 +105,10 @@ describe('CalTrigger', () => {
 			const webhookData: any = {};
 			mockHookFunctions.getWorkflowStaticData.mockReturnValue(webhookData);
 
-			(randomBytes as jest.Mock).mockReturnValue({
-				toString: jest.fn().mockReturnValue(webhookSecret),
+			(randomBytes as Mock).mockReturnValue({
+				toString: vi.fn().mockReturnValue(webhookSecret),
 			});
-			(calApiRequest as jest.Mock).mockResolvedValue({
+			(calApiRequest as Mock).mockResolvedValue({
 				webhook: { id: webhookId },
 			});
 
@@ -113,7 +117,7 @@ describe('CalTrigger', () => {
 			);
 
 			expect(result).toBe(true);
-			expect(calApiRequest).toHaveBeenCalledWith('POST', '/hooks', {
+			expect(calApiRequest).toHaveBeenCalledWith('POST', requestPath`/hooks`, {
 				subscriberUrl,
 				eventTriggers: events,
 				active: true,
@@ -135,10 +139,10 @@ describe('CalTrigger', () => {
 			const webhookData: any = {};
 			mockHookFunctions.getWorkflowStaticData.mockReturnValue(webhookData);
 
-			(randomBytes as jest.Mock).mockReturnValue({
-				toString: jest.fn().mockReturnValue('secret'),
+			(randomBytes as Mock).mockReturnValue({
+				toString: vi.fn().mockReturnValue('secret'),
 			});
-			(calApiRequest as jest.Mock).mockResolvedValue({ webhook: {} });
+			(calApiRequest as Mock).mockResolvedValue({ webhook: {} });
 
 			const result = await trigger.webhookMethods!.default.create.call(
 				mockHookFunctions as unknown as IHookFunctions,
@@ -162,14 +166,14 @@ describe('CalTrigger', () => {
 			};
 			mockHookFunctions.getWorkflowStaticData.mockReturnValue(webhookData);
 
-			(calApiRequest as jest.Mock).mockResolvedValue({});
+			(calApiRequest as Mock).mockResolvedValue({});
 
 			const result = await trigger.webhookMethods!.default.delete.call(
 				mockHookFunctions as unknown as IHookFunctions,
 			);
 
 			expect(result).toBe(true);
-			expect(calApiRequest).toHaveBeenCalledWith('DELETE', `/webhooks/${webhookId}`);
+			expect(calApiRequest).toHaveBeenCalledWith('DELETE', requestPath`/webhooks/${webhookId}`);
 			expect(webhookData.webhookId).toBeUndefined();
 			expect(webhookData.webhookSecret).toBeUndefined();
 		});
@@ -190,12 +194,12 @@ describe('CalTrigger', () => {
 	describe('webhook', () => {
 		it('should return 401 when signature verification fails', async () => {
 			const mockResponse = {
-				status: jest.fn().mockReturnThis(),
-				send: jest.fn().mockReturnThis(),
-				end: jest.fn(),
+				status: vi.fn().mockReturnThis(),
+				send: vi.fn().mockReturnThis(),
+				end: vi.fn(),
 			};
 
-			(verifySignature as jest.Mock).mockReturnValue(false);
+			(verifySignature as Mock).mockReturnValue(false);
 			mockWebhookFunctions.getResponseObject.mockReturnValue(mockResponse as any);
 
 			const result = await trigger.webhook.call(
@@ -217,7 +221,7 @@ describe('CalTrigger', () => {
 				payload: { bookingId: 'abc-123' },
 			};
 
-			(verifySignature as jest.Mock).mockReturnValue(true);
+			(verifySignature as Mock).mockReturnValue(true);
 			mockWebhookFunctions.getRequestObject.mockReturnValue({
 				body: requestBody,
 			} as any);

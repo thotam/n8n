@@ -1,15 +1,15 @@
 import type { Embeddings } from '@langchain/core/embeddings';
 import type { MemoryVectorStore } from '@langchain/classic/vectorstores/memory';
-import {
-	type INodeProperties,
-	type ILoadOptionsFunctions,
-	type INodeListSearchResult,
-	type IDataObject,
-	type NodeParameterValueType,
-	type IExecuteFunctions,
-	type ISupplyDataFunctions,
-	ApplicationError,
+import type {
+	INodeProperties,
+	ILoadOptionsFunctions,
+	INodeListSearchResult,
+	IDataObject,
+	NodeParameterValueType,
+	IExecuteFunctions,
+	ISupplyDataFunctions,
 } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
 
 import { createVectorStoreNode, MemoryVectorStoreManager } from '@n8n/ai-utilities';
 
@@ -163,7 +163,7 @@ export class VectorStoreInMemory extends createVectorStoreNode<MemoryVectorStore
 				payload: string | IDataObject | undefined,
 			): Promise<NodeParameterValueType> {
 				if (!payload || typeof payload === 'string') {
-					throw new ApplicationError('Invalid payload type');
+					throw new UserError('Invalid payload type');
 				}
 
 				const { name } = payload;

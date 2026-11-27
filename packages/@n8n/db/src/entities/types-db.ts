@@ -7,6 +7,7 @@ import type {
 	IWorkflowBase,
 	WorkflowExecuteMode,
 	ExecutionStatus,
+	FeatureFlagPayloads,
 	FeatureFlags,
 	IUserSettings,
 	AnnotationVote,
@@ -15,17 +16,20 @@ import type {
 	IDataObject,
 	IBinaryKeyData,
 	IPairedItemData,
+	ExecutionTracingContext,
+	WorkflowEngineType,
 } from 'n8n-workflow';
 import { z } from 'zod';
 
-import type { CredentialsEntity } from './credentials-entity';
+import type { OperationContext } from '../services/transaction';
+import type { CredentialUsageScope, CredentialsEntity } from './credentials-entity';
 import type { ExecutionDataStorageLocation } from './execution-entity';
 import type { Folder } from './folder';
 import type { Project } from './project';
 import type { SharedCredentials } from './shared-credentials';
 import type { SharedWorkflow } from './shared-workflow';
 import type { TagEntity } from './tag-entity';
-import type { User } from './user';
+import type { User, UserKind } from './user';
 import type { WorkflowEntity } from './workflow-entity';
 import type { WorkflowHistory } from './workflow-history';
 
@@ -65,8 +69,14 @@ export interface IExecutionBase {
 	 * correlated across queue-mode boundaries.
 	 * @see https://www.w3.org/TR/trace-context/#traceparent-header
 	 */
-	tracingContext?: { traceparent: string; tracestate?: string } | null;
+	tracingContext?: ExecutionTracingContext | null;
+	deletedAt?: Date | null; // see `ExecutionEntity.deletedAt`
 	deduplicationKey?: string | null; // see `ExecutionEntity.deduplicationKey`
+	jsonSizeBytes?: number; // see `ExecutionEntity.jsonSizeBytes`
+	binaryDataSizeBytes?: number; // see `ExecutionEntity.binaryDataSizeBytes`
+	resumeAttempts?: number; // see `ExecutionEntity.resumeAttempts`
+	workflowVersionId?: string | null; // see `ExecutionEntity.workflowVersionId`
+	usedPrivateCredentials?: boolean; // see `ExecutionEntity.usedPrivateCredentials`
 }
 
 // Required by PublicUser
@@ -95,10 +105,12 @@ export interface IWorkflowDb extends IWorkflowBase {
 export interface ICredentialsDb extends ICredentialsBase, ICredentialsEncrypted {
 	id: string;
 	name: string;
+	description?: string | null;
 	shared?: SharedCredentials[];
 	isGlobal?: boolean;
 	isResolvable?: boolean;
 	isManaged?: boolean;
+	usageScope?: CredentialUsageScope;
 }
 
 export interface IExecutionResponse extends IExecutionBase {
@@ -112,6 +124,11 @@ export interface IExecutionResponse extends IExecutionBase {
 	annotation: {
 		tags: ITagBase[];
 	};
+	/**
+	 * Set when run data was skipped for exceeding `ExecutionsConfig.maxDisplaySize`. `data` is
+	 * then an empty run-data object and `jsonSizeBytes` holds the real size.
+	 */
+	dataTooLargeToDisplay?: boolean;
 }
 
 export interface PublicUser {
@@ -132,6 +149,7 @@ export interface PublicUser {
 	inviteAcceptUrl?: string;
 	isOwner?: boolean;
 	featureFlags?: FeatureFlags; // External type from n8n-workflow
+	featureFlagPayloads?: FeatureFlagPayloads;
 	lastActiveAt?: Date | null;
 	mfaAuthenticated?: boolean;
 	isManagedByEnv?: boolean;
@@ -139,13 +157,18 @@ export interface PublicUser {
 
 export type UserSettings = Pick<User, 'id' | 'settings'>;
 
-export type SlimProject = Pick<Project, 'id' | 'type' | 'name' | 'icon'>;
+export type SlimProject = Pick<Project, 'id' | 'type' | 'name' | 'icon'> & {
+	/** Set on personal projects only: the kind of account that owns the project. */
+	accountKind?: UserKind;
+	/** Set for a service account only: the project that the account acts for. */
+	accountProject?: { id: string; name: string };
+};
 
 export interface CredentialUsedByWorkflow {
 	id: string;
 	name: string;
 	type?: string;
-	currentUserHasAccess: boolean;
+	currentUserCanUse: boolean;
 	homeProject: SlimProject | null;
 	sharedWithProjects: SlimProject[];
 }
@@ -166,8 +189,14 @@ export interface WorkflowWithSharingsMetaDataAndCredentials extends Omit<Workflo
 /** Payload for creating an execution. */
 export type CreateExecutionPayload = Omit<
 	IExecutionDb,
-	'id' | 'createdAt' | 'startedAt' | 'storedAt'
->;
+	| 'id'
+	| 'createdAt'
+	| 'startedAt'
+	| 'storedAt'
+	| 'jsonSizeBytes'
+	| 'binaryDataSizeBytes'
+	| 'workflowVersionId'
+> & { startedAt?: Date };
 
 // Data in regular format with references
 export interface IExecutionDb extends IExecutionBase {
@@ -193,14 +222,9 @@ export namespace ExecutionSummaries {
 	export type CountQuery = { kind: 'count' } & FilterFields & AccessFields;
 
 	export type FilterFields = Partial<{
-		id: string;
-		finished: boolean;
 		mode: WorkflowExecuteMode;
-		retryOf: string;
-		retrySuccessId: string;
 		status: ExecutionStatus[];
 		workflowId: string;
-		waitTill: boolean;
 		metadata: Array<{ key: string; value: string; exactMatch?: boolean }>;
 		startedAfter: string;
 		startedBefore: string;
@@ -210,6 +234,7 @@ export namespace ExecutionSummaries {
 		workflowVersionId: string;
 		isArchived: boolean;
 		workflowBooleanSettings: Array<{ key: string; value: boolean }>;
+		engine: WorkflowEngineType;
 	}>;
 
 	export type StopExecutionFilterQuery = { workflowId: string } & Pick<
@@ -229,8 +254,8 @@ export namespace ExecutionSummaries {
 	type RangeFields = {
 		range: {
 			limit: number;
-			firstId?: string;
-			lastId?: string;
+			/** ID of the last row of the previous page. The page continues below it. */
+			beforeId?: string;
 		};
 	};
 
@@ -325,7 +350,8 @@ export function isAuthProviderType(value: string): value is AuthProviderType {
 }
 
 export type FolderWithWorkflowAndSubFolderCount = Folder & {
-	workflowCount?: boolean;
+	workflowCount?: number;
+	agentCount?: number;
 	subFolderCount?: number;
 };
 
@@ -335,24 +361,33 @@ export type FolderWithWorkflowAndSubFolderCountAndPath = FolderWithWorkflowAndSu
 
 export type TestRunFinalResult = 'success' | 'error' | 'warning';
 
-export type TestRunErrorCode =
-	| 'TEST_CASES_NOT_FOUND'
-	| 'INTERRUPTED'
-	| 'UNKNOWN_ERROR'
-	| 'EVALUATION_TRIGGER_NOT_FOUND'
-	| 'EVALUATION_TRIGGER_NOT_CONFIGURED'
-	| 'EVALUATION_TRIGGER_DISABLED'
-	| 'SET_OUTPUTS_NODE_NOT_CONFIGURED'
-	| 'SET_METRICS_NODE_NOT_FOUND'
-	| 'SET_METRICS_NODE_NOT_CONFIGURED'
-	| 'CANT_FETCH_TEST_CASES';
+export const TestRunErrorCode = {
+	TEST_CASES_NOT_FOUND: 'TEST_CASES_NOT_FOUND',
+	INTERRUPTED: 'INTERRUPTED',
+	UNKNOWN_ERROR: 'UNKNOWN_ERROR',
+	EVALUATION_TRIGGER_NOT_FOUND: 'EVALUATION_TRIGGER_NOT_FOUND',
+	EVALUATION_TRIGGER_NOT_CONFIGURED: 'EVALUATION_TRIGGER_NOT_CONFIGURED',
+	EVALUATION_TRIGGER_DISABLED: 'EVALUATION_TRIGGER_DISABLED',
+	EVALUATION_CONFIG_NOT_FOUND: 'EVALUATION_CONFIG_NOT_FOUND',
+	COMPILATION_FAILED: 'COMPILATION_FAILED',
+	SET_OUTPUTS_NODE_NOT_CONFIGURED: 'SET_OUTPUTS_NODE_NOT_CONFIGURED',
+	SET_METRICS_NODE_NOT_FOUND: 'SET_METRICS_NODE_NOT_FOUND',
+	SET_METRICS_NODE_NOT_CONFIGURED: 'SET_METRICS_NODE_NOT_CONFIGURED',
+	CANT_FETCH_TEST_CASES: 'CANT_FETCH_TEST_CASES',
+} as const;
+
+export type TestRunErrorCode = (typeof TestRunErrorCode)[keyof typeof TestRunErrorCode];
+
+export const TestCaseExecutionErrorCode = {
+	NO_METRICS_COLLECTED: 'NO_METRICS_COLLECTED',
+	MOCKED_NODE_NOT_FOUND: 'MOCKED_NODE_NOT_FOUND', // This will be used when node mocking will be implemented
+	FAILED_TO_EXECUTE_WORKFLOW: 'FAILED_TO_EXECUTE_WORKFLOW',
+	INVALID_METRICS: 'INVALID_METRICS',
+	UNKNOWN_ERROR: 'UNKNOWN_ERROR',
+} as const;
 
 export type TestCaseExecutionErrorCode =
-	| 'NO_METRICS_COLLECTED'
-	| 'MOCKED_NODE_NOT_FOUND' // This will be used when node mocking will be implemented
-	| 'FAILED_TO_EXECUTE_WORKFLOW'
-	| 'INVALID_METRICS'
-	| 'UNKNOWN_ERROR';
+	(typeof TestCaseExecutionErrorCode)[keyof typeof TestCaseExecutionErrorCode];
 
 export type AggregatedTestRunMetrics = Record<string, number | boolean>;
 
@@ -390,6 +425,7 @@ export interface IGetExecutionsQueryFilter {
 	metadata?: Array<{ key: string; value: string; exactMatch?: boolean }>;
 	startedAfter?: string;
 	startedBefore?: string;
+	engine?: WorkflowEngineType;
 }
 
 export type ResourceType = 'folder' | 'workflow';
@@ -430,6 +466,7 @@ export type AuthenticationInformation = {
 export interface TokenGrant {
 	scopes: string[];
 	apiKeyScopes?: string[];
+	apiKeyId?: string;
 	actor?: User;
 	subject: User;
 }
@@ -447,10 +484,12 @@ export type AuthenticatedRequest<
 		'push-ref': string;
 	};
 	tokenGrant?: TokenGrant;
+	/** Set by the authentication edge; controllers thread it into services as `ctx`. */
+	ctx?: OperationContext;
 };
 
 export function isAuthenticatedRequest(req: express.Request): req is AuthenticatedRequest {
-	return 'user' in req && req.user !== null;
+	return 'user' in req && Object.hasOwn(req, 'user') && req.user !== null;
 }
 
 /**

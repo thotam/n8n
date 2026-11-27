@@ -9,9 +9,9 @@
  * - `start-step` / `finish-step` mark LLM iteration boundaries.
  *
  * The frontend groups deltas by these ids and uses `start-step` / `finish-step`
- * to decide when a new ChatMessage cursor should open. There is no
- * server-minted `messageId` — the FE generates its own UUID per ChatMessage
- * for v-for keys only.
+ * to decide when a new ChatMessage cursor should open. The frontend assigns
+ * display IDs to assistant messages. `execution-started` and `message-steered`
+ * carry canonical input IDs for reconciliation with history.
  *
  * `runId` is included on `ToolSuspendedPayload` and echoed back by the
  * frontend on resume. The SDK stores `runId` on each `PendingToolCall` and
@@ -25,15 +25,16 @@
  *
  */
 
-import type { AgentPersistedMessageContentPart } from './agents';
+import type { AgentPersistedMessageContentPart, AgentPersistedMessageDto } from './agents';
+import type { ToolCallSimulation } from './schemas/agent-safe-testing.schema';
 
 export interface ToolSuspendedPayload {
 	toolCallId: string;
-	/** Run id of the suspended turn; FE echoes this back on `POST /build/resume`. */
+	/** Run id of the suspended turn; FE echoes this back on `POST /:agentId/chat/:threadId/resume`. */
 	runId: string;
 	/** Also the discriminator on the wire (no separate interactionType field). */
 	toolName: string;
-	/** Shape determined by toolName via the corresponding Ask*InputSchema. */
+	/** The tool's suspend payload; shape determined by toolName via the shared interaction-contract suspend schemas (`agents/agent-interaction.schema.ts`). */
 	input: unknown;
 }
 
@@ -47,9 +48,58 @@ export interface AgentSseMessage {
 	content: AgentPersistedMessageContentPart[];
 }
 
+/**
+ * Child stream chunks forwarded live while a `delegate_subagent` tool runs.
+ * Structural mirror of `@n8n/agents` `ForwardedChildChunk` (api-types cannot
+ * import from that package).
+ */
+export type ForwardedChildChunkWire =
+	| { type: 'text-delta'; id: string; delta: string }
+	| { type: 'reasoning-start'; id: string }
+	| { type: 'reasoning-delta'; id: string; delta: string }
+	| { type: 'reasoning-end'; id: string }
+	| { type: 'tool-input-start'; toolCallId: string; toolName: string }
+	| {
+			type: 'tool-execution-start';
+			toolCallId: string;
+			toolName: string;
+			startTime: number;
+	  }
+	| {
+			type: 'tool-execution-end';
+			toolCallId: string;
+			toolName: string;
+			isError: boolean;
+			endTime: number;
+	  };
+
+/** Cumulative usage from completed model calls in one execution. Cost is estimated USD. */
+export interface AgentTokenUsage {
+	promptTokens: number;
+	completionTokens: number;
+	totalTokens: number;
+	cost?: number;
+}
+
 export type AgentSseEvent =
+	| {
+			type: 'message-steered';
+			queueId: string;
+			executionId: string;
+			message: AgentPersistedMessageDto;
+	  }
+	| { type: 'message-queued'; queueId: string; sessionId: string }
+	| {
+			type: 'execution-started';
+			stopReport?: boolean;
+			executionId: string;
+			sessionId: string;
+			message?: string;
+			inputMessageIds?: string[];
+	  }
 	| { type: 'start-step' }
 	| { type: 'finish-step' }
+	| { type: 'usage'; usage: AgentTokenUsage }
 	| { type: 'text-start'; id: string }
 	| { type: 'text-delta'; id: string; delta: string }
 	| { type: 'text-end'; id: string }
@@ -69,6 +119,21 @@ export type AgentSseEvent =
 			type: 'tool-execution-start';
 			toolCallId: string;
 			toolName: string;
+			/** Epoch ms when the handler started, measured on the backend. */
+			startTime: number;
+	  }
+	| {
+			/**
+			 * Emitted as soon as an individual tool settles, so the FE can flip a
+			 * concurrent tool call to its terminal state immediately instead of
+			 * waiting for the batched `tool-result` events.
+			 */
+			type: 'tool-execution-end';
+			toolCallId: string;
+			toolName: string;
+			isError: boolean;
+			/** Epoch ms when the handler settled, measured on the backend. */
+			endTime: number;
 	  }
 	| {
 			type: 'tool-result';
@@ -76,21 +141,121 @@ export type AgentSseEvent =
 			toolName: string;
 			output: unknown;
 			isError?: boolean;
+			canceled?: boolean;
+			/** How the call ran. Set only in a test run (safe testing). */
+			simulation?: ToolCallSimulation;
 	  }
 	| { type: 'tool-call-suspended'; payload: ToolSuspendedPayload }
+	| {
+			/**
+			 * Live progress from a delegated child agent. Correlated to the parent
+			 * `delegate_subagent` tool call via `parentToolCallId`. Ephemeral —
+			 * not persisted or replayed from history.
+			 */
+			type: 'subagent-chunk';
+			parentToolCallId: string;
+			taskPath: string;
+			chunk: ForwardedChildChunkWire;
+	  }
 	| { type: 'message'; message: AgentSseMessage }
-	| { type: 'working-memory-update'; toolName: string }
-	| { type: 'code-delta'; delta: string }
-	| { type: 'config-updated' }
-	| { type: 'tool-updated' }
+	| {
+			/**
+			 * A custom event from a system-agent provider during a turn. The
+			 * client renders it through an extension keyed by `name`. A client
+			 * without an extension for the name ignores it. The runtime records
+			 * the event with the turn, so history returns it as a `host-event`
+			 * content part.
+			 */
+			type: 'host-event';
+			name: string;
+			/**
+			 * Set when the event can update. The client replaces the earlier
+			 * event of the same message with the same name and key, and keeps
+			 * its position.
+			 */
+			key?: string;
+			payload: unknown;
+	  }
+	| {
+			/**
+			 * A short-lived event from a system-agent provider during a turn, such
+			 * as a live preview. The runtime does not record it, so history does not
+			 * return it. A client that does not know the name ignores it.
+			 */
+			type: 'transient-host-event';
+			name: string;
+			payload: unknown;
+	  }
+	| {
+			/** A warning message from the MCP server when it fails to connect or initialize. */
+			type: 'warning';
+			message: string;
+			code?: string;
+			source?: 'mcp';
+			server?: string;
+	  }
+	| {
+			/**
+			 * The run ended. `finishReason` mirrors the runtime finish chunk. A
+			 * `guardrail` stop carries the code of the hook that ended the run.
+			 */
+			type: 'finish';
+			finishReason: string;
+			usage?: AgentTokenUsage;
+			guardrail?: { code: string };
+	  }
+	| {
+			/**
+			 * Preview chat only. Monthly spend crossed the alert line.
+			 * The run continues. Also emitted when a delegate subagent hits an alert or cap.
+			 */
+			type: 'budget-notice';
+			code: AgentBudgetNoticeCode;
+			agentId?: string;
+	  }
 	| {
 			type: 'error';
 			message: string;
 			/**
-			 * Optional discriminator for distinct error classes.
+			 * Optional discriminator for distinct error classes. Either an
+			 * `AGENT_CHAT_ERROR_CODES` value or a code that a system agent host formats.
 			 */
 			errorCode?: string;
 			/** Backend-emitted ids of the missing config slots; only set when `errorCode` is `agent_misconfigured`. */
 			missing?: string[];
 	  }
-	| { type: 'done'; sessionId?: string };
+	| { type: 'done'; sessionId?: string; executionId?: string };
+
+/** Stable `errorCode` values of the agent chat `error` event. The client reacts to each one. */
+export const AGENT_CHAT_ERROR_CODES = {
+	/** Another turn runs in the session. The client waits and recovers the running turn. */
+	turnAlreadyRunning: 'turn_already_running',
+	/** The agent is not available in n8n Chat. */
+	agentUnavailable: 'agent_unavailable',
+	/** The agent misses required config. `missing` lists the config slots. */
+	agentMisconfigured: 'agent_misconfigured',
+} as const;
+
+export type AgentChatErrorCode =
+	(typeof AGENT_CHAT_ERROR_CODES)[keyof typeof AGENT_CHAT_ERROR_CODES];
+
+export type AgentBudgetNoticeCode =
+	| 'budget.alert'
+	| 'budget.session'
+	| 'budget.monthly'
+	| 'budget.credits';
+
+/** A budget alert or stop. `agentId` is the budget owner; absent for the run's own agent. */
+export interface AgentBudgetNotice {
+	code: AgentBudgetNoticeCode;
+	agentId?: string; // Only populated for delegated sub-agents.
+}
+
+export function isAgentBudgetNoticeCode(code: string): code is AgentBudgetNoticeCode {
+	return (
+		code === 'budget.alert' ||
+		code === 'budget.session' ||
+		code === 'budget.monthly' ||
+		code === 'budget.credits'
+	);
+}

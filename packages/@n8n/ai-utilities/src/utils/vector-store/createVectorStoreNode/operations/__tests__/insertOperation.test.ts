@@ -2,10 +2,10 @@
 import type { Document } from '@langchain/core/documents';
 import type { Embeddings } from '@langchain/core/embeddings';
 import type { VectorStore } from '@langchain/core/vectorstores';
-import type { MockProxy } from 'jest-mock-extended';
-import { mock } from 'jest-mock-extended';
 import type { IExecuteFunctions, INodeExecutionData } from 'n8n-workflow';
 import { NodeConnectionTypes } from 'n8n-workflow';
+import type { MockProxy } from 'vitest-mock-extended';
+import { mock } from 'vitest-mock-extended';
 
 import { logAiEvent } from '../../../../log-ai-event';
 import type { N8nBinaryLoader } from '../../../../n8n-binary-loader';
@@ -14,8 +14,8 @@ import type { VectorStoreNodeConstructorArgs } from '../../types';
 import { handleInsertOperation } from '../insertOperation';
 
 // Mock processDocument function
-jest.mock('../../../processDocuments', () => ({
-	processDocument: jest.fn().mockImplementation((_documentInput, _itemData, itemIndex: number) => {
+vi.mock('../../../processDocuments', () => ({
+	processDocument: vi.fn().mockImplementation((_documentInput, _itemData, itemIndex: number) => {
 		const mockProcessed = [
 			{
 				pageContent: `processed content ${itemIndex}`,
@@ -41,15 +41,15 @@ jest.mock('../../../processDocuments', () => ({
 }));
 
 // Mock helper functions
-jest.mock('../../../../log-ai-event', () => ({
-	logAiEvent: jest.fn(),
+vi.mock('../../../../log-ai-event', () => ({
+	logAiEvent: vi.fn(),
 }));
 
-jest.mock('../../../../n8n-binary-loader', () => ({
+vi.mock('../../../../n8n-binary-loader', () => ({
 	N8nBinaryLoader: class {},
 }));
 
-jest.mock('../../../../n8n-json-loader', () => ({
+vi.mock('../../../../n8n-json-loader', () => ({
 	N8nJsonLoader: class {},
 }));
 
@@ -57,12 +57,12 @@ jest.mock('../../../../n8n-json-loader', () => ({
 function createMockAbortSignal(aborted = false): AbortSignal {
 	return {
 		aborted,
-		addEventListener: jest.fn(),
-		removeEventListener: jest.fn(),
-		dispatchEvent: jest.fn(),
+		addEventListener: vi.fn(),
+		removeEventListener: vi.fn(),
+		dispatchEvent: vi.fn(),
 		onabort: null,
 		reason: undefined,
-		throwIfAborted: jest.fn(),
+		throwIfAborted: vi.fn(),
 	} as unknown as AbortSignal;
 }
 
@@ -128,14 +128,14 @@ describe('handleInsertOperation', () => {
 				icon: 'file:testIcon.svg',
 			},
 			sharedFields: [],
-			getVectorStoreClient: jest.fn().mockResolvedValue(mockVectorStore),
-			populateVectorStore: jest.fn().mockResolvedValue(undefined),
-			releaseVectorStoreClient: jest.fn(),
+			getVectorStoreClient: vi.fn().mockResolvedValue(mockVectorStore),
+			populateVectorStore: vi.fn().mockResolvedValue(undefined),
+			releaseVectorStoreClient: vi.fn(),
 		};
 	});
 
 	afterEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 	});
 
 	it('should process all input items and populate vector store', async () => {
@@ -173,6 +173,46 @@ describe('handleInsertOperation', () => {
 		// Should only process the first item
 		expect(mockArgs.populateVectorStore).toHaveBeenCalledTimes(1);
 		expect(logAiEvent).toHaveBeenCalledTimes(1);
+	});
+
+	it('should call beforeInsert once before the batches', async () => {
+		const callOrder: string[] = [];
+		mockArgs.beforeInsert = vi.fn().mockImplementation(async () => {
+			callOrder.push('beforeInsert');
+		});
+		vi.mocked(mockArgs.populateVectorStore).mockImplementation(async () => {
+			callOrder.push('populateVectorStore');
+		});
+		mockContext.getNodeParameter.mockImplementation(createNodeParameterMock(1));
+
+		await handleInsertOperation(mockContext, mockArgs, mockEmbeddings);
+
+		expect(callOrder).toEqual([
+			'beforeInsert',
+			'populateVectorStore',
+			'populateVectorStore',
+			'populateVectorStore',
+		]);
+	});
+
+	it('should not call beforeInsert when there are no documents to insert', async () => {
+		mockArgs.beforeInsert = vi.fn().mockResolvedValue(undefined);
+		mockContext.getInputData.mockReturnValue([]);
+
+		await handleInsertOperation(mockContext, mockArgs, mockEmbeddings);
+
+		expect(mockArgs.beforeInsert).not.toHaveBeenCalled();
+		expect(mockArgs.populateVectorStore).not.toHaveBeenCalled();
+	});
+
+	it('should not call beforeInsert when execution is cancelled before the first item', async () => {
+		mockArgs.beforeInsert = vi.fn().mockResolvedValue(undefined);
+		mockContext.getExecutionCancelSignal.mockReturnValue(createMockAbortSignal(true));
+
+		await handleInsertOperation(mockContext, mockArgs, mockEmbeddings);
+
+		expect(mockArgs.beforeInsert).not.toHaveBeenCalled();
+		expect(mockArgs.populateVectorStore).not.toHaveBeenCalled();
 	});
 
 	it('should handle different document input types', async () => {
@@ -215,6 +255,7 @@ describe('handleInsertOperation', () => {
 				}),
 			]),
 			0,
+			expect.any(Array),
 		);
 	});
 
@@ -234,6 +275,13 @@ describe('handleInsertOperation', () => {
 
 		// Should call populateVectorStore multiple times based on batch size
 		expect(mockArgs.populateVectorStore).toHaveBeenCalledTimes(4); // 10 documents with batch size 3 = 4 batches
+
+		// Each batch call also receives all documents of the insert
+		const calls = vi.mocked(mockArgs.populateVectorStore).mock.calls;
+		expect(calls.map(([, , batch]) => batch.length)).toEqual([3, 3, 3, 1]);
+		for (const [, , , , allDocuments] of calls) {
+			expect(allDocuments).toHaveLength(10);
+		}
 	});
 
 	it('should run populateVectorStore for each item when node version is 1', async () => {

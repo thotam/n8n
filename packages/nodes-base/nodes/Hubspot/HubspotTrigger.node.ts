@@ -9,23 +9,17 @@ import type {
 	INodeTypeDescription,
 	IWebhookResponseData,
 } from 'n8n-workflow';
-import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError, requestPath } from 'n8n-workflow';
 
-import { hubspotApiRequest, propertyEvents } from './V1/GenericFunctions';
+import type { HubspotObjectType } from './V1/GenericFunctions';
+import { getAllProperties, hubspotApiRequest, propertyEvents } from './V1/GenericFunctions';
 
 export async function getEntityProperties(
 	this: ILoadOptionsFunctions,
-	endpoint: string,
+	objectType: HubspotObjectType,
 ): Promise<INodePropertyOptions[]> {
 	const returnData: INodePropertyOptions[] = [];
-	const properties = await hubspotApiRequest.call(this, 'GET', endpoint, {});
-
-	if (!Array.isArray(properties)) {
-		throw new NodeOperationError(
-			this.getNode(),
-			`HubSpot returned an unexpected response while loading properties from "${endpoint}". Expected an array of properties.`,
-		);
-	}
+	const properties = await getAllProperties.call(this, objectType);
 
 	for (const property of properties) {
 		if (typeof property?.label === 'string' && typeof property?.name === 'string') {
@@ -43,6 +37,7 @@ export class HubspotTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'HubSpot Trigger',
 		name: 'hubspotTrigger',
+		schemaPath: 'Hubspot',
 		icon: 'file:hubspot.svg',
 		group: ['trigger'],
 		version: 1,
@@ -324,16 +319,16 @@ export class HubspotTrigger implements INodeType {
 	methods = {
 		loadOptions: {
 			async getContactProperties(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				return await getEntityProperties.call(this, '/properties/v2/contacts/properties');
+				return await getEntityProperties.call(this, 'contacts');
 			},
 			async getCompanyProperties(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				return await getEntityProperties.call(this, '/properties/v2/companies/properties');
+				return await getEntityProperties.call(this, 'companies');
 			},
 			async getDealProperties(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				return await getEntityProperties.call(this, '/properties/v2/deals/properties');
+				return await getEntityProperties.call(this, 'deals');
 			},
 			async getTicketProperties(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				return await getEntityProperties.call(this, '/properties/v2/tickets/properties');
+				return await getEntityProperties.call(this, 'tickets');
 			},
 		},
 	};
@@ -350,7 +345,7 @@ export class HubspotTrigger implements INodeType {
 					const { targetUrl } = await hubspotApiRequest.call(
 						this,
 						'GET',
-						`/webhooks/v3/${appId}/settings`,
+						requestPath`/webhooks/v3/${appId}/settings`,
 						{},
 					);
 					if (targetUrl !== currentWebhookUrl) {
@@ -369,7 +364,7 @@ export class HubspotTrigger implements INodeType {
 				const { results: subscriptions } = await hubspotApiRequest.call(
 					this,
 					'GET',
-					`/webhooks/v3/${appId}/subscriptions`,
+					requestPath`/webhooks/v3/${appId}/subscriptions`,
 					{},
 				);
 
@@ -378,12 +373,17 @@ export class HubspotTrigger implements INodeType {
 					await hubspotApiRequest.call(
 						this,
 						'DELETE',
-						`/webhooks/v3/${appId}/subscriptions/${subscription.id}`,
+						requestPath`/webhooks/v3/${appId}/subscriptions/${subscription.id}`,
 						{},
 					);
 				}
 
-				await hubspotApiRequest.call(this, 'DELETE', `/webhooks/v3/${appId}/settings`, {});
+				await hubspotApiRequest.call(
+					this,
+					'DELETE',
+					requestPath`/webhooks/v3/${appId}/settings`,
+					{},
+				);
 
 				return false;
 			},
@@ -393,7 +393,7 @@ export class HubspotTrigger implements INodeType {
 				const events =
 					((this.getNodeParameter('eventsUi') as IDataObject)?.eventValues as IDataObject[]) || [];
 				const additionalFields = this.getNodeParameter('additionalFields') as IDataObject;
-				let endpoint = `/webhooks/v3/${appId}/settings`;
+				let endpoint = requestPath`/webhooks/v3/${appId}/settings`;
 				let body: IDataObject = {
 					targetUrl: webhookUrl,
 					maxConcurrentRequests: additionalFields.maxConcurrentRequests || 5,
@@ -401,7 +401,7 @@ export class HubspotTrigger implements INodeType {
 
 				await hubspotApiRequest.call(this, 'PUT', endpoint, body);
 
-				endpoint = `/webhooks/v3/${appId}/subscriptions`;
+				endpoint = requestPath`/webhooks/v3/${appId}/subscriptions`;
 
 				if (Array.isArray(events) && events.length === 0) {
 					throw new NodeOperationError(this.getNode(), 'You must define at least one event');
@@ -427,7 +427,7 @@ export class HubspotTrigger implements INodeType {
 				const { results: subscriptions } = await hubspotApiRequest.call(
 					this,
 					'GET',
-					`/webhooks/v3/${appId}/subscriptions`,
+					requestPath`/webhooks/v3/${appId}/subscriptions`,
 					{},
 				);
 
@@ -435,13 +435,18 @@ export class HubspotTrigger implements INodeType {
 					await hubspotApiRequest.call(
 						this,
 						'DELETE',
-						`/webhooks/v3/${appId}/subscriptions/${subscription.id}`,
+						requestPath`/webhooks/v3/${appId}/subscriptions/${subscription.id}`,
 						{},
 					);
 				}
 
 				try {
-					await hubspotApiRequest.call(this, 'DELETE', `/webhooks/v3/${appId}/settings`, {});
+					await hubspotApiRequest.call(
+						this,
+						'DELETE',
+						requestPath`/webhooks/v3/${appId}/settings`,
+						{},
+					);
 				} catch (error) {
 					return false;
 				}

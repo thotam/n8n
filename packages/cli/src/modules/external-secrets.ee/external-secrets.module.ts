@@ -5,15 +5,15 @@ import { Container } from '@n8n/di';
 @BackendModule({ name: 'external-secrets', licenseFlag: 'feat:externalSecrets' })
 export class ExternalSecretsModule implements ModuleInterface {
 	async init() {
-		await import('./external-secrets.controller.ee');
-		await import('./external-secrets-settings.controller.ee');
+		await import('./external-secrets.controller.ee.js');
+		await import('./external-secrets-settings.controller.ee.js');
 
-		await import('./secrets-providers-types.controller.ee');
-		await import('./secrets-providers-connections.controller.ee');
-		await import('./secrets-providers-completions.controller.ee');
-		await import('./secrets-providers-project.controller.ee');
+		await import('./secrets-providers-types.controller.ee.js');
+		await import('./secrets-providers-connections.controller.ee.js');
+		await import('./secrets-providers-completions.controller.ee.js');
+		await import('./secrets-providers-project.controller.ee.js');
 
-		const { ExternalSecretsManager } = await import('./external-secrets-manager.ee');
+		const { ExternalSecretsManager } = await import('./external-secrets-manager.ee.js');
 		const { ExternalSecretsProxy } = await import('n8n-core');
 
 		const externalSecretsManager = Container.get(ExternalSecretsManager);
@@ -23,12 +23,17 @@ export class ExternalSecretsModule implements ModuleInterface {
 		externalSecretsProxy.setManager(externalSecretsManager);
 	}
 
+	async systemTasks() {
+		const { ExternalSecretsRefreshTask } = await import('./external-secrets-refresh.task.js');
+		return [ExternalSecretsRefreshTask];
+	}
+
 	async settings() {
-		const { ExternalSecretsConfig } = await import('./external-secrets.config');
+		const { ExternalSecretsConfig } = await import('./external-secrets.config.js');
 		const config = Container.get(ExternalSecretsConfig);
 
 		const { ExternalSecretsSettingsService } = await import(
-			'./external-secrets-settings.service.ee'
+			'./external-secrets-settings.service.ee.js'
 		);
 		const settingsService = Container.get(ExternalSecretsSettingsService);
 
@@ -44,7 +49,7 @@ export class ExternalSecretsModule implements ModuleInterface {
 
 	@OnShutdown()
 	async shutdown() {
-		const { ExternalSecretsManager } = await import('./external-secrets-manager.ee');
+		const { ExternalSecretsManager } = await import('./external-secrets-manager.ee.js');
 
 		Container.get(ExternalSecretsManager).shutdown();
 	}

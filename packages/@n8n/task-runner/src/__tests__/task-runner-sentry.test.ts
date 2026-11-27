@@ -1,6 +1,6 @@
 import type { ErrorEvent } from '@sentry/core';
-import { mock } from 'jest-mock-extended';
 import type { ErrorReporter } from 'n8n-core';
+import { mock } from 'vitest-mock-extended';
 
 import { TaskRunnerSentry } from '../task-runner-sentry';
 
@@ -9,12 +9,12 @@ describe('TaskRunnerSentry', () => {
 		n8nVersion: '1.0.0',
 		environment: 'local',
 		deploymentName: 'test',
-		profilesSampleRate: 0,
+		profilingEnabled: false,
 		tracesSampleRate: 0,
 	};
 
 	afterEach(() => {
-		jest.resetAllMocks();
+		vi.resetAllMocks();
 	});
 
 	describe('filterOutUserCodeErrors', () => {
@@ -288,7 +288,7 @@ describe('TaskRunnerSentry', () => {
 				serverName: 'test',
 				serverType: 'task_runner',
 				withEventLoopBlockDetection: false,
-				profilesSampleRate: 0,
+				profilingEnabled: false,
 				tracesSampleRate: 0,
 				eligibleIntegrations: {
 					Http: true,

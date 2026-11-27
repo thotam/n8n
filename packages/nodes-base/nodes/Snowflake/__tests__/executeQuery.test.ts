@@ -1,0 +1,220 @@
+import { NodeTestHarness } from '@nodes-testing/node-test-harness';
+import {
+	NodeConnectionTypes,
+	type IExecuteFunctions,
+	type INode,
+	type WorkflowTestData,
+} from 'n8n-workflow';
+import { mock } from 'vitest-mock-extended';
+
+import { Snowflake } from '../Snowflake.node';
+import { setupSnowflakeMocks, snowflakeCredentials } from './snowflake-test-utils';
+
+const { mockExecute, mockDestroy } = setupSnowflakeMocks();
+
+// A manual trigger (one empty item) feeding a single executeQuery Snowflake node.
+function executeQueryWorkflow(
+	query: string,
+	queryReplacement: string,
+): WorkflowTestData['input']['workflowData'] {
+	return {
+		nodes: [
+			{
+				parameters: {},
+				id: 'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
+				name: 'When clicking "Execute Workflow"',
+				type: 'n8n-nodes-base.manualTrigger',
+				typeVersion: 1,
+				position: [460, 460],
+			},
+			{
+				parameters: { operation: 'executeQuery', query, options: { queryReplacement } },
+				id: 'c3d4e5f6-a7b8-9012-cdef-123456789012',
+				name: 'Snowflake',
+				type: 'n8n-nodes-base.snowflake',
+				typeVersion: 1,
+				position: [680, 460],
+				credentials: { snowflake: { id: '1', name: 'Snowflake account' } },
+			},
+		],
+		connections: {
+			'When clicking "Execute Workflow"': {
+				main: [[{ node: 'Snowflake', type: NodeConnectionTypes.Main, index: 0 }]],
+			},
+		},
+	};
+}
+
+describe('Test Snowflake, executeQuery - query parameters are bound', () => {
+	new NodeTestHarness().setupTests({
+		workflowFiles: ['executeQuery.workflow.json'],
+		credentials: { snowflake: snowflakeCredentials },
+		customAssertions() {
+			// The value is sent as a ? bind; it never touches the SQL string.
+			expect(mockExecute).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sqlText: 'SELECT * FROM users WHERE name = ?',
+					binds: ["O'Brien"],
+				}),
+			);
+			// The bound value must not appear in any executed statement.
+			for (const [{ sqlText }] of mockExecute.mock.calls) {
+				expect(sqlText).not.toContain("O'Brien");
+			}
+		},
+	});
+});
+
+describe('Test Snowflake, executeQuery - comma-separated query parameters', () => {
+	new NodeTestHarness().setupTest(
+		{
+			description: 'splits on commas, trims, and binds in placeholder order',
+			input: {
+				workflowData: executeQueryWorkflow(
+					'SELECT * FROM users WHERE first = ? AND last = ?',
+					"Ada, O'Brien",
+				),
+			},
+			output: { nodeData: {} },
+		},
+		{
+			credentials: { snowflake: snowflakeCredentials },
+			customAssertions() {
+				expect(mockExecute).toHaveBeenCalledWith(
+					expect.objectContaining({
+						sqlText: 'SELECT * FROM users WHERE first = ? AND last = ?',
+						binds: ['Ada', "O'Brien"],
+					}),
+				);
+			},
+		},
+	);
+});
+
+describe('Test Snowflake, executeQuery - a comma in a resolved value keeps its own slot', () => {
+	new NodeTestHarness().setupTest(
+		{
+			description: 'does not let a comma in a resolved value land in another parameter slot',
+			input: {
+				workflowData: executeQueryWorkflow(
+					'SELECT * FROM users WHERE name = ? AND city = ?',
+					"={{ 'Doe, Jane' }},Springfield",
+				),
+			},
+			output: { nodeData: {} },
+		},
+		{
+			credentials: { snowflake: snowflakeCredentials },
+			customAssertions() {
+				expect(mockExecute).toHaveBeenCalledWith(
+					expect.objectContaining({
+						sqlText: 'SELECT * FROM users WHERE name = ? AND city = ?',
+						binds: ['Doe, Jane', 'Springfield'],
+					}),
+				);
+			},
+		},
+	);
+});
+
+describe('Test Snowflake, executeQuery - query parameters provided as an array', () => {
+	new NodeTestHarness().setupTest(
+		{
+			description: 'binds each array entry positionally',
+			input: {
+				workflowData: executeQueryWorkflow(
+					'SELECT * FROM users WHERE first = ? AND last = ?',
+					"={{ ['Ada', 'Lovelace'] }}",
+				),
+			},
+			output: { nodeData: {} },
+		},
+		{
+			credentials: { snowflake: snowflakeCredentials },
+			customAssertions() {
+				expect(mockExecute).toHaveBeenCalledWith(
+					expect.objectContaining({
+						sqlText: 'SELECT * FROM users WHERE first = ? AND last = ?',
+						binds: ['Ada', 'Lovelace'],
+					}),
+				);
+			},
+		},
+	);
+});
+
+describe('Test Snowflake, executeQuery - invalid query parameters', () => {
+	new NodeTestHarness().setupTest(
+		{
+			description: 'errors when query parameters are neither a string nor an array',
+			input: {
+				workflowData: executeQueryWorkflow('SELECT * FROM users WHERE first = ?', '={{ 42 }}'),
+			},
+			output: {
+				nodeData: {},
+				error: 'Query Parameters must be a string of comma-separated values, or an array of values',
+			},
+		},
+		{ credentials: { snowflake: snowflakeCredentials } },
+	);
+});
+
+describe('Test Snowflake, executeQuery - resolved query', () => {
+	it.each([
+		{ typeVersion: 1.2, expected: "select '1$&2', '1$$2', '^[0-9]+$'" },
+		{ typeVersion: 1.1, expected: "select '1{{ $json.sql }}2', '1$2', '^[0-9]+" },
+	])('inserts the resolved query for version $typeVersion', async ({ typeVersion, expected }) => {
+		const executeFns = mock<IExecuteFunctions>({
+			getNode: () => mock<INode>({ typeVersion }),
+			getInputData: () => [{ json: {} }],
+		});
+		executeFns.getNodeParameter.mockImplementation((name, _itemIndex, fallback) => {
+			if (name === 'authentication') return 'credentials';
+			if (name === 'operation') return 'executeQuery';
+			if (name === 'query') return '{{ $json.sql }}';
+			return fallback;
+		});
+		executeFns.getCredentials.mockResolvedValue(snowflakeCredentials);
+		executeFns.evaluateExpression.mockReturnValue("select '1$&2', '1$$2', '^[0-9]+$'");
+
+		await new Snowflake().execute.call(executeFns);
+
+		expect(mockExecute).toHaveBeenCalledWith(expect.objectContaining({ sqlText: expected }));
+	});
+});
+
+describe('Test Snowflake, executeQuery - connection cleanup', () => {
+	it('destroys the connection even when a query fails', async () => {
+		const lockError = new Error(
+			"Statement '01c4b15b-020a-7e8c-0001-126284fb9fd6' has locked table 'ORDERS' in " +
+				'transaction 1780060538685000000 and this lock has not yet been released.',
+		);
+
+		// The ALTER SESSION statement succeeds; the user query then fails.
+		mockExecute.mockImplementation(({ sqlText, complete }) =>
+			sqlText.startsWith('ALTER SESSION')
+				? complete(null, undefined, [])
+				: complete(lockError, undefined, undefined),
+		);
+
+		const executeFns = mock<IExecuteFunctions>({
+			getNode: () => mock<INode>({ typeVersion: 1 }),
+			getInputData: () => [{ json: {} }],
+		});
+		executeFns.getNodeParameter.mockImplementation((name, _itemIndex, fallback) => {
+			if (name === 'authentication') return 'credentials';
+			if (name === 'operation') return 'executeQuery';
+			if (name === 'query') return 'UPDATE "ORDERS" SET "STATUS" = 1';
+			return fallback;
+		});
+		executeFns.getCredentials.mockResolvedValue(snowflakeCredentials);
+
+		await expect(new Snowflake().execute.call(executeFns)).rejects.toMatchObject({
+			name: 'NodeOperationError',
+			message: expect.stringContaining('has locked table'),
+			context: expect.objectContaining({ itemIndex: 0 }),
+		});
+
+		expect(mockDestroy).toHaveBeenCalled();
+	});
+});

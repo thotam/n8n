@@ -1,9 +1,12 @@
+import { Time } from '@n8n/constants';
 import { z } from 'zod';
 
 import { Config, Env, Nested } from '../decorators';
 
 const dbLoggingOptionsSchema = z.enum(['query', 'error', 'schema', 'warn', 'info', 'log', 'all']);
 type DbLoggingOptions = z.infer<typeof dbLoggingOptionsSchema>;
+
+const DEFAULT_STATEMENT_TIMEOUT_MS = 5 * Time.minutes.toMilliseconds;
 
 @Config
 class LoggingConfig {
@@ -82,13 +85,34 @@ class PostgresConfig {
 	@Env('DB_POSTGRESDB_CONNECTION_TIMEOUT')
 	connectionTimeoutMs: number = 20_000;
 
+	/**
+	 * Timeout for tearing down the Postgres pool during connection recovery.
+	 * `pool.end()` waits for every connection to drain, so one frozen against an
+	 * unreachable backend would block recovery forever; past this window the pool's
+	 * sockets are force-closed so recovery can reconnect. `0` waits indefinitely.
+	 */
+	@Env('DB_POSTGRESDB_DESTROY_TIMEOUT_MS', z.coerce.number().int().gte(0))
+	destroyTimeoutMs: number = 10 * Time.seconds.toMilliseconds;
+
 	/** Time in milliseconds after which an idle connection in the pool is closed. */
 	@Env('DB_POSTGRESDB_IDLE_CONNECTION_TIMEOUT')
 	idleTimeoutMs: number = 30_000;
 
 	/** Maximum time in milliseconds for a single query. Queries exceeding this are cancelled. Set to 0 to disable. */
 	@Env('DB_POSTGRESDB_STATEMENT_TIMEOUT')
-	statementTimeoutMs: number = 5 * 60 * 1000; // 5 minutes
+	statementTimeoutMs: number = DEFAULT_STATEMENT_TIMEOUT_MS;
+
+	/** Maximum lifetime in milliseconds of a pooled Postgres connection before it is recycled. Set to 0 to disable. */
+	@Env('DB_POSTGRESDB_MAX_CONNECTION_LIFETIME_MS')
+	maxConnectionLifetimeMs: number = 1 * Time.hours.toMilliseconds;
+
+	/** Whether to enable TCP keepalive on Postgres connections so dead peers are detected without waiting for a query. */
+	@Env('DB_POSTGRESDB_KEEP_ALIVE')
+	keepAlive: boolean = true;
+
+	/** Initial delay in milliseconds before the first TCP keepalive probe is sent. */
+	@Env('DB_POSTGRESDB_KEEP_ALIVE_INITIAL_DELAY_MS')
+	keepAliveInitialDelayMs: number = 10_000;
 
 	@Nested
 	ssl: PostgresSSLConfig;
@@ -118,6 +142,23 @@ export class SqliteConfig {
 const dbTypeSchema = z.enum(['sqlite', 'postgresdb']);
 type DbType = z.infer<typeof dbTypeSchema>;
 
+const DEFAULT_PING_TIMEOUT_MS = 5_000;
+
+function readLegacyPingTimeoutMs(): number {
+	const raw = process.env.N8N_DB_PING_TIMEOUT;
+	if (!raw) {
+		return DEFAULT_PING_TIMEOUT_MS;
+	}
+	const parsed = Number.parseInt(raw, 10);
+	if (Number.isNaN(parsed) || parsed <= 0) {
+		console.warn(
+			`Invalid N8N_DB_PING_TIMEOUT="${raw}", falling back to ${DEFAULT_PING_TIMEOUT_MS}ms. Prefer the supported DB_PING_TIMEOUT_MS env var.`,
+		);
+		return DEFAULT_PING_TIMEOUT_MS;
+	}
+	return parsed;
+}
+
 @Config
 export class DatabaseConfig {
 	/** Database type: `sqlite` or `postgresdb`. */
@@ -132,6 +173,84 @@ export class DatabaseConfig {
 	@Env('DB_PING_INTERVAL_SECONDS')
 	pingIntervalSeconds: number = 2;
 
+	/**
+	 * Timeout in milliseconds for an individual database health-check ping.
+	 *
+	 * Falls back to the legacy `N8N_DB_PING_TIMEOUT` env var if set. The legacy
+	 * name is deprecated and may be removed in a future release.
+	 */
+	@Env('DB_PING_TIMEOUT_MS')
+	pingTimeoutMs: number = readLegacyPingTimeoutMs();
+
+	/**
+	 * Number of consecutive failed health-check pings before n8n rebuilds the
+	 * Postgres connection pool. A failed ping counts only when a pooled connection
+	 * was free and did not answer, while a new connection opened outside the pool
+	 * still answers within the ping timeout. A ping that found every pooled
+	 * connection busy, or that failed while the database was unreachable, does not
+	 * count, so n8n keeps the pool and waits for the next ping. Raise this if n8n rebuilds the pool on
+	 * brief network hiccups. Lower it to react faster to dead connections. Must be
+	 * at least 1. Has no effect on SQLite.
+	 */
+	// Postgres-only; this setting should ideally move to `PostgresConfig`.
+	@Env('DB_PING_MAX_FAILURES_BEFORE_RECOVERY', z.coerce.number().int().gte(1))
+	pingMaxFailuresBeforeRecovery: number = 3;
+
+	/**
+	 * Initial delay in milliseconds before retrying a failed recovery attempt.
+	 *
+	 * Recovery retries use exponential backoff: each failed attempt waits
+	 * `min(minRecoveryBackoffMs * 2 ** (attempt - 1), maxRecoveryBackoffMs)`.
+	 * This is the delay after the first failed attempt (the floor of the curve).
+	 *
+	 * Must be >= 1
+	 */
+	@Env('DB_RECOVERY_BACKOFF_MIN_MS', z.coerce.number().int().gte(1))
+	minRecoveryBackoffMs: number = 1 * Time.seconds.toMilliseconds;
+
+	/**
+	 * Maximum delay in milliseconds between recovery attempts.
+	 *
+	 * Caps the exponential backoff so retries never wait longer than this,
+	 * keeping recovery responsive once the database becomes reachable again.
+	 * Must be greater than or equal to `DB_RECOVERY_BACKOFF_MIN_MS`.
+	 *
+	 * Must be >= 1
+	 */
+	@Env('DB_RECOVERY_BACKOFF_MAX_MS', z.coerce.number().int().gte(1))
+	maxRecoveryBackoffMs: number = 30 * Time.seconds.toMilliseconds;
+
+	/**
+	 * Maximum time in milliseconds a query waits for an in-progress connection
+	 * recovery before failing fast.
+	 *
+	 * While recovery rebuilds the pool, every query that needs a connection parks
+	 * until recovery completes. During a short blip that wait is invisible and the
+	 * query succeeds against the fresh pool. During a long outage it would
+	 * otherwise pile up parked queries for the whole outage, so this bounds the
+	 * wait: once it elapses the query rejects with an `OperationalError` instead of
+	 * holding the request open indefinitely. The default (30s) comfortably covers
+	 * common-case recoveries while staying within typical HTTP gateway timeouts.
+	 *
+	 * Set to `0` to wait indefinitely (no timeout).
+	 */
+	@Env('DB_CONNECTION_ACQUISITION_TIMEOUT_MS', z.coerce.number().int().gte(0))
+	connectionAcquisitionTimeoutMs: number = 30 * Time.seconds.toMilliseconds;
+
+	/**
+	 * Number of times to retry the *initial* database connection on startup
+	 * before giving up and crashing. Each retry waits with the same exponential
+	 * backoff as connection recovery
+	 * (`DB_RECOVERY_BACKOFF_MIN_MS` .. `DB_RECOVERY_BACKOFF_MAX_MS`).
+	 *
+	 * A transient DNS/network blip at boot self-heals; a genuinely unreachable or
+	 * misconfigured database still fails loudly once the retries are exhausted.
+	 *
+	 * Must be >= 0 (0 keeps the legacy single-attempt behavior).
+	 */
+	@Env('DB_STARTUP_CONNECT_MAX_RETRIES', z.coerce.number().int().gte(0))
+	startupConnectMaxRetries: number = 5;
+
 	@Nested
 	logging: LoggingConfig;
 
@@ -140,4 +259,15 @@ export class DatabaseConfig {
 
 	@Nested
 	sqlite: SqliteConfig;
+}
+
+/**
+ * How long one statement may run before a second one can overlap it. On Postgres
+ * this is the statement timeout, and 0 means no limit. SQLite runs one write at a
+ * time, so a second write cannot overlap. It gets the Postgres default.
+ */
+export function statementTimeoutSeconds(config: DatabaseConfig): number {
+	return config.type === 'postgresdb'
+		? config.postgresdb.statementTimeoutMs / Time.seconds.toMilliseconds
+		: DEFAULT_STATEMENT_TIMEOUT_MS / Time.seconds.toMilliseconds;
 }

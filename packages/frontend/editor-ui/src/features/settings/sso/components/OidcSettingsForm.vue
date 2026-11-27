@@ -4,17 +4,19 @@ import { MODAL_CONFIRM } from '@/app/constants';
 import { SupportedProtocols, useSSOStore } from '../sso.store';
 import { useI18n } from '@n8n/i18n';
 
-import { N8nButton, N8nInput, N8nOption, N8nSelect } from '@n8n/design-system';
+import { N8nInput, N8nOption, N8nSelect } from '@n8n/design-system';
 import { computed, onMounted, ref } from 'vue';
-import { useToast } from '@/app/composables/useToast';
+import { useToast } from '@n8n/composables/useToast';
 import { useMessage } from '@/app/composables/useMessage';
 import { useUserRoleProvisioningForm } from '../provisioning/composables/useUserRoleProvisioningForm';
-import { useTelemetry } from '@/app/composables/useTelemetry';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
+import { TELEMETRY_EVENT } from '@n8n/telemetry';
 import { useRootStore } from '@n8n/stores/useRootStore';
 import { type OidcConfigDto } from '@n8n/api-types';
 import ConfirmProvisioningDialog from '../provisioning/components/ConfirmProvisioningDialog.vue';
 import RoleMappingRuleEditor from '../provisioning/components/RoleMappingRuleEditor.vue';
 import UserRoleProvisioningDropdown from '../provisioning/components/UserRoleProvisioningDropdown.vue';
+import { openSafeUrl } from '@/app/utils/htmlUtils';
 
 const i18n = useI18n();
 const ssoStore = useSSOStore();
@@ -25,6 +27,7 @@ const message = useMessage();
 const savingForm = ref<boolean>(false);
 const roleMappingRuleEditorRef = ref<InstanceType<typeof RoleMappingRuleEditor> | null>(null);
 const isSsoManagedByEnv = computed(() => ssoStore.ssoManagedByEnv);
+const isRulesMappingInN8n = computed(() => mappingMethod.value === 'rules_in_n8n');
 
 const discoveryEndpoint = ref('');
 const clientId = ref('');
@@ -35,6 +38,7 @@ const showUserRoleProvisioningDialog = ref(false);
 const {
 	roleAssignment,
 	mappingMethod,
+	defaultInstanceRole,
 	isUserRoleProvisioningChanged,
 	saveProvisioningConfig,
 	trackProvisioningChange,
@@ -69,6 +73,11 @@ const promptDescriptions: PromptDescription[] = [
 ];
 
 const authenticationContextClassReference = ref('');
+const additionalScopes = ref('');
+const rpInitiatedLogoutEnabled = ref(false);
+const isAdditionalScopesInvalid = computed(() =>
+	[',', ';'].some((c) => additionalScopes.value.includes(c)),
+);
 
 const getOidcConfig = async () => {
 	const config = await ssoStore.getOidcConfig();
@@ -79,6 +88,8 @@ const getOidcConfig = async () => {
 	prompt.value = config.prompt ?? 'select_account';
 	authenticationContextClassReference.value =
 		config.authenticationContextClassReference?.join(',') || '';
+	additionalScopes.value = config.additionalScopes ?? '';
+	rpInitiatedLogoutEnabled.value = config.rpInitiatedLogoutEnabled ?? false;
 };
 
 const loadOidcConfig = async () => {
@@ -104,19 +115,40 @@ const cannotSaveOidcSettings = computed(() => {
 	const isRuleMappingDirty = roleMappingRuleEditorRef.value?.isDirty ?? false;
 
 	return (
-		ssoStore.oidcConfig?.clientId === clientId.value &&
-		ssoStore.oidcConfig?.clientSecret === clientSecret.value &&
-		ssoStore.oidcConfig?.discoveryEndpoint === discoveryEndpoint.value &&
-		ssoStore.oidcConfig?.loginEnabled === ssoStore.isOidcLoginEnabled &&
-		ssoStore.oidcConfig?.prompt === prompt.value &&
-		!isUserRoleProvisioningChanged.value &&
-		!isRuleMappingDirty &&
-		storedAcrString === authenticationContextClassReference.value &&
-		currentAcrString === storedAcrString
+		isAdditionalScopesInvalid.value ||
+		(ssoStore.oidcConfig?.clientId === clientId.value &&
+			ssoStore.oidcConfig?.clientSecret === clientSecret.value &&
+			ssoStore.oidcConfig?.discoveryEndpoint === discoveryEndpoint.value &&
+			ssoStore.oidcConfig?.loginEnabled === ssoStore.isOidcLoginEnabled &&
+			ssoStore.oidcConfig?.prompt === prompt.value &&
+			ssoStore.oidcConfig?.additionalScopes === additionalScopes.value &&
+			ssoStore.oidcConfig?.rpInitiatedLogoutEnabled === rpInitiatedLogoutEnabled.value &&
+			!isUserRoleProvisioningChanged.value &&
+			!isRuleMappingDirty &&
+			storedAcrString === authenticationContextClassReference.value &&
+			currentAcrString === storedAcrString)
 	);
 });
 
 async function onOidcSettingsSave(provisioningChangesConfirmed: boolean = false): Promise<boolean> {
+	if (isSsoManagedByEnv.value) {
+		try {
+			savingForm.value = true;
+			const ruleSaveResult = await roleMappingRuleEditorRef.value?.save();
+			trackProvisioningChange({ configChanged: false }, ruleSaveResult);
+			toast.showMessage({
+				title: i18n.baseText('settings.sso.settings.save.success'),
+				type: 'success',
+			});
+			return true;
+		} catch (error) {
+			toast.showError(error, i18n.baseText('settings.sso.settings.save.error_oidc'));
+			return false;
+		} finally {
+			savingForm.value = false;
+		}
+	}
+
 	if (!provisioningChangesConfirmed && roleAssignmentTransition.value !== 'none') {
 		showUserRoleProvisioningDialog.value = true;
 		return false;
@@ -158,6 +190,8 @@ async function onOidcSettingsSave(provisioningChangesConfirmed: boolean = false)
 			prompt: prompt.value,
 			loginEnabled: ssoStore.isOidcLoginEnabled,
 			authenticationContextClassReference: acrArray,
+			additionalScopes: additionalScopes.value,
+			rpInitiatedLogoutEnabled: rpInitiatedLogoutEnabled.value,
 		});
 		const provisioningResult = await saveProvisioningConfig(isDisablingOidcLogin);
 
@@ -201,13 +235,12 @@ async function onOidcSettingsSave(provisioningChangesConfirmed: boolean = false)
 }
 
 function sendTrackingEvent(config: OidcConfigDto) {
-	const trackingMetadata = {
+	telemetry.track(TELEMETRY_EVENT.SSO.USER_UPDATED_SSO_SETTINGS, {
 		instance_id: useRootStore().instanceId,
 		authentication_method: SupportedProtocols.OIDC,
 		discovery_endpoint: config.discoveryEndpoint,
 		is_active: config.loginEnabled,
-	};
-	telemetry.track('User updated single sign on settings', trackingMetadata);
+	});
 }
 
 const isTestEnabled = computed(
@@ -222,7 +255,7 @@ const onTest = async () => {
 	try {
 		const { url } = await ssoStore.testOidcConfig();
 		if (typeof window !== 'undefined') {
-			window.open(url, '_blank');
+			openSafeUrl(url);
 		}
 	} catch (error) {
 		toast.showError(error, i18n.baseText('settings.sso.settings.test.error'));
@@ -230,10 +263,21 @@ const onTest = async () => {
 };
 
 const hasUnsavedChanges = computed(
-	() => !cannotSaveOidcSettings.value && !savingForm.value && !isSsoManagedByEnv.value,
+	() =>
+		!cannotSaveOidcSettings.value &&
+		!savingForm.value &&
+		(!isSsoManagedByEnv.value || isRulesMappingInN8n.value),
 );
 
-defineExpose({ hasUnsavedChanges, onSave: onOidcSettingsSave });
+// The SSO page saves through its save bar, so it needs these.
+// The SSO page shows the test button below the SCIM section, so it needs these.
+defineExpose({
+	hasUnsavedChanges,
+	onSave: onOidcSettingsSave,
+	saving: savingForm,
+	isTestEnabled,
+	onTest,
+});
 
 onMounted(async () => {
 	await loadOidcConfig();
@@ -314,12 +358,14 @@ onMounted(async () => {
 			<UserRoleProvisioningDropdown
 				v-model:role-assignment="roleAssignment"
 				v-model:mapping-method="mappingMethod"
+				v-model:default-instance-role="defaultInstanceRole"
 				auth-protocol="oidc"
 				:disabled="isSsoManagedByEnv"
 			/>
 			<RoleMappingRuleEditor
 				v-if="mappingMethod === 'rules_in_n8n'"
 				ref="roleMappingRuleEditorRef"
+				v-model:default-instance-role="defaultInstanceRole"
 				:show-project-rules="roleAssignment === 'instance_and_project'"
 			/>
 			<ConfirmProvisioningDialog
@@ -349,9 +395,30 @@ onMounted(async () => {
 					commas in order of preference.</small
 				>
 			</div>
+			<div :class="$style.group">
+				<label
+					>Additional scopes
+					<span :class="$style.optional">(Optional)</span>
+				</label>
+				<N8nInput
+					:model-value="additionalScopes"
+					:disabled="isSsoManagedByEnv"
+					type="text"
+					data-test-id="oidc-additional-scopes"
+					placeholder="e.g. groups roles"
+					@update:model-value="(v: string) => (additionalScopes = v)"
+				/>
+				<small v-if="isAdditionalScopesInvalid" :class="$style.fieldError"
+					>Use spaces to separate scopes. Commas and semicolons are not allowed.</small
+				>
+				<small v-else
+					>By default n8n requests <code>openid</code>, <code>profile</code> and <code>email</code>.
+					If you need other scopes, define them here space separated.</small
+				>
+			</div>
 		</div>
 		<div :class="$style.card">
-			<div :class="[$style.settingsItem, $style.settingsItemNoBorder]">
+			<div :class="$style.settingsItem">
 				<div :class="$style.settingsItemLabel">
 					<label>Single sign-on (SSO)</label>
 					<small>Allow users to sign in through your identity provider</small>
@@ -367,33 +434,32 @@ onMounted(async () => {
 						<template #prefix>
 							<span v-if="ssoStore.isOidcLoginEnabled" :class="$style.greenDot" />
 						</template>
+						<N8nOption value="enabled" label="Enabled" data-test-id="sso-oidc-toggle-option" />
+						<N8nOption value="disabled" label="Disabled" data-test-id="sso-oidc-toggle-option" />
+					</N8nSelect>
+				</div>
+			</div>
+			<div :class="$style.settingsItem">
+				<div :class="$style.settingsItemLabel">
+					<label>Log out from identity provider</label>
+					<small>Also end your session at the identity provider when signing out of n8n</small>
+				</div>
+				<div :class="$style.settingsItemControl">
+					<N8nSelect
+						:model-value="rpInitiatedLogoutEnabled ? 'enabled' : 'disabled'"
+						size="medium"
+						data-test-id="sso-oidc-logout-toggle"
+						:disabled="isSsoManagedByEnv"
+						@update:model-value="rpInitiatedLogoutEnabled = $event === 'enabled'"
+					>
+						<template #prefix>
+							<span v-if="rpInitiatedLogoutEnabled" :class="$style.greenDot" />
+						</template>
 						<N8nOption value="enabled" label="Enabled" />
 						<N8nOption value="disabled" label="Disabled" />
 					</N8nSelect>
 				</div>
 			</div>
-		</div>
-
-		<div :class="$style.buttons">
-			<N8nButton
-				v-if="!isSsoManagedByEnv"
-				data-test-id="sso-oidc-save"
-				size="large"
-				:loading="savingForm"
-				:disabled="savingForm || cannotSaveOidcSettings"
-				@click="onOidcSettingsSave(false)"
-			>
-				{{ i18n.baseText('settings.sso.settings.save') }}
-			</N8nButton>
-			<N8nButton
-				variant="subtle"
-				:disabled="!isTestEnabled"
-				size="large"
-				data-test-id="sso-oidc-test"
-				@click="onTest"
-			>
-				{{ i18n.baseText('settings.sso.settings.test') }}
-			</N8nButton>
 		</div>
 	</div>
 </template>

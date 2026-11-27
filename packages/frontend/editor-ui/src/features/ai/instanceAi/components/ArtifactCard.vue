@@ -1,12 +1,18 @@
 <script lang="ts" setup>
-import { N8nCard, N8nIcon, N8nText, type IconName } from '@n8n/design-system';
+import AgentPersonalisationIcon from '@/features/agents/components/AgentPersonalisationIcon.vue';
+import { getAgent } from '@/features/agents/composables/useAgentApi';
+import { useRootStore } from '@n8n/stores/useRootStore';
+import type { AgentPersonalisation } from '@n8n/api-types';
+import { N8nBadge, N8nCard, N8nIcon, N8nText, type IconName } from '@n8n/design-system';
 import { useI18n } from '@n8n/i18n';
-import { computed, inject } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
+import { useArtifactLinks } from '../artifactLinks';
 
 const i18n = useI18n();
+const { openArtifactInNewTab } = useArtifactLinks();
 
 const props = defineProps<{
-	type: 'workflow' | 'data-table';
+	type: 'workflow' | 'data-table' | 'agent';
 	name: string;
 	resourceId: string;
 	projectId?: string;
@@ -19,31 +25,56 @@ const openDataTablePreview = inject<((id: string, projectId: string) => void) | 
 	'openDataTablePreview',
 	undefined,
 );
+const openAgentPreview = inject<((id: string, projectId: string) => void) | undefined>(
+	'openAgentPreview',
+	undefined,
+);
 
 const iconMap: Record<string, IconName> = {
 	workflow: 'workflow',
 	'data-table': 'table',
+	agent: 'robot',
 };
 
 const icon = computed(() => iconMap[props.type] ?? 'file');
+const rootStore = useRootStore();
+const personalisation = ref<AgentPersonalisation>();
+
+watch(
+	() => [props.type, props.projectId, props.resourceId] as const,
+	async ([type, projectId, resourceId], _previous, onCleanup) => {
+		let active = true;
+		onCleanup(() => {
+			active = false;
+		});
+		personalisation.value = undefined;
+		if (type !== 'agent' || !projectId) return;
+
+		try {
+			const agent = await getAgent(rootStore.restApiContext, projectId, resourceId);
+			if (active) personalisation.value = agent.config?.personalisation;
+		} catch {
+			/** Keep the default icon when agent details are not available. */
+		}
+	},
+	{ immediate: true },
+);
 
 function handleClick(e: MouseEvent) {
+	if (e.metaKey || e.ctrlKey) {
+		openArtifactInNewTab(props.type, props.resourceId, props.projectId);
+		return;
+	}
+
 	if (props.type === 'workflow') {
-		if (e.metaKey || e.ctrlKey) {
-			window.open(`/workflow/${props.resourceId}`, '_blank');
-			return;
-		}
 		openPreview?.(props.resourceId);
 	} else if (props.type === 'data-table') {
-		if (e.metaKey || e.ctrlKey) {
-			const url = props.projectId
-				? `/projects/${props.projectId}/datatables/${props.resourceId}`
-				: '/data-tables';
-			window.open(url, '_blank');
-			return;
-		}
 		if (props.projectId) {
 			openDataTablePreview?.(props.resourceId, props.projectId);
+		}
+	} else if (props.type === 'agent') {
+		if (props.projectId) {
+			openAgentPreview?.(props.resourceId, props.projectId);
 		}
 	}
 }
@@ -56,27 +87,24 @@ function handleClick(e: MouseEvent) {
 		@click="handleClick"
 	>
 		<template #prepend>
-			<N8nIcon :icon="icon" size="large" :class="$style.icon" />
+			<AgentPersonalisationIcon v-if="props.type === 'agent'" :personalisation="personalisation" />
+			<N8nIcon v-else :icon="icon" size="large" :class="$style.icon" />
 		</template>
 		<template #header>
 			<N8nText>{{ props.name }}</N8nText>
-			<span v-if="props.archived" :class="$style.archivedBadge">
+			<N8nBadge v-if="props.archived" variant="filled" :class="$style.archivedBadge">
 				{{ i18n.baseText('instanceAi.artifactsPanel.archived') }}
-			</span>
+			</N8nBadge>
 		</template>
-		<N8nText v-if="props.metadata" :class="$style.metadata">{{ props.metadata }}</N8nText>
+		<N8nText v-if="props.metadata" color="text-light" :class="$style.metadata">
+			{{ props.metadata }}
+		</N8nText>
 	</N8nCard>
 </template>
 
 <style lang="scss" module>
 .card {
 	cursor: pointer;
-	background-color: var(--color--background--light-3);
-	transition: box-shadow 0.3s ease;
-
-	&:hover {
-		box-shadow: var(--shadow--card-hover);
-	}
 }
 
 .cardArchived {
@@ -84,11 +112,6 @@ function handleClick(e: MouseEvent) {
 }
 
 .archivedBadge {
-	font-size: var(--font-size--3xs);
-	color: var(--color--text--tint-1);
-	background: var(--color--foreground--tint-1);
-	padding: var(--spacing--5xs) var(--spacing--3xs);
-	border-radius: var(--radius--sm);
 	margin-left: var(--spacing--2xs);
 }
 
@@ -107,7 +130,6 @@ function handleClick(e: MouseEvent) {
 }
 
 .metadata {
-	color: var(--color--text--tint-2);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;

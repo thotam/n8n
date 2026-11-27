@@ -1,15 +1,23 @@
 import { randomUUID } from 'crypto';
 import { DateTime } from 'luxon';
 import type {
+	IBinaryKeyData,
 	IDataObject,
 	IExecuteFunctions,
 	INode,
 	IPairedItemData,
 	INodeExecutionData,
 } from 'n8n-workflow';
-import { NodeOperationError, UserError } from 'n8n-workflow';
+import { NodeOperationError, safeRegex } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
 import oracledb from 'oracledb';
 
+import { routeBinaryProperties } from '@utils/binary';
+import {
+	assertCursorColumnNotNull,
+	assertCursorColumnType,
+	assertUniqueCursorColumn,
+} from '@utils/sql-keyset-paging';
 import { generatePairedItemData, wrapData } from '@utils/utilities';
 
 import type {
@@ -26,6 +34,17 @@ import type {
 	OracleDBNodeOptions,
 	TableColumnRow,
 } from './interfaces';
+import { operatorOptions } from '../actions/common.descriptions';
+
+type DefaultStringBindParam = Omit<
+	Extract<ExecuteOpBindParam, { datatype: 'string' }>,
+	'datatype' | 'valueString'
+> & {
+	datatype?: undefined;
+	valueString?: string;
+};
+
+type RuntimeExecuteOpBindParam = ExecuteOpBindParam | DefaultStringBindParam;
 
 const n8nTypetoDBType: { [key: string]: oracledb.DbType } = {
 	boolean: oracledb.DB_TYPE_BOOLEAN,
@@ -38,6 +57,8 @@ const n8nTypetoDBType: { [key: string]: oracledb.DbType } = {
 	string: oracledb.STRING,
 	blob: oracledb.BLOB,
 };
+
+export const DEFAULT_STRING_OUT_BIND_MAX_SIZE = 4000;
 
 function isDateType(type: string) {
 	return /^(timestamp(\(\d+\))?( with(?: local)? time zone)?|date)$/i.test(type);
@@ -161,7 +182,7 @@ function getExecuteManyOptions(
 	return execOptions;
 }
 
-function addBindParam(
+export function addBindParam(
 	colInfo: ColumnDefinition,
 	value: any,
 	bindParameters: oracledb.BindParameter[],
@@ -198,6 +219,10 @@ export function quoteSqlIdentifier(name: string): string {
 	 *  Invalid examples:
 	 * 	 my"column → contains an illegal ".
 	 *	 my..column → double dot not allowed.
+	 *
+	 *  A single quote is legal here: Oracle double-quoted identifiers may contain
+	 *  any character except " (e.g. "O'Brien"). Callers that embed the result in a
+	 *  string literal (the Drop path) must escape it via escapeSqlStringLiteral.
 	 */
 	const validateRegex = /^(?:"[^"]+"|[^".]+)(?:\.(?:"[^"]+"|[^".]+))*$/;
 	if (!validateRegex.test(name)) {
@@ -217,6 +242,25 @@ export function quoteSqlIdentifier(name: string): string {
 	const quotedParts = groups.map((g) => `"${g}"`);
 	return quotedParts.join('.');
 }
+
+// Escapes a value for embedding inside an Oracle single-quoted text literal.
+// Doubling ' is Oracle's only literal escape (no backslash processing), so a
+// quoted identifier such as "O'Brien" cannot terminate the surrounding literal.
+export function escapeSqlStringLiteral(value: string): string {
+	return value.replace(/'/g, "''");
+}
+
+// Operators are concatenated into the WHERE clause, so only a fixed set is allowed.
+// Derived from the Operator dropdown (so a new dropdown entry is permitted automatically),
+// plus the case/synonym variants Oracle accepts that arrive via an expression-driven value.
+const VALID_WHERE_OPERATORS = new Set<string>([
+	...operatorOptions.map((option) =>
+		option.value === 'equal' ? '=' : String(option.value).toUpperCase(),
+	),
+	'<>',
+	'^=',
+	'NOT LIKE',
+]);
 
 export function addSortRules(query: string, rules: SortRule[]): string {
 	if (rules.length === 0) return query;
@@ -262,6 +306,8 @@ SELECT
   atc.COLUMN_NAME,
   atc.DATA_TYPE,
   atc.DATA_LENGTH,
+  atc.DATA_PRECISION,
+  atc.DATA_SCALE,
   atc.CHAR_LENGTH,
   atc.DEFAULT_LENGTH,
   atc.NULLABLE,
@@ -299,6 +345,8 @@ SELECT
   atc.COLUMN_NAME,
   atc.DATA_TYPE,
   atc.DATA_LENGTH,
+  atc.DATA_PRECISION,
+  atc.DATA_SCALE,
   atc.CHAR_LENGTH,
   atc.DEFAULT_LENGTH,
   atc.NULLABLE,
@@ -333,6 +381,8 @@ ORDER BY atc.COLUMN_NAME`;
 			dataType: row.DATA_TYPE,
 			isNullable: row.NULLABLE === 'Y',
 			maxSize: row.DATA_LENGTH,
+			precision: row.DATA_PRECISION,
+			scale: row.DATA_SCALE,
 		}));
 	} finally {
 		if (conn) {
@@ -341,13 +391,177 @@ ORDER BY atc.COLUMN_NAME`;
 	}
 }
 
+// Reads the catalog, not constraint_types from getColumnMetaData: that field is aggregated per column
+// and marks every member of a composite constraint as unique.
+// A primary key or unique constraint can use a non-unique index, so the constraints are read too.
+export async function getUniqueKeyColumns(
+	pool: oracledb.Pool,
+	schema: string,
+	table: string,
+): Promise<string[]> {
+	const conn = await pool.getConnection();
+	try {
+		const result = await conn.execute<{ COLUMN_NAME: string }>(
+			`SELECT MIN(aic.column_name) AS column_name
+			 FROM all_indexes ai
+			 JOIN all_ind_columns aic ON aic.index_owner = ai.owner AND aic.index_name = ai.index_name
+			 WHERE ai.table_owner = :schema_name AND ai.table_name = :table_name
+			   AND ai.uniqueness = 'UNIQUE' AND ai.index_type IN ('NORMAL', 'NORMAL/REV', 'IOT - TOP')
+			 GROUP BY ai.owner, ai.index_name HAVING COUNT(*) = 1
+			 UNION
+			 SELECT MIN(acc.column_name)
+			 FROM all_constraints ac
+			 JOIN all_cons_columns acc ON acc.owner = ac.owner AND acc.constraint_name = ac.constraint_name
+			 WHERE ac.owner = :schema_name AND ac.table_name = :table_name
+			   AND ac.constraint_type IN ('P', 'U') AND ac.status = 'ENABLED' AND ac.validated = 'VALIDATED'
+			 GROUP BY ac.owner, ac.constraint_name HAVING COUNT(*) = 1`,
+			{ schema_name: schema, table_name: table },
+			{ outFormat: oracledb.OUT_FORMAT_OBJECT },
+		);
+		return (result.rows ?? []).map((row) => row.COLUMN_NAME);
+	} finally {
+		await conn.close();
+	}
+}
+
+/**
+ * Throws if a query pages by a text column and the session of `connection` does not sort in binary order.
+ * ORDER BY follows NLS_SORT, but a comparison and a unique index can use binary order.
+ * Sessions of one pool can differ, so the check runs on the connection that runs the queries.
+ */
+async function assertBinarySort(
+	node: INode,
+	connection: oracledb.Connection,
+	queries: QueryWithValues[],
+) {
+	const itemIndex = queries.findIndex((query) => query.startAfterTextColumn);
+	if (itemIndex === -1) return;
+	const result = await connection.execute<{ NLS_SORT: string }>(
+		"SELECT SYS_CONTEXT('USERENV', 'NLS_SORT') AS nls_sort FROM dual",
+		[],
+		{ outFormat: oracledb.OUT_FORMAT_OBJECT },
+	);
+	const sessionSort = result.rows?.[0]?.NLS_SORT ?? 'BINARY';
+	if (sessionSort !== 'BINARY') {
+		throw new NodeOperationError(
+			node,
+			`Start After cannot use the text column "${queries[itemIndex].startAfterTextColumn}" in this database session`,
+			{
+				itemIndex,
+				description: `The session sorts text with NLS_SORT = ${sessionSort}. Start After needs binary order, or a page can skip rows. Use a NUMBER column, or connect with a session where NLS_SORT is BINARY.`,
+			},
+		);
+	}
+}
+
+// n8n outputs the other types as objects, or with less precision
+const START_AFTER_TYPE = /^(NUMBER|N?VARCHAR2|N?CHAR)$/;
+
+/**
+ * Throws if Start After cannot page by the column without skipped or repeated rows.
+ * `uniqueColumns` comes from getUniqueKeyColumns. The query runner checks the sort order of a text column.
+ * `numbersAsString` is the Output Numbers As String option.
+ */
+export function checkStartAfterColumn(
+	node: INode,
+	itemIndex: number,
+	table: string,
+	column: string,
+	columnInfo: ColumnDefinition | undefined,
+	uniqueColumns: string[],
+	numbersAsString: boolean,
+) {
+	if (!columnInfo) {
+		throw new NodeOperationError(node, `Column "${column}" was not found in table "${table}"`, {
+			itemIndex,
+		});
+	}
+	assertUniqueCursorColumn(node, itemIndex, uniqueColumns, column);
+	assertCursorColumnType(node, itemIndex, column, columnInfo.type, START_AFTER_TYPE);
+	assertCursorColumnNotNull(node, itemIndex, column, columnInfo.nullable);
+
+	// A number in the output keeps about 15 digits, so a longer value with a fraction comes out rounded.
+	// A NUMBER with a scale and no precision holds up to 38 digits.
+	const { type, precision, scale } = columnInfo;
+	if (!numbersAsString && type === 'NUMBER' && (scale ?? 0) > 0 && (precision ?? 38) > 15) {
+		throw new NodeOperationError(
+			node,
+			`Start After cannot keep the values of column "${column}" exact`,
+			{
+				itemIndex,
+				description:
+					'n8n rounds a number with a fraction and more than 15 digits in the output, so the next page can repeat or skip rows. In Options, turn on Output Numbers As String.',
+			},
+		);
+	}
+}
+
+// JavaScript writes a number below 0.000001 with an exponent, for example 1e-7.
+// The digits move as text, so the value is not rounded.
+function expandSmallNumber(text: string): string {
+	const match = /^(-?)(\d)(?:\.(\d+))?e-(\d{1,3})$/i.exec(text);
+	if (!match) return text;
+	const [, sign, digit, fraction = '', exponent] = match;
+	return `${sign}.${'0'.repeat(Number(exponent) - 1)}${digit}${fraction}`;
+}
+
+/**
+ * Adds the binds of the Start After value and returns the SQL that reads it.
+ * A NUMBER value stays text, so Oracle reads all its digits. The format made from
+ * the value keeps the conversion independent of the session NLS_NUMERIC_CHARACTERS.
+ * `numbersAsString` is the Output Numbers As String option.
+ */
+export function addStartAfterBind(
+	node: INode,
+	itemIndex: number,
+	colInfo: ColumnDefinition,
+	value: string,
+	bindParameters: oracledb.BindParameter[],
+	numbersAsString: boolean,
+): string {
+	const index = bindParameters.length;
+	if (colInfo.type !== 'NUMBER') {
+		addBindParam(colInfo, value, bindParameters);
+		return `:${index}`;
+	}
+
+	const text = expandSmallNumber(value.trim());
+	// Other number text would need a number bind, which rounds
+	if (!/^-?(\d+(\.\d+)?|\.\d+)$/.test(text)) {
+		throw new NodeOperationError(node, 'The Start After value must be a plain number', {
+			itemIndex,
+			description: 'Use digits with an optional minus sign and decimal point, for example 1234.5.',
+		});
+	}
+	// A number in the output keeps about 15 digits of a NUMBER that has a fraction
+	const digits = text.replace(/[-.]/g, '').replace(/^0+/, '');
+	if (!numbersAsString && text.includes('.') && digits.length > 15) {
+		throw new NodeOperationError(node, 'The Start After value has too many digits to be exact', {
+			itemIndex,
+			description:
+				'n8n rounds a number with a fraction and more than 15 digits in the output, so the next page can skip rows. In Options, turn on Output Numbers As String.',
+		});
+	}
+	// A NUMBER with no scale holds any fraction, so the output can round the value to fewer digits
+	if (!numbersAsString && text.includes('.') && typeof colInfo.scale !== 'number') {
+		throw new NodeOperationError(node, 'The Start After value has a fraction that can be rounded', {
+			itemIndex,
+			description:
+				'The column has no fixed number of decimals, so n8n can round a number with a fraction in the output and the next page can repeat rows. In Options, turn on Output Numbers As String.',
+		});
+	}
+
+	const format = text.replace('-', '').replace(/\d/g, '9').replace('.', 'D');
+	bindParameters.push({ type: oracledb.STRING, val: text }, { type: oracledb.STRING, val: format });
+	return `TO_NUMBER(:${index}, :${index + 1}, 'NLS_NUMERIC_CHARACTERS=''.,''')`;
+}
+
 export function prepareErrorItem(
-	items: INodeExecutionData[],
 	error: IDataObject | NodeOperationError | Error,
 	index: number,
 ): INodeExecutionData {
 	return {
-		json: { message: error.message, item: { ...items[index].json }, error: { ...error } },
+		json: { message: error.message, error: { ...error } },
 		pairedItem: { item: index },
 	};
 }
@@ -400,26 +614,70 @@ function normalizeOutBinds(
 	return rows;
 }
 
-function _getResponseForOutbinds(
+async function _getResponseForOutbinds(
 	this: IExecuteFunctions,
 	results: oracledb.Results<unknown> | oracledb.Result<unknown>,
 	stmtBatching: string,
 	outputColumns: string[] = [],
 	returnData: INodeExecutionData[] = [],
+	serializeDates = false,
 ) {
 	if (results.outBinds) {
 		const normalizedRows = normalizeOutBinds(results.outBinds, stmtBatching, outputColumns);
 
 		for (let j = 0; j < normalizedRows.length; j++) {
-			const executionData = this.helpers.constructExecutionMetaData(wrapData(normalizedRows[j]), {
+			let row = normalizedRows[j];
+			let binary: IBinaryKeyData = {};
+
+			if (serializeDates) {
+				// RETURNING values bypass the fetch handler, so binds arrive as live JS objects that
+				// need routing (BLOB/RAW to binary) and serializing (date binds to ISO strings)
+				const routed = await routeBinaryProperties.call(this, row as IDataObject);
+				row = routed.json;
+				binary = routed.binary;
+			}
+
+			const executionData = this.helpers.constructExecutionMetaData(wrapData(row), {
 				itemData: { item: j },
 			});
 			if (!executionData?.length) continue;
 			for (const entry of executionData) {
+				if (Object.keys(binary).length) {
+					entry.binary = { ...(entry.binary ?? {}), ...binary };
+				}
 				returnData.push(entry);
 			}
 		}
 	}
+}
+
+async function _getResponseForRows(
+	this: IExecuteFunctions,
+	rows: IDataObject[],
+	itemIndex: number,
+	routeBinary: boolean,
+): Promise<INodeExecutionData[]> {
+	if (!routeBinary) {
+		return this.helpers.constructExecutionMetaData(wrapData(rows), {
+			itemData: { item: itemIndex },
+		});
+	}
+
+	const returnData: INodeExecutionData[] = [];
+	for (const row of rows) {
+		// Fetched BLOB/RAW columns arrive as Buffers; route them to binary like the outBinds path
+		const { json, binary } = await routeBinaryProperties.call(this, row);
+		const executionData = this.helpers.constructExecutionMetaData(wrapData(json), {
+			itemData: { item: itemIndex },
+		});
+		for (const entry of executionData) {
+			if (Object.keys(binary).length) {
+				entry.binary = { ...(entry.binary ?? {}), ...binary };
+			}
+			returnData.push(entry);
+		}
+	}
+	return returnData;
 }
 
 /*
@@ -429,6 +687,34 @@ function _getResponseForOutbinds(
 function doesRowExist(query: string, results: any) {
 	if (/^\s*UPDATE\b/i.test(query) && results.rowsAffected === 0) {
 		throw new Error("The row you are trying to update doesn't exist");
+	}
+}
+
+function createErrorItems(
+	error: NodeOperationError | Error,
+	items: INodeExecutionData[],
+): INodeExecutionData[] {
+	if (items.length) {
+		return items.map((_item, index) => prepareErrorItem(error, index));
+	}
+	return [prepareErrorItem(error, 0)];
+}
+
+type ConnectionResult =
+	| { connection: oracledb.Connection; error?: never }
+	| { connection?: never; error: NodeOperationError };
+
+async function getConnectionOrError(
+	pool: oracledb.Pool,
+	node: INode,
+	continueOnFail: boolean,
+): Promise<ConnectionResult> {
+	try {
+		return { connection: await pool.getConnection() };
+	} catch (caughtError) {
+		const error = parseOracleError(node, caughtError);
+		if (!continueOnFail) throw error;
+		return { error };
 	}
 }
 
@@ -449,18 +735,21 @@ export function configureQueryRunner(
 				? 'single'
 				: 'independently';
 		const stmtBatching = (options.stmtBatching as QueryMode) || defaultBatching;
+		const serializeDates = node.typeVersion >= 1.1;
 
 		if (stmtBatching === 'transaction' || stmtBatching === 'independently') {
 			// setup fetch Handler for specific types.
+			const dateDbTypes: oracledb.DbType[] = [
+				oracledb.DB_TYPE_DATE,
+				oracledb.DB_TYPE_TIMESTAMP_TZ,
+				oracledb.DB_TYPE_TIMESTAMP_LTZ,
+			];
+			if (node.typeVersion >= 1.1) {
+				// Plain TIMESTAMP columns used to leak JS Date objects
+				dateDbTypes.push(oracledb.DB_TYPE_TIMESTAMP);
+			}
 			const executeFetchHandler = function (metaData: oracledb.Metadata<any>) {
-				if (
-					metaData.dbType &&
-					[
-						oracledb.DB_TYPE_DATE,
-						oracledb.DB_TYPE_TIMESTAMP_TZ,
-						oracledb.DB_TYPE_TIMESTAMP_LTZ,
-					].includes(metaData.dbType as any)
-				) {
+				if (metaData.dbType && dateDbTypes.includes(metaData.dbType as any)) {
 					return {
 						converter: (val: unknown) => {
 							if (!(val instanceof Date)) return val;
@@ -496,7 +785,10 @@ export function configureQueryRunner(
 		}
 
 		if (stmtBatching === 'single' && queries[0].executeManyValues) {
-			const connection = await pool.getConnection();
+			const { connection, error } = await getConnectionOrError(pool, node, continueOnFail);
+			if (!connection) {
+				return createErrorItems(error, items);
+			}
 			try {
 				execOptions = getExecuteManyOptions(options);
 				if (continueOnFail) {
@@ -522,12 +814,13 @@ export function configureQueryRunner(
 						returnData.push({ json: { message: error.message }, pairedItem });
 					}
 				} else {
-					_getResponseForOutbinds.call(
+					await _getResponseForOutbinds.call(
 						this,
 						results,
 						stmtBatching,
 						queries[0].outputColumns,
 						returnData,
+						serializeDates,
 					);
 				}
 
@@ -547,8 +840,12 @@ export function configureQueryRunner(
 			}
 		} else if (stmtBatching === 'transaction') {
 			execOptions.autoCommit = false; // for transaction mode forcefully overwrite it.
-			const connection = await pool.getConnection();
+			const { connection, error } = await getConnectionOrError(pool, node, continueOnFail);
+			if (!connection) {
+				return createErrorItems(error, items);
+			}
 			try {
+				await assertBinarySort(node, connection, queries);
 				for (let i = 0; i < queries.length; i++) {
 					try {
 						const { query, values, outputColumns } = queries[i];
@@ -567,21 +864,24 @@ export function configureQueryRunner(
 						doesRowExist(query, transactionResults);
 
 						const resultOutBinds: INodeExecutionData[] = [];
-						_getResponseForOutbinds.call(
+						await _getResponseForOutbinds.call(
 							this,
 							transactionResults,
 							stmtBatching,
 							outputColumns,
 							resultOutBinds,
+							serializeDates,
 						);
 						if (!resultOutBinds.length) {
 							let rowData = transactionResults.rows ?? [];
 							if (!rowData.length) {
 								rowData = [emptyRowData];
 							}
-							const executionData = this.helpers.constructExecutionMetaData(
-								wrapData(rowData as IDataObject[]),
-								{ itemData: { item: i } },
+							const executionData = await _getResponseForRows.call(
+								this,
+								rowData as IDataObject[],
+								i,
+								serializeDates,
 							);
 
 							returnData = returnData.concat(executionData);
@@ -591,7 +891,7 @@ export function configureQueryRunner(
 					} catch (caughtError) {
 						const error = parseOracleError(node, caughtError, i);
 						if (!continueOnFail) throw error;
-						returnData.push(prepareErrorItem(items, error, i));
+						returnData.push(prepareErrorItem(error, i));
 
 						// The rollback happens automatically, so just return.
 						return returnData;
@@ -604,8 +904,12 @@ export function configureQueryRunner(
 				await connection.close();
 			}
 		} else if (stmtBatching === 'independently') {
-			const connection = await pool.getConnection();
+			const { connection, error } = await getConnectionOrError(pool, node, continueOnFail);
+			if (!connection) {
+				return createErrorItems(error, items);
+			}
 			try {
+				await assertBinarySort(node, connection, queries);
 				for (let i = 0; i < queries.length; i++) {
 					try {
 						const { query, values, outputColumns } = queries[i];
@@ -623,12 +927,13 @@ export function configureQueryRunner(
 						doesRowExist(query, taskResults);
 
 						const resultOutBinds: INodeExecutionData[] = [];
-						_getResponseForOutbinds.call(
+						await _getResponseForOutbinds.call(
 							this,
 							taskResults,
 							stmtBatching,
 							outputColumns,
 							resultOutBinds,
+							serializeDates,
 						);
 						if (!resultOutBinds.length) {
 							// select query or no returning clause in DML
@@ -636,9 +941,11 @@ export function configureQueryRunner(
 							if (!rowData.length) {
 								rowData = [emptyRowData];
 							}
-							const executionData = this.helpers.constructExecutionMetaData(
-								wrapData(rowData as IDataObject[]),
-								{ itemData: { item: i } },
+							const executionData = await _getResponseForRows.call(
+								this,
+								rowData as IDataObject[],
+								i,
+								serializeDates,
 							);
 							returnData = returnData.concat(executionData);
 						} else {
@@ -647,7 +954,7 @@ export function configureQueryRunner(
 					} catch (caughtError) {
 						const error = parseOracleError(node, caughtError, i);
 						if (!continueOnFail) throw error;
-						returnData.push(prepareErrorItem(items, error, i));
+						returnData.push(prepareErrorItem(error, i));
 					}
 				}
 			} finally {
@@ -686,11 +993,13 @@ export const configureTableSchemaUpdater = (
 
 export function getColumnMap(tableSchema: ColumnInfo[]) {
 	const columnMetaDataObject = tableSchema.reduce<ColumnMap>(
-		(acc, { columnName, dataType, isNullable, maxSize }) => {
+		(acc, { columnName, dataType, isNullable, maxSize, precision, scale }) => {
 			acc[columnName] = {
 				type: dataType.toUpperCase(),
 				nullable: isNullable,
 				maxSize,
+				precision,
+				scale,
 			};
 			return acc;
 		},
@@ -705,6 +1014,8 @@ export function addWhereClauses(
 	clauses: WhereClause[],
 	combineConditions: string,
 	schema: ColumnMap,
+	node: INode,
+	itemIndex: number,
 	isExecuteMany: boolean = false,
 ): [string, oracledb.BindParameter[] | oracledb.BindDefinition[]] {
 	if (clauses.length === 0) return [query, []];
@@ -722,6 +1033,22 @@ export function addWhereClauses(
 		if (clause.condition === 'equal') {
 			clause.condition = '=';
 		}
+
+		// The operator can be expression-driven, so accept the case/whitespace variants
+		// Oracle itself tolerates, then check against the fixed set it is concatenated from.
+		// An expression can also yield a non-string; route that to the invalid-operator error.
+		const normalizedCondition =
+			typeof clause.condition === 'string'
+				? clause.condition.trim().replace(/\s+/g, ' ').toUpperCase()
+				: '';
+		if (!VALID_WHERE_OPERATORS.has(normalizedCondition)) {
+			throw new NodeOperationError(
+				node,
+				`Operator "${clause.condition}" is not valid. Supported operators: ${[...VALID_WHERE_OPERATORS].join(', ')}`,
+				{ itemIndex },
+			);
+		}
+		clause.condition = normalizedCondition;
 
 		// The condition value is json type, so convert to required type only
 		// if fixed expression is used instead of n8n expressions.
@@ -816,11 +1143,8 @@ function generateBindVariablesList(
 		generatedSqlString += `:${newParamName},`;
 	}
 
-	// replace :bindname
-	const regex = new RegExp(`:${escapedName}(?![A-Za-z0-9_$#])`, 'g');
-
 	generatedSqlString = generatedSqlString.slice(0, -1) + ')'; //replace trailing comma with closing parenthesis.
-	return query.replace(regex, generatedSqlString);
+	return safeRegex.replace(`:${escapedName}(?![A-Za-z0-9_$#])`, query, 'g', generatedSqlString);
 }
 
 function isSerializedBuffer(val: unknown): val is { type: 'Buffer'; data: number[] } {
@@ -837,26 +1161,59 @@ function isSerializedBuffer(val: unknown): val is { type: 'Buffer'; data: number
 export function getBindParameters(
 	query: string,
 	parameterList: ExecuteOpBindParam[],
+	options: Pick<OracleDBNodeOptions, 'stringOutBindMaxSize'> = {},
 ): { updatedQuery: string; bindParameters: QueryValue } {
 	const bindParameters: ObjectQueryValue = {};
+	const stringOutBindMaxSize = options.stringOutBindMaxSize ?? DEFAULT_STRING_OUT_BIND_MAX_SIZE;
 
 	for (const item of parameterList) {
-		if (!item.parseInStatement) {
+		const itemWithOptionalDatatype = item as RuntimeExecuteOpBindParam;
+		const bindItem = (
+			!itemWithOptionalDatatype.datatype
+				? {
+						...itemWithOptionalDatatype,
+						datatype: 'string',
+						valueString: itemWithOptionalDatatype.valueString ?? '',
+					}
+				: itemWithOptionalDatatype
+		) as ExecuteOpBindParam;
+
+		if (!bindItem.parseInStatement) {
 			let bindVal = null;
-			const type = item.datatype;
+			const type = bindItem.datatype;
+			const dir =
+				bindItem.bindDirection === 'in'
+					? oracledb.BIND_IN
+					: bindItem.bindDirection === 'out'
+						? oracledb.BIND_OUT
+						: oracledb.BIND_INOUT;
+
+			if (bindItem.bindDirection === 'out') {
+				const bindParameter: oracledb.BindParameter = {
+					type: n8nTypetoDBType[type],
+					dir,
+				};
+
+				if (type === 'string') {
+					bindParameter.maxSize = stringOutBindMaxSize;
+				}
+
+				bindParameters[bindItem.name] = bindParameter;
+				continue;
+			}
 
 			switch (type) {
 				case 'number':
-					bindVal = item.valueNumber;
+					bindVal = bindItem.valueNumber;
 					break;
 				case 'string':
-					bindVal = item.valueString;
+					bindVal = bindItem.valueString;
 					break;
 				case 'boolean':
-					bindVal = item.valueBoolean;
+					bindVal = bindItem.valueBoolean;
 					break;
 				case 'blob':
-					bindVal = item.valueBlob;
+					bindVal = bindItem.valueBlob;
 
 					// Allow null or undefined to represent SQL NULL BLOB values
 					if (bindVal === null) {
@@ -876,7 +1233,7 @@ export function getBindParameters(
 						'BLOB data must be a valid Buffer or \'{ type: "Buffer", data: [...] }\'',
 					);
 				case 'date': {
-					const val = item.valueDate;
+					const val = bindItem.valueDate;
 					if (typeof val === 'string') {
 						bindVal = new Date(val); // string → Date
 					} else if (val instanceof Date) {
@@ -890,7 +1247,7 @@ export function getBindParameters(
 					break;
 				}
 				case 'sparse': {
-					const val = item.valueSparse;
+					const val = bindItem.valueSparse;
 					let indices = val.indices;
 					let values = val.values;
 					const dims = val.dimensions;
@@ -922,7 +1279,7 @@ export function getBindParameters(
 				}
 				case 'vector':
 					{
-						const val = item.valueVector;
+						const val = bindItem.valueVector;
 
 						bindVal = val;
 						if (typeof val === 'string') {
@@ -938,7 +1295,7 @@ export function getBindParameters(
 					break;
 				case 'json':
 					{
-						const val = item.valueJson;
+						const val = bindItem.valueJson;
 
 						bindVal = val;
 						if (typeof val === 'string') {
@@ -954,19 +1311,19 @@ export function getBindParameters(
 					throw new UserError(`Unsupported Bind type: ${type}`);
 			}
 
-			const dir =
-				item.bindDirection === 'in'
-					? oracledb.BIND_IN
-					: item.bindDirection === 'out'
-						? oracledb.BIND_OUT
-						: oracledb.BIND_INOUT;
-			bindParameters[item.name] = {
-				type: n8nTypetoDBType[item.datatype],
+			const bindParameter: oracledb.BindParameter = {
+				type: n8nTypetoDBType[type],
 				val: bindVal,
 				dir,
 			};
+
+			if (bindItem.bindDirection === 'inout' && type === 'string') {
+				bindParameter.maxSize = stringOutBindMaxSize;
+			}
+
+			bindParameters[bindItem.name] = bindParameter;
 		} else {
-			query = generateBindVariablesList(item, bindParameters, query);
+			query = generateBindVariablesList(bindItem, bindParameters, query);
 		}
 	}
 	return { updatedQuery: query, bindParameters };

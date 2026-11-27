@@ -4,7 +4,7 @@ import { UnknownModuleError } from '../errors/unknown-module.error';
 import { ModulesConfig } from '../modules.config';
 
 beforeEach(() => {
-	jest.resetAllMocks();
+	vi.resetAllMocks();
 	process.env = {};
 	Container.reset();
 });
@@ -17,4 +17,9 @@ it('should throw `UnknownModuleError` if any enabled module name is invalid', ()
 it('should throw `UnknownModuleError` if any disabled module name is invalid', () => {
 	process.env.N8N_DISABLED_MODULES = 'insights,invalidModule';
 	expect(() => Container.get(ModulesConfig)).toThrowError(UnknownModuleError);
+});
+
+it('should accept `durable-leases` as an enabled module', () => {
+	process.env.N8N_ENABLED_MODULES = 'durable-leases';
+	expect(Container.get(ModulesConfig).enabledModules).toEqual(['durable-leases']);
 });

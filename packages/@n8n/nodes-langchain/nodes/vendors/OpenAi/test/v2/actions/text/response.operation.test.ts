@@ -1,8 +1,10 @@
 import type { Tool } from '@langchain/classic/tools';
+import { createToolFromNode } from '@n8n/ai-utilities';
 import type { IExecuteFunctions, INode } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeOperationError, requestPath } from 'n8n-workflow';
 import type { Mocked, MockedFunction } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
+import { z } from 'zod';
 
 import { getConnectedTools } from '@utils/helpers';
 
@@ -111,7 +113,7 @@ describe('OpenAI Response Operation', () => {
 					pairedItem: { item: 0 },
 				},
 			]);
-			expect(mockApiRequest).toHaveBeenCalledWith('POST', '/responses', {
+			expect(mockApiRequest).toHaveBeenCalledWith('POST', requestPath`/responses`, {
 				body: expect.any(Object),
 			});
 		});
@@ -119,6 +121,7 @@ describe('OpenAI Response Operation', () => {
 		it('should execute with simplified output enabled', async () => {
 			mockExecuteFunctions.getNodeParameter.mockImplementation((param: string) => {
 				if (param === 'simplify') return true;
+				if (param === 'responses.values') return [{ role: 'user', type: 'text', content: 'Hello' }];
 				return 'default';
 			});
 
@@ -204,6 +207,7 @@ describe('OpenAI Response Operation', () => {
 				if (param === 'options.backgroundMode.values.enabled') return true;
 				if (param === 'options.backgroundMode.values.timeout') return 300;
 				if (param === 'simplify') return false;
+				if (param === 'responses.values') return [{ role: 'user', type: 'text', content: 'Hello' }];
 				return 'default';
 			});
 
@@ -237,6 +241,7 @@ describe('OpenAI Response Operation', () => {
 			mockExecuteFunctions.getNodeParameter.mockImplementation((param: string) => {
 				if (param === 'options.backgroundMode.values.enabled') return true;
 				if (param === 'simplify') return false;
+				if (param === 'responses.values') return [{ role: 'user', type: 'text', content: 'Hello' }];
 				return 'default';
 			});
 
@@ -261,6 +266,122 @@ describe('OpenAI Response Operation', () => {
 	});
 
 	describe('Tool Calls', () => {
+		const createPgVectorTool = () =>
+			createToolFromNode(mockNode, {
+				name: 'pgvector_search',
+				description: 'Search documents',
+				// NODE-5496: PGVector retrieve-as-tool requires an input object.
+				extraArgs: [{ key: 'input', description: 'Query to search for. Required' }],
+				func: vi.fn().mockResolvedValue('Matched document'),
+			});
+
+		it('should invoke a PGVector-style tool with a query object', async () => {
+			const tool = createPgVectorTool();
+
+			await expect(tool.invoke({ input: 'find documents' })).resolves.toBe('Matched document');
+		});
+
+		it('should pass a query object to a PGVector-style tool from a function call', async () => {
+			const tool = createPgVectorTool();
+			const initialResponse = {
+				id: 'resp_123',
+				status: 'completed',
+				output: [
+					{
+						type: 'function_call',
+						call_id: 'call_123',
+						name: tool.name,
+						arguments: JSON.stringify({ input: 'find documents' }),
+					},
+				],
+			};
+			const finalResponse = {
+				id: 'resp_456',
+				status: 'completed',
+				output: [
+					{
+						type: 'message',
+						role: 'assistant',
+						content: [{ type: 'output_text', text: 'Found documents' }],
+					},
+				],
+			};
+
+			mockGetConnectedTools.mockResolvedValue([tool as Tool]);
+			mockCreateRequest.mockResolvedValue({ model: 'gpt-4o', input: [] });
+			mockApiRequest.mockResolvedValue(finalResponse).mockResolvedValueOnce(initialResponse);
+
+			await expect(execute.call(mockExecuteFunctions, 0)).resolves.toEqual([
+				{ json: finalResponse, pairedItem: { item: 0 } },
+			]);
+			expect(mockApiRequest).toHaveBeenCalledTimes(2);
+			expect(mockApiRequest).toHaveBeenNthCalledWith(2, 'POST', requestPath`/responses`, {
+				body: expect.objectContaining({
+					input: expect.arrayContaining([
+						{ type: 'function_call_output', call_id: 'call_123', output: 'Matched document' },
+					]),
+				}),
+			});
+		});
+
+		it('should pass parsed data to the connected tool', async () => {
+			const tool = {
+				name: 'search',
+				schema: z.object({ input: z.string() }).transform(({ input }) => ({ input: input.trim() })),
+				invoke: vi.fn().mockResolvedValue('Matched document'),
+			} as unknown as Tool;
+			mockGetConnectedTools.mockResolvedValue([tool]);
+			mockCreateRequest.mockResolvedValue({ model: 'gpt-4o', input: [] });
+			mockApiRequest
+				.mockResolvedValueOnce({
+					id: 'resp_123',
+					status: 'completed',
+					output: [
+						{
+							type: 'function_call',
+							call_id: 'call_123',
+							name: tool.name,
+							arguments: JSON.stringify({ input: '  find documents  ' }),
+						},
+					],
+				})
+				.mockResolvedValueOnce({ id: 'resp_456', status: 'completed', output: [] });
+
+			await execute.call(mockExecuteFunctions, 0);
+
+			expect(tool.invoke).toHaveBeenCalledWith({ input: 'find documents' });
+		});
+
+		it.each([
+			['missing', undefined],
+			['raw', { type: 'object', properties: { input: { type: 'string' } } }],
+		])('should report an unsupported %s tool schema', async (_kind, schema) => {
+			const tool = { name: 'search', schema, invoke: vi.fn() } as unknown as Tool;
+			mockGetConnectedTools.mockResolvedValue([tool]);
+			mockCreateRequest.mockResolvedValue({ model: 'gpt-4o', input: [] });
+			mockApiRequest.mockResolvedValueOnce({
+				id: 'resp_123',
+				status: 'completed',
+				output: [
+					{
+						type: 'function_call',
+						call_id: 'call_123',
+						name: tool.name,
+						arguments: JSON.stringify({ input: 'find documents' }),
+					},
+				],
+			});
+
+			await expect(execute.call(mockExecuteFunctions, 0)).rejects.toMatchObject({
+				name: 'NodeOperationError',
+				message:
+					'The connected tool "search" has an unsupported input schema. Connect a tool with a Zod input schema.',
+				context: { itemIndex: 0 },
+			});
+			expect(tool.invoke).not.toHaveBeenCalled();
+			expect(mockApiRequest).toHaveBeenCalledTimes(1);
+		});
+
 		it('should execute tool calls with external tools', async () => {
 			const mockTool = {
 				name: 'test_tool',
@@ -269,7 +390,7 @@ describe('OpenAI Response Operation', () => {
 					typeName: 'ZodObject',
 					_def: { typeName: 'ZodObject', shape: () => ({}) },
 					parse: vi.fn(),
-					safeParse: vi.fn(),
+					safeParse: vi.fn().mockReturnValue({ success: false }),
 				},
 				call: vi.fn(),
 				description: 'Test tool',
@@ -329,7 +450,7 @@ describe('OpenAI Response Operation', () => {
 					typeName: 'ZodObject',
 					_def: { typeName: 'ZodObject', shape: () => ({}) },
 					parse: vi.fn(),
-					safeParse: vi.fn(),
+					safeParse: vi.fn().mockReturnValue({ success: false }),
 				},
 				call: vi.fn(),
 				description: 'Test tool',
@@ -377,6 +498,7 @@ describe('OpenAI Response Operation', () => {
 		it('should respect max tool iterations limit', async () => {
 			mockExecuteFunctions.getNodeParameter.mockImplementation((param: string) => {
 				if (param === 'options.maxToolsIterations') return 2;
+				if (param === 'responses.values') return [{ role: 'user', type: 'text', content: 'Hello' }];
 				return 'default';
 			});
 
@@ -387,7 +509,7 @@ describe('OpenAI Response Operation', () => {
 					typeName: 'ZodObject',
 					_def: { typeName: 'ZodObject', shape: () => ({}) },
 					parse: vi.fn(),
-					safeParse: vi.fn(),
+					safeParse: vi.fn().mockReturnValue({ success: false }),
 				},
 				call: vi.fn(),
 				description: 'Test tool',
@@ -433,7 +555,7 @@ describe('OpenAI Response Operation', () => {
 					typeName: 'ZodObject',
 					_def: { typeName: 'ZodObject', shape: () => ({}) },
 					parse: vi.fn(),
-					safeParse: vi.fn(),
+					safeParse: vi.fn().mockReturnValue({ success: false }),
 				},
 				call: vi.fn(),
 				description: 'Test tool',
@@ -474,7 +596,7 @@ describe('OpenAI Response Operation', () => {
 					typeName: 'ZodObject',
 					_def: { typeName: 'ZodObject', shape: () => ({}) },
 					parse: vi.fn(),
-					safeParse: vi.fn(),
+					safeParse: vi.fn().mockReturnValue({ success: false }),
 				},
 				call: vi.fn(),
 				description: 'Test tool',
@@ -522,7 +644,7 @@ describe('OpenAI Response Operation', () => {
 
 			expect(mockTool.invoke).toHaveBeenCalledWith('test input');
 			expect(mockApiRequest).toHaveBeenCalledTimes(2);
-			expect(mockApiRequest).toHaveBeenNthCalledWith(2, 'POST', '/responses', {
+			expect(mockApiRequest).toHaveBeenNthCalledWith(2, 'POST', requestPath`/responses`, {
 				body: {
 					model: 'gpt-4o',
 					input: [
@@ -561,7 +683,7 @@ describe('OpenAI Response Operation', () => {
 					typeName: 'ZodObject',
 					_def: { typeName: 'ZodObject', shape: () => ({}) },
 					parse: vi.fn(),
-					safeParse: vi.fn(),
+					safeParse: vi.fn().mockReturnValue({ success: false }),
 				},
 				call: vi.fn(),
 				description: 'Test tool',
@@ -610,7 +732,7 @@ describe('OpenAI Response Operation', () => {
 
 			expect(mockTool.invoke).toHaveBeenCalledWith('test input');
 			expect(mockApiRequest).toHaveBeenCalledTimes(2);
-			expect(mockApiRequest).toHaveBeenNthCalledWith(2, 'POST', '/responses', {
+			expect(mockApiRequest).toHaveBeenNthCalledWith(2, 'POST', requestPath`/responses`, {
 				body: {
 					model: 'gpt-4o',
 					input: [
@@ -707,44 +829,39 @@ describe('OpenAI Response Operation', () => {
 	});
 
 	describe('Edge Cases', () => {
-		it('should handle empty messages array', async () => {
-			mockExecuteFunctions.getNodeParameter.mockImplementation((param: string) => {
-				if (param === 'responses.values') return [];
-				if (param === 'simplify') return false;
-				return 'default';
-			});
-
-			const mockResponse = {
-				id: 'resp_123',
-				status: 'completed',
-				output: [],
-			};
-
-			mockCreateRequest.mockResolvedValue({
-				model: 'gpt-4o',
-				input: [],
-			});
-			mockApiRequest.mockResolvedValue(mockResponse);
-			mockGetConnectedTools.mockResolvedValue([]);
-
-			const result = await execute.call(mockExecuteFunctions, 0);
-
-			expect(result).toEqual([
-				{
-					json: {
-						id: 'resp_123',
-						status: 'completed',
-						output: [],
-					},
-					pairedItem: { item: 0 },
+		it('should throw error for empty messages array', async () => {
+			mockExecuteFunctions.getNodeParameter.mockImplementation(
+				(param: string, _itemIndex: number, defaultValue?: unknown) => {
+					if (param === 'responses.values') return [];
+					if (param === 'simplify') return false;
+					return defaultValue as any;
 				},
-			]);
+			);
+
+			await expect(execute.call(mockExecuteFunctions, 0)).rejects.toThrow(
+				'A non-empty prompt is required.',
+			);
+		});
+
+		it('should throw error for whitespace-only messages', async () => {
+			mockExecuteFunctions.getNodeParameter.mockImplementation(
+				(param: string, _itemIndex: number, defaultValue?: unknown) => {
+					if (param === 'responses.values') return [{ type: 'text', content: '   ' }];
+					if (param === 'simplify') return false;
+					return defaultValue as any;
+				},
+			);
+
+			await expect(execute.call(mockExecuteFunctions, 0)).rejects.toThrow(
+				'A non-empty prompt is required.',
+			);
 		});
 
 		it('should handle tools hidden for unsupported models', async () => {
 			mockExecuteFunctions.getNodeParameter.mockImplementation((param: string) => {
 				if (param === 'hideTools') return 'hide';
 				if (param === 'simplify') return false;
+				if (param === 'responses.values') return [{ role: 'user', type: 'text', content: 'Hello' }];
 				return 'default';
 			});
 
@@ -804,7 +921,7 @@ describe('OpenAI Response Operation', () => {
 					typeName: 'ZodObject',
 					_def: { typeName: 'ZodObject', shape: () => ({}) },
 					parse: vi.fn(),
-					safeParse: vi.fn(),
+					safeParse: vi.fn().mockReturnValue({ success: false }),
 				},
 				call: vi.fn(),
 				description: 'Test tool',
@@ -841,7 +958,7 @@ describe('OpenAI Response Operation', () => {
 					typeName: 'ZodObject',
 					_def: { typeName: 'ZodObject', shape: () => ({}) },
 					parse: vi.fn(),
-					safeParse: vi.fn(),
+					safeParse: vi.fn().mockReturnValue({ success: false }),
 				},
 				call: vi.fn(),
 				description: 'Test tool',
@@ -959,10 +1076,11 @@ describe('OpenAI Response Operation', () => {
 		});
 
 		it('should handle default values for optional parameters', async () => {
+			const messages = [{ role: 'user', type: 'text', content: 'Hello' }];
 			mockExecuteFunctions.getNodeParameter.mockImplementation(
 				(param: string, _itemIndex: number, defaultValue?: unknown) => {
 					if (param === 'modelId') return 'gpt-4o';
-					if (param === 'responses.values') return [];
+					if (param === 'responses.values') return messages;
 					if (param === 'options') return {};
 					if (param === 'builtInTools') return {};
 					return defaultValue as any;
@@ -984,7 +1102,7 @@ describe('OpenAI Response Operation', () => {
 
 			expect(mockCreateRequest).toHaveBeenCalledWith(0, {
 				model: 'gpt-4o',
-				messages: [],
+				messages,
 				options: {},
 				tools: undefined,
 				builtInTools: {},

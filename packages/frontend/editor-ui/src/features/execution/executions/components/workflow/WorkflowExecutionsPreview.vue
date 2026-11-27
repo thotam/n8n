@@ -1,31 +1,40 @@
 <script lang="ts" setup>
 import WorkflowExecutionAnnotationPanel from './WorkflowExecutionAnnotationPanel.ee.vue';
 import WorkflowExecutionAnnotationTags from './WorkflowExecutionAnnotationTags.ee.vue';
-import WorkflowPreview from '@/app/components/WorkflowPreview.vue';
+import ExecutionPreviewHost from './ExecutionPreviewHost.vue';
 import { useExecutionDebugging } from '../../composables/useExecutionDebugging';
 import type { IExecutionUIData } from '../../composables/useExecutionHelpers';
 import { useExecutionHelpers } from '../../composables/useExecutionHelpers';
 import type { WorkflowVersion } from '@n8n/rest-api-client/api/workflowHistory';
 import { useI18n } from '@n8n/i18n';
-import { useToast } from '@/app/composables/useToast';
+import { useToast } from '@n8n/composables/useToast';
 import { useMessage } from '@/app/composables/useMessage';
 import { EnterpriseEditionFeature, MODAL_CONFIRM, VIEWS } from '@/app/constants';
 import { convertToDisplayDate } from '@/app/utils/formatters/dateFormatter';
+import { formatBytes } from '@n8n/utils/number/bytes';
 import { useInjectWorkflowId } from '@/app/composables/useInjectWorkflowId';
 import { getResourcePermissions } from '@n8n/permissions';
-import { useSettingsStore } from '@/app/stores/settings.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
 import { useWorkflowsListStore } from '@/app/stores/workflowsList.store';
+import { createExecutionDataId, useExecutionDataStore } from '@/app/stores/executionData.store';
 import type { AnnotationVote, ExecutionSummary } from 'n8n-workflow';
 import { computed, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useExecutionsStore } from '../../executions.store';
+import { useEvaluationsWizardSidepanelStore } from '@/features/ai/evaluation.ee/wizardSidepanel.store';
 import { useWorkflowHistoryStore } from '@/features/workflows/workflowHistory/workflowHistory.store';
+import { useAddExecutionToDataset } from '@/features/ai/evaluation.ee/composables/useAddExecutionToDataset';
 
-import { ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus';
-import { N8nButton, N8nIconButton, N8nSpinner, N8nText, N8nTooltip } from '@n8n/design-system';
+import {
+	N8nButton,
+	N8nDropdownMenu,
+	N8nIconButton,
+	N8nSpinner,
+	N8nText,
+	N8nTooltip,
+	type DropdownMenuExposed,
+} from '@n8n/design-system';
 import VoteButtons from './VoteButtons.vue';
-
-type RetryDropdownRef = InstanceType<typeof ElDropdown>;
 
 const props = defineProps<{
 	execution?: ExecutionSummary;
@@ -46,11 +55,15 @@ const message = useMessage();
 const executionDebugging = useExecutionDebugging();
 const workflowsListStore = useWorkflowsListStore();
 const settingsStore = useSettingsStore();
-const retryDropdownRef = ref<RetryDropdownRef | null>(null);
+const retryDropdownRef = ref<DropdownMenuExposed | null>(null);
 const workflowId = useInjectWorkflowId();
 const workflowPermissions = computed(
 	() =>
 		getResourcePermissions(workflowsListStore.getWorkflowById(workflowId.value)?.scopes).workflow,
+);
+const executionPermissions = computed(
+	() =>
+		getResourcePermissions(workflowsListStore.getWorkflowById(workflowId.value)?.scopes).execution,
 );
 const executionId = computed(() => route.params.executionId as string);
 const nodeId = computed(() => route.params.nodeId as string);
@@ -71,6 +84,59 @@ const debugButtonData = computed(() =>
 const isRetriable = computed(
 	() => !!props.execution && executionHelpers.isExecutionRetriable(props.execution),
 );
+const retryItems = computed(() => [
+	{
+		id: 'current-workflow',
+		label: locale.baseText('executionsList.retryWithCurrentlySavedWorkflow'),
+	},
+	{
+		id: 'original-workflow',
+		label: locale.baseText('executionsList.retryWithOriginalWorkflow'),
+	},
+]);
+
+// Read from the per-execution data store that ExecutionPreviewHost below already
+// fills, so no extra request is needed. Keyed by execution id, not by document scope.
+const redactionInfo = computed(
+	() =>
+		useExecutionDataStore(createExecutionDataId(executionId.value)).execution?.data?.redactionInfo,
+);
+// Copying to the editor pins the fetched items. Without a reveal, the fetch
+// returns empty placeholders, so pinning would erase real node data. The reason
+// is deliberately not named: end-user credential data is unrevealable to
+// everyone but the executing user, so no scope can unblock it.
+const pinBlockedByRedaction = computed(
+	() => redactionInfo.value?.isRedacted === true && redactionInfo.value.canReveal !== true,
+);
+
+const { isFeatureEnabled: isAddToDatasetFeatureEnabled } = useAddExecutionToDataset(workflowId);
+
+const router = useRouter();
+const evaluationsWizardStore = useEvaluationsWizardSidepanelStore();
+
+const showAddToDataset = computed(
+	() =>
+		isAddToDatasetFeatureEnabled.value &&
+		props.execution?.status === 'success' &&
+		// Don't offer to add an evaluation run back into the dataset it came from.
+		props.execution?.mode !== 'evaluation',
+);
+
+// Seed a new test case from this execution and navigate to the editor. The
+// Tests panel is opened editor-side (NodeView) off the pending seed, so the
+// handoff survives the route change instead of relying on focus-panel state set
+// here, on a route that never renders the panel.
+async function onAddToDatasetClick() {
+	if (!props.execution) return;
+	try {
+		const full = await executionsStore.fetchExecution(props.execution.id);
+		if (!full) return;
+		evaluationsWizardStore.setPendingSeedExecution(full);
+		await router.push({ name: VIEWS.WORKFLOW, params: { workflowId: workflowId.value } });
+	} catch (error) {
+		showError(error, locale.baseText('evaluations.tests.seedFromExecution.error'));
+	}
+}
 
 const isAnnotationEnabled = computed(
 	() => settingsStore.isEnterpriseFeatureEnabled[EnterpriseEditionFeature.AdvancedExecutionFilters],
@@ -135,6 +201,12 @@ const executionMetaText = computed(() => {
 	}
 
 	return null;
+});
+
+const executionDataSize = computed(() => {
+	if (!props.execution) return null;
+	const total = (props.execution.jsonSizeBytes ?? 0) + (props.execution.binaryDataSizeBytes ?? 0);
+	return total > 0 ? formatBytes(total) : null;
 });
 
 watch(
@@ -203,7 +275,7 @@ function handleStopClick() {
 function onRetryButtonBlur(event: FocusEvent) {
 	// Hide dropdown when clicking outside of current document
 	if (retryDropdownRef.value && event.relatedTarget === null) {
-		retryDropdownRef.value.handleClose();
+		retryDropdownRef.value.close();
 	}
 }
 
@@ -227,19 +299,19 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 		<N8nText :class="$style.newMessage" color="text-light">
 			{{ locale.baseText('executionDetails.newMessage') }}
 		</N8nText>
-		<N8nButton variant="subtle" class="mt-l" @click="handleStopClick">
+		<N8nButton variant="outline" class="mt-l" @click="handleStopClick">
 			{{ locale.baseText('executionsList.stopExecution') }}
 		</N8nButton>
 	</div>
 	<div v-else-if="executionUIDetails?.name === 'running'" :class="$style.runningInfo">
-		<div :class="$style.spinner">
-			<N8nSpinner type="ring" />
+		<div>
+			<N8nSpinner type="brand" size="xxlarge" />
 		</div>
 		<N8nText :class="$style.runningMessage" color="text-light">
 			{{ locale.baseText('executionDetails.runningMessage') }}
 		</N8nText>
 		<N8nButton
-			variant="subtle"
+			variant="outline"
 			data-test-id="stop-execution"
 			class="mt-l"
 			:disabled="!workflowPermissions.execute"
@@ -268,11 +340,7 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 					/>
 				</div>
 				<div :class="$style.executionDetailsInfo">
-					<N8nSpinner
-						v-if="executionUIDetails?.name === 'running'"
-						size="small"
-						:class="[$style.spinner, 'mr-4xs']"
-					/>
+					<N8nSpinner v-if="executionUIDetails?.name === 'running'" size="small" class="mr-4xs" />
 					<N8nText
 						size="medium"
 						:class="[$style.status, $style[executionUIDetails.name]]"
@@ -286,6 +354,7 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 						color="text-base"
 						size="medium"
 					>
+						<template v-if="executionDataSize">| {{ executionDataSize }}</template>
 						| ID#{{ execution.id }}
 						<template v-if="workflowVersionLabel && workflowVersionRoute">
 							|
@@ -309,6 +378,7 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 						data-test-id="execution-preview-id"
 					>
 						{{ executionMetaText }}
+						<template v-if="executionDataSize">| {{ executionDataSize }}</template>
 						| ID#{{ execution.id }}
 						<template v-if="workflowVersionLabel && workflowVersionRoute">
 							|
@@ -351,6 +421,8 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 
 			<div :class="$style.actions">
 				<RouterLink
+					v-slot="{ href, navigate }"
+					custom
 					:to="{
 						name: VIEWS.EXECUTION_DEBUG,
 						params: {
@@ -359,50 +431,65 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 						},
 					}"
 				>
-					<N8nButton
-						size="medium"
-						variant="subtle"
-						:class="$style.debugLink"
-						:disabled="!workflowPermissions.update"
+					<N8nTooltip
+						as-child
+						:content="locale.baseText('executionsList.debug.button.redacted.tooltip')"
+						:disabled="!pinBlockedByRedaction"
 					>
-						<span
+						<template #content>{{
+							locale.baseText('executionsList.debug.button.redacted.tooltip')
+						}}</template>
+						<N8nButton
+							size="medium"
+							variant="outline"
+							:class="$style.debugLink"
+							:href="workflowPermissions.update && !pinBlockedByRedaction ? href : undefined"
+							:disabled="!workflowPermissions.update || pinBlockedByRedaction"
+							:focusable-when-disabled="pinBlockedByRedaction"
 							data-test-id="execution-debug-button"
-							@click="executionDebugging.handleDebugLinkClick"
+							@click="
+								executionDebugging.handleDebugLinkClick($event);
+								navigate($event);
+							"
 						>
 							{{ debugButtonData.text }}
-						</span>
-					</N8nButton>
+						</N8nButton>
+					</N8nTooltip>
 				</RouterLink>
 
-				<ElDropdown
+				<N8nDropdownMenu
 					v-if="isRetriable"
-					ref="retryDropdown"
-					trigger="click"
-					@command="handleRetryClick"
+					ref="retryDropdownRef"
+					:items="retryItems"
+					placement="bottom-end"
+					@select="handleRetryClick"
 				>
-					<span class="retry-button">
-						<N8nIconButton
-							variant="subtle"
-							size="medium"
-							:title="locale.baseText('executionsList.retryExecution')"
-							:disabled="!workflowPermissions.update"
-							icon="redo-2"
-							data-test-id="execution-preview-retry-button"
-							@blur="onRetryButtonBlur"
-						/>
-					</span>
-
-					<template #dropdown>
-						<ElDropdownMenu>
-							<ElDropdownItem command="current-workflow">
-								{{ locale.baseText('executionsList.retryWithCurrentlySavedWorkflow') }}
-							</ElDropdownItem>
-							<ElDropdownItem command="original-workflow">
-								{{ locale.baseText('executionsList.retryWithOriginalWorkflow') }}
-							</ElDropdownItem>
-						</ElDropdownMenu>
+					<template #trigger>
+						<span class="retry-button">
+							<N8nIconButton
+								variant="outline"
+								size="medium"
+								:title="locale.baseText('executionsList.retryExecution')"
+								:disabled="!workflowPermissions.update"
+								icon="redo-2"
+								data-test-id="execution-preview-retry-button"
+								@blur="onRetryButtonBlur"
+							/>
+						</span>
 					</template>
-				</ElDropdown>
+				</N8nDropdownMenu>
+
+				<N8nButton
+					v-if="showAddToDataset"
+					variant="outline"
+					size="medium"
+					icon="list-plus"
+					:disabled="!workflowPermissions.update"
+					data-test-id="execution-preview-add-to-dataset-button"
+					@click="onAddToDatasetClick"
+				>
+					{{ locale.baseText('evaluations.addToDataset.button.label') }}
+				</N8nButton>
 
 				<WorkflowExecutionAnnotationPanel
 					v-if="isAnnotationEnabled && activeExecution"
@@ -410,9 +497,9 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 				/>
 
 				<N8nIconButton
-					variant="subtle"
+					variant="outline"
 					:title="locale.baseText('executionDetails.deleteExecution')"
-					:disabled="!workflowPermissions.update"
+					:disabled="!executionPermissions.delete"
 					icon="trash-2"
 					size="medium"
 					data-test-id="execution-preview-delete-button"
@@ -421,12 +508,10 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 			</div>
 		</div>
 
-		<WorkflowPreview
-			:key="executionId"
-			mode="execution"
-			loader-type="spinner"
+		<ExecutionPreviewHost
+			:class="$style.previewHost"
+			:workflow-id="workflowId"
 			:execution-id="executionId"
-			:execution-mode="execution?.mode || ''"
 			:node-id="nodeId"
 		/>
 	</div>
@@ -434,29 +519,30 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 
 <style module lang="scss">
 .previewContainer {
-	position: relative;
+	display: flex;
+	flex-direction: column;
 	height: 100%;
 	overflow: hidden;
 }
 
 .executionDetails {
-	position: absolute;
+	flex-shrink: 0;
 	padding: var(--spacing--md);
 	width: 100%;
 	display: flex;
 	justify-content: space-between;
 	align-items: flex-start;
-	transition: all 150ms ease-in-out;
-	pointer-events: none;
+	background-color: var(--background--surface);
 
 	> div:last-child {
 		display: flex;
 		align-items: center;
 	}
+}
 
-	& * {
-		pointer-events: all;
-	}
+.previewHost {
+	flex: 1;
+	min-height: 0;
 }
 
 .executionDetailsLeft {
@@ -475,16 +561,7 @@ const onVoteClick = async (voteValue: AnnotationVote) => {
 	margin-bottom: 2px;
 }
 
-.spinner {
-	div div {
-		width: 30px;
-		height: 30px;
-		border-width: 2px;
-	}
-}
-
-.running,
-.spinner {
+.running {
 	color: var(--color--warning);
 }
 

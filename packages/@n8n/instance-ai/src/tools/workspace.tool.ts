@@ -1,13 +1,24 @@
 /**
- * Consolidated workspace tool — projects, tags, folders, execution cleanup.
+ * Workspace tools: one tool for each action of the former multi-action
+ * `workspace` tool (projects, tags, folders, execution cleanup).
  */
-import { createTool } from '@mastra/core/tools';
-import { instanceAiConfirmationSeveritySchema } from '@n8n/api-types';
+import { Tool } from '@n8n/agents';
+import {
+	INSTANCE_TOOL_NAME_BY_ACTION,
+	getLegacyBuilderToolActions,
+	folderNameSchema,
+	instanceAiApprovalResumeSchema,
+	instanceAiConfirmationSeveritySchema,
+	buildWorkspaceSessionGrantKey,
+	buildCleanupTestExecutionsSessionGrantKey,
+} from '@n8n/api-types';
+import type { WorkspaceToolAction } from '@n8n/api-types';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 
 import { sanitizeInputSchema } from '../agent/sanitize-mcp-schemas';
 import type { InstanceAiContext } from '../types';
+import { getSupportedWorkspaceActions } from './workspace-tool-actions';
 
 // ── Shared fields (single source of truth for fields used across actions) ───
 
@@ -48,7 +59,9 @@ const cleanupTestExecutionsAction = z.object({
 	olderThanHours: z
 		.number()
 		.optional()
-		.describe('Only delete executions older than this many hours. Defaults to 1.'),
+		.describe(
+			'Only delete executions older than this many hours. Must be greater than 0. Defaults to 1.',
+		),
 });
 
 const listFoldersAction = z.object({
@@ -58,7 +71,7 @@ const listFoldersAction = z.object({
 
 const createFolderAction = z.object({
 	action: z.literal('create-folder').describe('Create a new folder in a project'),
-	name: z.string().describe('Name for the new folder'),
+	name: folderNameSchema.describe('Name for the new folder'),
 	projectId: projectIdField,
 	parentFolderId: z
 		.string()
@@ -99,54 +112,63 @@ const suspendSchema = z.object({
 	severity: instanceAiConfirmationSeveritySchema,
 });
 
-const resumeSchema = z.object({
-	approved: z.boolean(),
-});
+const resumeSchema = instanceAiApprovalResumeSchema;
 
 // ── Input union ─────────────────────────────────────────────────────────────
 
-function buildInputSchema(context: InstanceAiContext) {
-	const baseActions = [
-		listProjectsAction,
-		listTagsAction,
-		tagWorkflowAction,
-		cleanupTestExecutionsAction,
-	] as const;
+const ACTION_SCHEMAS = {
+	'list-projects': listProjectsAction,
+	'list-tags': listTagsAction,
+	'tag-workflow': tagWorkflowAction,
+	'cleanup-test-executions': cleanupTestExecutionsAction,
+	'list-folders': listFoldersAction,
+	'create-folder': createFolderAction,
+	'delete-folder': deleteFolderAction,
+	'move-workflow-to-folder': moveWorkflowToFolderAction,
+} satisfies Record<WorkspaceToolAction, z.ZodDiscriminatedUnionOption<'action'>>;
 
-	if (context.workspaceService?.listFolders) {
-		return sanitizeInputSchema(
-			z.discriminatedUnion('action', [
-				...baseActions,
-				listFoldersAction,
-				createFolderAction,
-				deleteFolderAction,
-				moveWorkflowToFolderAction,
-			]),
-		);
-	}
-
-	return sanitizeInputSchema(z.discriminatedUnion('action', [...baseActions]));
-}
-
-type Input = z.infer<ReturnType<typeof buildInputSchema>>;
+type Input = {
+	[A in WorkspaceToolAction]: z.infer<(typeof ACTION_SCHEMAS)[A]>;
+}[WorkspaceToolAction];
 
 // ── Suspend/resume helpers ──────────────────────────────────────────────────
 
 type ResumeData = z.infer<typeof resumeSchema> | undefined;
-type SuspendFn = ((payload: z.infer<typeof suspendSchema>) => Promise<void>) | undefined;
 
-function extractCtx(ctx: { agent?: { resumeData?: unknown; suspend?: unknown } }) {
-	return {
-		resumeData: ctx?.agent?.resumeData as ResumeData,
-		suspend: ctx?.agent?.suspend as SuspendFn,
-	};
+function hasSessionGrant(context: InstanceAiContext, grantKey: string): boolean {
+	return context.sessionApprovedToolKeys?.has(grantKey) === true;
+}
+
+/** "Always allow" stores a thread grant, so later calls with the same key skip the approval. */
+async function persistSessionGrantIfRequested(
+	context: InstanceAiContext,
+	resumeData: ResumeData,
+	grantKey: string,
+): Promise<void> {
+	if (resumeData?.approved && resumeData.scope === 'session') {
+		await context.grantSessionToolApproval?.(grantKey);
+	}
+}
+interface WorkspaceToolContext {
+	resumeData: ResumeData;
+	suspend: (payload: z.infer<typeof suspendSchema>) => Promise<never>;
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 async function handleListProjects(context: InstanceAiContext) {
 	const projects = await context.workspaceService!.listProjects();
-	return { projects };
+	// Flag the conversation's own project here rather than naming it in the system
+	// prompt: the prompt is a shared prompt-cache prefix, a tool result is not.
+	const boundProjectId = context.projectId;
+	if (boundProjectId === undefined) return { projects };
+
+	return {
+		projects: projects.map((project) => ({
+			...project,
+			...(project.id === boundProjectId ? { isCurrentProject: true } : {}),
+		})),
+	};
 }
 
 async function handleListTags(context: InstanceAiContext) {
@@ -157,31 +179,34 @@ async function handleListTags(context: InstanceAiContext) {
 async function handleTagWorkflow(
 	context: InstanceAiContext,
 	input: Extract<Input, { action: 'tag-workflow' }>,
-	ctx: { agent?: { resumeData?: unknown; suspend?: unknown } },
+	ctx: WorkspaceToolContext,
 ) {
-	const { resumeData, suspend } = extractCtx(ctx);
+	const { resumeData } = ctx;
 
 	if (context.permissions?.tagWorkflow === 'blocked') {
 		return { appliedTags: [], denied: true, reason: 'Action blocked by admin' };
 	}
 
-	const needsApproval = context.permissions?.tagWorkflow !== 'always_allow';
+	const grantKey = buildWorkspaceSessionGrantKey('tag-workflow');
+	const needsApproval =
+		context.permissions?.tagWorkflow !== 'always_allow' && !hasSessionGrant(context, grantKey);
 
 	// State 1: First call — suspend for confirmation (unless always_allow)
 	if (needsApproval && (resumeData === undefined || resumeData === null)) {
-		await suspend?.({
+		await context.assertInThreadProject?.({ kind: 'workflow', id: input.workflowId });
+		return await ctx.suspend({
 			requestId: nanoid(),
-			message: `Tag workflow "${input.workflowName ?? input.workflowId}" (ID: ${input.workflowId}) with [${input.tags.join(', ')}]?`,
+			message: `Tag ${input.workflowName ?? input.workflowId} (ID: ${input.workflowId}) with [${input.tags.join(', ')}]`,
 			severity: 'info' as const,
 		});
-		// suspend() never resolves — this line is unreachable but satisfies the type checker
-		return { appliedTags: [] };
 	}
 
 	// State 2: Denied
 	if (resumeData !== undefined && resumeData !== null && !resumeData.approved) {
 		return { appliedTags: [], denied: true, reason: 'User denied the action' };
 	}
+
+	await persistSessionGrantIfRequested(context, resumeData, grantKey);
 
 	// State 3: Approved or always_allow — execute
 	const appliedTags = await context.workspaceService!.tagWorkflow(input.workflowId, input.tags);
@@ -191,31 +216,45 @@ async function handleTagWorkflow(
 async function handleCleanupTestExecutions(
 	context: InstanceAiContext,
 	input: Extract<Input, { action: 'cleanup-test-executions' }>,
-	ctx: { agent?: { resumeData?: unknown; suspend?: unknown } },
+	ctx: WorkspaceToolContext,
 ) {
-	const { resumeData, suspend } = extractCtx(ctx);
+	const { resumeData } = ctx;
 
 	if (context.permissions?.cleanupTestExecutions === 'blocked') {
 		return { deletedCount: 0, denied: true, reason: 'Action blocked by admin' };
 	}
 
-	const needsApproval = context.permissions?.cleanupTestExecutions !== 'always_allow';
+	// Checked here, not in the schema: the flattened action schema would apply the bound to every
+	// action. OpenAI strict tool calls must fill this field, and 0 would delete every test execution.
+	if (input.olderThanHours !== undefined && !(input.olderThanHours > 0)) {
+		return {
+			error:
+				'Nothing was deleted: olderThanHours must be greater than 0. Pass 1 to delete executions older than 1 hour.',
+		};
+	}
+
+	const grantKey = buildCleanupTestExecutionsSessionGrantKey(input.workflowId);
+	const needsApproval =
+		context.permissions?.cleanupTestExecutions !== 'always_allow' &&
+		!hasSessionGrant(context, grantKey);
 
 	// State 1: First call — suspend for confirmation (unless always_allow)
 	if (needsApproval && (resumeData === undefined || resumeData === null)) {
+		await context.assertInThreadProject?.({ kind: 'workflow', id: input.workflowId });
 		const hours = input.olderThanHours ?? 1;
-		await suspend?.({
+		return await ctx.suspend({
 			requestId: nanoid(),
-			message: `Delete test executions for workflow "${input.workflowName ?? input.workflowId}" older than ${hours} hour(s)?`,
+			message: `Delete executions for ${input.workflowName ?? input.workflowId} older than ${hours} hour(s)`,
 			severity: 'warning' as const,
 		});
-		return { deletedCount: 0 };
 	}
 
 	// State 2: Denied
 	if (resumeData !== undefined && resumeData !== null && !resumeData.approved) {
 		return { deletedCount: 0, denied: true, reason: 'User denied the action' };
 	}
+
+	await persistSessionGrantIfRequested(context, resumeData, grantKey);
 
 	// State 3: Approved or always_allow — execute
 	const result = await context.workspaceService!.cleanupTestExecutions(input.workflowId, {
@@ -235,9 +274,19 @@ async function handleListFolders(
 async function handleCreateFolder(
 	context: InstanceAiContext,
 	input: Extract<Input, { action: 'create-folder' }>,
-	ctx: { agent?: { resumeData?: unknown; suspend?: unknown } },
+	ctx: WorkspaceToolContext,
 ) {
-	const { resumeData, suspend } = extractCtx(ctx);
+	const { resumeData } = ctx;
+
+	// The provider-facing schema strips `folderNameSchema`'s refinement (MCP tool
+	// schemas can't express custom validators), so the real check runs here — a
+	// slash in the name would make a workflow's folder `path` indistinguishable
+	// from real nesting.
+	const nameCheck = folderNameSchema.safeParse(input.name);
+	if (!nameCheck.success) {
+		return { error: nameCheck.error.issues[0]?.message ?? 'Invalid folder name' };
+	}
+	const name = nameCheck.data;
 
 	if (context.permissions?.createFolder === 'blocked') {
 		return {
@@ -249,17 +298,18 @@ async function handleCreateFolder(
 		};
 	}
 
-	const needsApproval = context.permissions?.createFolder !== 'always_allow';
+	const grantKey = buildWorkspaceSessionGrantKey('create-folder');
+	const needsApproval =
+		context.permissions?.createFolder !== 'always_allow' && !hasSessionGrant(context, grantKey);
 
 	// State 1: First call — suspend for confirmation (unless always_allow)
 	if (needsApproval && (resumeData === undefined || resumeData === null)) {
-		await suspend?.({
+		await context.assertInThreadProject?.({ kind: 'project', id: input.projectId });
+		return await ctx.suspend({
 			requestId: nanoid(),
-			message: `Create folder "${input.name}" in project "${input.projectId}"?`,
+			message: `Create ${name} in project ${input.projectId}`,
 			severity: 'info' as const,
 		});
-		// suspend() never resolves — this line is unreachable but satisfies the type checker
-		return { id: '', name: '', parentFolderId: null };
 	}
 
 	// State 2: Denied
@@ -273,9 +323,11 @@ async function handleCreateFolder(
 		};
 	}
 
+	await persistSessionGrantIfRequested(context, resumeData, grantKey);
+
 	// State 3: Approved or always_allow — execute
 	const folder = await context.workspaceService!.createFolder!(
-		input.name,
+		name,
 		input.projectId,
 		input.parentFolderId,
 	);
@@ -285,9 +337,9 @@ async function handleCreateFolder(
 async function handleDeleteFolder(
 	context: InstanceAiContext,
 	input: Extract<Input, { action: 'delete-folder' }>,
-	ctx: { agent?: { resumeData?: unknown; suspend?: unknown } },
+	ctx: WorkspaceToolContext,
 ) {
-	const { resumeData, suspend } = extractCtx(ctx);
+	const { resumeData } = ctx;
 
 	if (context.permissions?.deleteFolder === 'blocked') {
 		return { success: false, denied: true, reason: 'Action blocked by admin' };
@@ -297,16 +349,12 @@ async function handleDeleteFolder(
 
 	// State 1: First call — suspend for confirmation (unless always_allow)
 	if (needsApproval && (resumeData === undefined || resumeData === null)) {
-		const transferNote = input.transferToFolderId
-			? ` Contents will be moved to folder "${input.transferToFolderName ?? input.transferToFolderId}".`
-			: ' Contents will be flattened to project root and archived.';
-		await suspend?.({
+		await context.assertInThreadProject?.({ kind: 'project', id: input.projectId });
+		return await ctx.suspend({
 			requestId: nanoid(),
-			message: `Delete folder "${input.folderName ?? input.folderId}"?${transferNote}`,
+			message: `Delete ${input.folderName ?? input.folderId}`,
 			severity: 'destructive' as const,
 		});
-		// suspend() never resolves — this line is unreachable but satisfies the type checker
-		return { success: false };
 	}
 
 	// State 2: Denied
@@ -326,31 +374,35 @@ async function handleDeleteFolder(
 async function handleMoveWorkflowToFolder(
 	context: InstanceAiContext,
 	input: Extract<Input, { action: 'move-workflow-to-folder' }>,
-	ctx: { agent?: { resumeData?: unknown; suspend?: unknown } },
+	ctx: WorkspaceToolContext,
 ) {
-	const { resumeData, suspend } = extractCtx(ctx);
+	const { resumeData } = ctx;
 
 	if (context.permissions?.moveWorkflowToFolder === 'blocked') {
 		return { success: false, denied: true, reason: 'Action blocked by admin' };
 	}
 
-	const needsApproval = context.permissions?.moveWorkflowToFolder !== 'always_allow';
+	const grantKey = buildWorkspaceSessionGrantKey('move-workflow-to-folder');
+	const needsApproval =
+		context.permissions?.moveWorkflowToFolder !== 'always_allow' &&
+		!hasSessionGrant(context, grantKey);
 
 	// State 1: First call — suspend for confirmation (unless always_allow)
 	if (needsApproval && (resumeData === undefined || resumeData === null)) {
-		await suspend?.({
+		await context.assertInThreadProject?.({ kind: 'workflow', id: input.workflowId });
+		return await ctx.suspend({
 			requestId: nanoid(),
-			message: `Move workflow "${input.workflowName ?? input.workflowId}" to folder "${input.folderName ?? input.folderId}"?`,
+			message: `Move ${input.workflowName ?? input.workflowId} to folder ${input.folderName ?? input.folderId}`,
 			severity: 'info' as const,
 		});
-		// suspend() never resolves — this line is unreachable but satisfies the type checker
-		return { success: false };
 	}
 
 	// State 2: Denied
 	if (resumeData !== undefined && resumeData !== null && !resumeData.approved) {
 		return { success: false, denied: true, reason: 'User denied the action' };
 	}
+
+	await persistSessionGrantIfRequested(context, resumeData, grantKey);
 
 	// State 3: Approved or always_allow — execute
 	await context.workspaceService!.moveWorkflowToFolder!(input.workflowId, input.folderId);
@@ -359,46 +411,83 @@ async function handleMoveWorkflowToFolder(
 
 // ── Tool factory ────────────────────────────────────────────────────────────
 
-export function createWorkspaceTool(context: InstanceAiContext) {
+/** Actions that only read, so their tools never ask for approval. */
+const READ_ACTIONS = new Set<WorkspaceToolAction>(['list-projects', 'list-tags', 'list-folders']);
+
+const neverSuspend = async (): Promise<never> => {
+	throw new Error('This workspace tool cannot ask for approval');
+};
+
+async function runWorkspaceAction(
+	context: InstanceAiContext,
+	input: Input,
+	ctx: WorkspaceToolContext,
+) {
 	if (!context.workspaceService) {
-		return createTool({
-			id: 'workspace',
-			description: 'Workspace management is not available in this environment.',
-			inputSchema: z.object({ action: z.string() }),
-			// eslint-disable-next-line @typescript-eslint/require-await -- must be async to match execute signature
-			execute: async () => {
-				return { error: 'Workspace service is not available in this environment.' };
-			},
-		});
+		return { error: 'Workspace service is not available in this environment.' };
+	}
+	switch (input.action) {
+		case 'list-projects':
+			return await handleListProjects(context);
+		case 'list-tags':
+			return await handleListTags(context);
+		case 'tag-workflow':
+			return await handleTagWorkflow(context, input, ctx);
+		case 'cleanup-test-executions':
+			return await handleCleanupTestExecutions(context, input, ctx);
+		case 'list-folders':
+			return await handleListFolders(context, input);
+		case 'create-folder':
+			return await handleCreateFolder(context, input, ctx);
+		case 'delete-folder':
+			return await handleDeleteFolder(context, input, ctx);
+		case 'move-workflow-to-folder':
+			return await handleMoveWorkflowToFolder(context, input, ctx);
+	}
+}
+
+/** Builds the tool for one workspace action. */
+export function createWorkspaceActionTool(context: InstanceAiContext, action: WorkspaceToolAction) {
+	const name = INSTANCE_TOOL_NAME_BY_ACTION[action];
+	const schema: z.ZodDiscriminatedUnionOption<'action'> = ACTION_SCHEMAS[action];
+	const tool = new Tool(name)
+		.description(schema.shape.action.description ?? '')
+		.input(sanitizeInputSchema(schema.omit({ action: true })));
+	for (const [legacyName, actions] of getLegacyBuilderToolActions(name)) {
+		tool.legacyActions(legacyName, ...actions);
+	}
+	// The input schema omits `action`, so restore it for the shared handlers.
+	const withAction = (input: unknown) =>
+		({ ...(typeof input === 'object' && input !== null ? input : {}), action }) as Input;
+
+	if (READ_ACTIONS.has(action)) {
+		return tool
+			.handler(
+				async (input) =>
+					await runWorkspaceAction(context, withAction(input), {
+						resumeData: undefined,
+						suspend: neverSuspend,
+					}),
+			)
+			.build();
 	}
 
-	const inputSchema = buildInputSchema(context);
+	return tool
+		.suspend(suspendSchema)
+		.resume(resumeSchema)
+		.handler(
+			async (input, ctx) =>
+				await runWorkspaceAction(context, withAction(input), {
+					resumeData: ctx.resumeData,
+					suspend: ctx.suspend,
+				}),
+		)
+		.build();
+}
 
-	return createTool({
-		id: 'workspace',
-		description: 'Manage workspace resources — projects, tags, folders, and execution cleanup.',
-		inputSchema,
-		suspendSchema,
-		resumeSchema,
-		execute: async (input: Input, ctx) => {
-			switch (input.action) {
-				case 'list-projects':
-					return await handleListProjects(context);
-				case 'list-tags':
-					return await handleListTags(context);
-				case 'tag-workflow':
-					return await handleTagWorkflow(context, input, ctx);
-				case 'cleanup-test-executions':
-					return await handleCleanupTestExecutions(context, input, ctx);
-				case 'list-folders':
-					return await handleListFolders(context, input);
-				case 'create-folder':
-					return await handleCreateFolder(context, input, ctx);
-				case 'delete-folder':
-					return await handleDeleteFolder(context, input, ctx);
-				case 'move-workflow-to-folder':
-					return await handleMoveWorkflowToFolder(context, input, ctx);
-			}
-		},
-	});
+/** Builds the workspace tools this context supports. */
+export function createWorkspaceTools(context: InstanceAiContext) {
+	return getSupportedWorkspaceActions(context).map((action) =>
+		createWorkspaceActionTool(context, action),
+	);
 }

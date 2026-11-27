@@ -1,30 +1,31 @@
 import { Container } from '@n8n/di';
 import { existsSync } from 'node:fs';
+import type { Mock } from 'vitest';
 
 import { InstanceSettings } from '@/instance-settings';
 import { mockInstance } from '@test/utils';
 
 import { BinaryDataConfig } from '../binary-data.config';
 
-jest.mock('node:fs', () => ({
-	existsSync: jest.fn().mockReturnValue(false),
-	renameSync: jest.fn(),
+vi.mock('node:fs', () => ({
+	existsSync: vi.fn().mockReturnValue(false),
+	renameSync: vi.fn(),
 }));
 
 describe('BinaryDataConfig', () => {
 	const n8nFolder = '/test/n8n';
 	const encryptionKey = 'test-encryption-key';
-	console.warn = jest.fn().mockImplementation(() => {});
+	console.warn = vi.fn().mockImplementation(() => {});
 
 	const now = new Date('2025-01-01T01:23:45.678Z');
-	jest.useFakeTimers({ now });
+	vi.useFakeTimers({ now });
 
 	beforeEach(() => {
 		process.env = {};
-		jest.resetAllMocks();
+		vi.resetAllMocks();
 		Container.reset();
 		mockInstance(InstanceSettings, { encryptionKey, n8nFolder });
-		(existsSync as jest.Mock).mockReturnValue(false);
+		(existsSync as Mock).mockReturnValue(false);
 	});
 
 	it('should use default values when no env variables are defined', () => {
@@ -106,11 +107,11 @@ describe('BinaryDataConfig', () => {
 	describe('initialize()', () => {
 		const makeRepo = () =>
 			({
-				findActiveByType: jest.fn(),
-				insertOrIgnore: jest.fn().mockResolvedValue(undefined),
+				findActiveSigningSecret: vi.fn(),
+				seedSigningSecret: vi.fn().mockResolvedValue(undefined),
 			}) as {
-				findActiveByType: jest.Mock;
-				insertOrIgnore: jest.Mock;
+				findActiveSigningSecret: Mock;
+				seedSigningSecret: Mock;
 			};
 
 		afterEach(() => {
@@ -124,45 +125,43 @@ describe('BinaryDataConfig', () => {
 
 			await config.initialize(repo);
 
-			expect(repo.findActiveByType).not.toHaveBeenCalled();
-			expect(repo.insertOrIgnore).not.toHaveBeenCalled();
+			expect(repo.findActiveSigningSecret).not.toHaveBeenCalled();
+			expect(repo.seedSigningSecret).not.toHaveBeenCalled();
 		});
 
 		it('should use the value from the active DB row when one exists', async () => {
 			const repo = makeRepo();
-			repo.findActiveByType.mockResolvedValue({ value: 'db-stored-secret' });
+			repo.findActiveSigningSecret.mockResolvedValue('db-stored-secret');
 			const config = Container.get(BinaryDataConfig);
 
 			await config.initialize(repo);
 
 			expect(config.signingSecret).toEqual('db-stored-secret');
-			expect(repo.findActiveByType).toHaveBeenCalledWith('signing.binary_data');
-			expect(repo.insertOrIgnore).not.toHaveBeenCalled();
+			// Server processes may upgrade a row still in the pre-wrap form.
+			expect(repo.findActiveSigningSecret).toHaveBeenCalledWith('signing.binary_data', {
+				rewrapLegacy: true,
+			});
+			expect(repo.seedSigningSecret).not.toHaveBeenCalled();
 		});
 
 		it('should persist the derived signing secret when no active DB row exists', async () => {
 			const repo = makeRepo();
-			repo.findActiveByType.mockResolvedValue(null);
+			repo.findActiveSigningSecret.mockResolvedValue(null);
 			const config = Container.get(BinaryDataConfig);
 			const derivedSecret = config.signingSecret;
 
 			await config.initialize(repo);
 
-			expect(repo.insertOrIgnore).toHaveBeenCalledWith({
-				type: 'signing.binary_data',
-				value: derivedSecret,
-				status: 'active',
-				algorithm: null,
-			});
+			expect(repo.seedSigningSecret).toHaveBeenCalledWith('signing.binary_data', derivedSecret);
 			expect(config.signingSecret).toEqual(derivedSecret);
 		});
 
 		it('should use the winner row when a concurrent insert is ignored', async () => {
 			const repo = makeRepo();
-			repo.findActiveByType
+			repo.findActiveSigningSecret
 				.mockResolvedValueOnce(null)
-				.mockResolvedValueOnce({ value: 'winner-secret' });
-			repo.insertOrIgnore.mockResolvedValue(undefined);
+				.mockResolvedValueOnce('winner-secret');
+			repo.seedSigningSecret.mockResolvedValue(undefined);
 			const config = Container.get(BinaryDataConfig);
 
 			await config.initialize(repo);

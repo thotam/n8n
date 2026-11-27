@@ -49,6 +49,7 @@ vi.mock('@/features/credentials/credentials.store', () => ({
 vi.mock('@/features/shared/nodeCreator/nodeCreator.store', () => ({
 	useNodeCreatorStore: vi.fn(() => ({
 		actions: [],
+		mergedNodes: [],
 		removeNodeFromMergedNodes,
 	})),
 }));
@@ -74,16 +75,25 @@ vi.mock('../../communityNodes.store', () => ({
 	})),
 }));
 
-vi.mock('@/features/settings/users/users.store', () => ({
+vi.mock('@n8n/stores/users.store', () => ({
 	useUsersStore: vi.fn(() => usersStore),
 }));
 
-vi.mock('@/app/composables/useToast', () => ({
+vi.mock('@n8n/composables/useToast', () => ({
 	useToast: vi.fn(() => ({
 		showMessage: vi.fn(),
 		showError,
 	})),
 }));
+
+vi.mock('@/app/composables/useWorkflowId', async () => {
+	const { computed } = await import('vue');
+	const { useWorkflowsStore } = await import('@/app/stores/workflows.store');
+	return {
+		useWorkflowId: () => computed(() => useWorkflowsStore().workflowId),
+		useRouteWorkflowId: () => computed(() => useWorkflowsStore().workflowId),
+	};
+});
 
 vi.mock('@/features/shared/nodeCreator/composables/useViewStacks', () => ({
 	useViewStacks: vi.fn(() => ({
@@ -134,6 +144,7 @@ describe('CommunityNodeDetails', () => {
 	beforeEach(() => {
 		pinia = createTestingPinia();
 		setActivePinia(pinia);
+		installPackage.mockResolvedValue({ packageName: 'n8n-nodes-test', installedNodes: [] });
 	});
 
 	afterEach(() => {
@@ -153,7 +164,7 @@ describe('CommunityNodeDetails', () => {
 		await waitFor(() => expect(removeNodeFromMergedNodes).toHaveBeenCalled());
 
 		expect(getCommunityNodeAttributes).toHaveBeenCalledWith('n8n-nodes-preview-test.OtherNode');
-		expect(installPackage).toHaveBeenCalledWith('n8n-nodes-test', true, '1.0.0');
+		expect(installPackage).toHaveBeenCalledWith('n8n-nodes-test', '1.0.0');
 		expect(fetchCredentialTypes).toHaveBeenCalledWith(true);
 		expect(getAllNodeCreateElements).toHaveBeenCalled();
 		expect(popViewStack).toHaveBeenCalled();

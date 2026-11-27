@@ -1,15 +1,23 @@
+import { createExecutionRef, type ExecutionDataPayload } from '@n8n/backend-services';
 import { createWorkflow, testDb } from '@n8n/backend-test-utils';
-import { ExecutionDataRepository, ExecutionRepository } from '@n8n/db';
+import {
+	ExecutionData,
+	ExecutionDataRepository,
+	ExecutionRepository,
+	TransactionRunner,
+} from '@n8n/db';
+import type { EntityManager } from '@n8n/db';
 import { Container } from '@n8n/di';
+import { DataSource, type Repository } from '@n8n/typeorm';
 
 import { DbStore } from '../db-store';
-import { createExecutionRef } from '../types';
-import type { ExecutionDataPayload } from '../types';
+import { MissingExecutionDataError } from '../missing-execution-data.error';
 import { payload, workflowId } from './mocks';
 
 let dbStore: DbStore;
-let repository: ExecutionDataRepository;
+let repository: Repository<ExecutionData>;
 let executionRepository: ExecutionRepository;
+let em: EntityManager;
 
 async function createExecution() {
 	const execution = await executionRepository.save({
@@ -27,8 +35,9 @@ async function createExecution() {
 
 beforeAll(async () => {
 	await testDb.init();
-	repository = Container.get(ExecutionDataRepository);
+	repository = Container.get(DataSource).getRepository(ExecutionData);
 	executionRepository = Container.get(ExecutionRepository);
+	em = executionRepository.manager;
 	dbStore = Container.get(DbStore);
 	await createWorkflow({ id: workflowId });
 });
@@ -46,25 +55,38 @@ describe('write', () => {
 		const execution = await createExecution();
 		const ref = createExecutionRef(workflowId, execution.id);
 
-		await dbStore.write(ref, payload);
+		await dbStore.write(ref, payload, em);
 
 		const stored = await repository.findOneBy({ executionId: execution.id });
 
 		expect(stored).toMatchObject(payload);
 	});
 
+	it('should return the byte size of the stored bundle', async () => {
+		const execution = await createExecution();
+		const ref = createExecutionRef(workflowId, execution.id);
+
+		const bytes = await dbStore.write(ref, payload, em);
+
+		const expected =
+			Buffer.byteLength(payload.data, 'utf8') +
+			Buffer.byteLength(JSON.stringify(payload.workflowData), 'utf8') +
+			Buffer.byteLength(payload.workflowVersionId ?? '', 'utf8');
+		expect(bytes).toBe(expected);
+	});
+
 	it('should overwrite on duplicate `executionId`', async () => {
 		const execution = await createExecution();
 		const ref = createExecutionRef(workflowId, execution.id);
 
-		await dbStore.write(ref, payload);
+		await dbStore.write(ref, payload, em);
 
 		const updatedPayload: ExecutionDataPayload = {
 			...payload,
 			data: '[[{"json":{"updated":true}},null]]',
 		};
 
-		await dbStore.write(ref, updatedPayload);
+		await dbStore.write(ref, updatedPayload, em);
 
 		const count = await repository.count();
 		expect(count).toBe(1);
@@ -74,16 +96,45 @@ describe('write', () => {
 	});
 });
 
+describe('overwrite', () => {
+	it('should replace data and snapshot in place and return the byte size', async () => {
+		const execution = await createExecution();
+		const ref = createExecutionRef(workflowId, execution.id);
+		await dbStore.write(ref, payload, em);
+
+		const updatedPayload: ExecutionDataPayload = {
+			...payload,
+			data: '[[{"json":{"updated":true}},null]]',
+		};
+		const bytes = await dbStore.overwrite(ref, updatedPayload, em);
+
+		const expected =
+			Buffer.byteLength(updatedPayload.data, 'utf8') +
+			Buffer.byteLength(JSON.stringify(updatedPayload.workflowData), 'utf8') +
+			Buffer.byteLength(updatedPayload.workflowVersionId ?? '', 'utf8');
+		expect(bytes).toBe(expected);
+
+		const stored = await repository.findOneBy({ executionId: execution.id });
+		expect(stored).toMatchObject(updatedPayload);
+	});
+
+	it('should throw MissingExecutionDataError when the row does not exist', async () => {
+		const ref = createExecutionRef(workflowId, '999');
+
+		await expect(dbStore.overwrite(ref, payload, em)).rejects.toThrow(MissingExecutionDataError);
+	});
+});
+
 describe('read', () => {
 	it('should retrieve stored execution data', async () => {
 		const execution = await createExecution();
 		const ref = createExecutionRef(workflowId, execution.id);
 
-		await dbStore.write(ref, payload);
+		await dbStore.write(ref, payload, em);
 
 		const stored = await dbStore.read(ref);
 
-		expect(stored).toMatchObject({ ...payload, version: 1 });
+		expect(stored).toMatchObject(payload);
 	});
 
 	it('should return `null` for non-existent execution', async () => {
@@ -93,48 +144,95 @@ describe('read', () => {
 	});
 });
 
-describe('delete', () => {
-	it('should delete data for single execution', async () => {
+describe('readMany', () => {
+	it('should return a map of payloads keyed by executionId, omitting missing ones', async () => {
+		const [a, b] = await Promise.all([createExecution(), createExecution()]);
+		const refA = createExecutionRef(workflowId, a.id);
+		const refB = createExecutionRef(workflowId, b.id);
+		await dbStore.write(refA, payload, em);
+
+		const payloads = await dbStore.readMany([refA, refB]);
+
+		expect(payloads.size).toBe(1);
+		expect(payloads.get(a.id)).toMatchObject(payload);
+		expect(payloads.has(b.id)).toBe(false);
+	});
+
+	it('should return an empty map for an empty array', async () => {
+		const payloads = await dbStore.readMany([]);
+
+		expect(payloads.size).toBe(0);
+	});
+
+	it('should batch the IN-clause so a large id set stays within the DB parameter limit', async () => {
+		const refs = Array.from({ length: 2500 }, (_, i) =>
+			createExecutionRef(workflowId, String(100000 + i)),
+		);
+
+		await expect(dbStore.readMany(refs)).resolves.toEqual(new Map());
+	});
+});
+
+describe('readWorkflowData', () => {
+	it('should retrieve only the workflow snapshot', async () => {
 		const execution = await createExecution();
 		const ref = createExecutionRef(workflowId, execution.id);
 
-		await dbStore.write(ref, payload);
+		await dbStore.write(ref, payload, em);
 
-		await dbStore.delete(ref);
+		const snapshot = await dbStore.readWorkflowData(ref);
 
-		const result = await repository.findOneBy({ executionId: execution.id });
+		expect(snapshot).toMatchObject({
+			workflowData: payload.workflowData,
+			workflowVersionId: payload.workflowVersionId,
+		});
+	});
+
+	it('should return `null` for non-existent execution', async () => {
+		const result = await dbStore.readWorkflowData(createExecutionRef(workflowId, '999'));
+
 		expect(result).toBeNull();
 	});
+});
 
-	it('should delete data for multiple executions', async () => {
-		const executions = await Promise.all([createExecution(), createExecution(), createExecution()]);
-
-		const refs = executions.map((e) => createExecutionRef(workflowId, e.id));
-
-		for (const ref of refs) {
-			await dbStore.write(ref, payload);
-		}
-
-		await dbStore.delete([refs[0], refs[1]]);
-
-		const remaining = await repository.find();
-		expect(remaining).toHaveLength(1);
-		expect(remaining[0].executionId).toBe(executions[2].id);
-	});
-
-	it('should skip deletion on empty array', async () => {
+describe('getDataByteSize', () => {
+	it('should return the stored data length without the workflow snapshot', async () => {
 		const execution = await createExecution();
 		const ref = createExecutionRef(workflowId, execution.id);
+		await dbStore.write(ref, payload, em);
 
-		await dbStore.write(ref, payload);
-
-		await dbStore.delete([]);
-
-		const count = await repository.count();
-		expect(count).toBe(1);
+		await expect(dbStore.getDataByteSize(ref)).resolves.toBe(payload.data.length);
 	});
 
-	it('should not throw on deleting a non-existent execution', async () => {
-		await expect(dbStore.delete(createExecutionRef(workflowId, '999'))).resolves.toBeUndefined();
+	it('should return null for a missing row', async () => {
+		await expect(
+			dbStore.getDataByteSize(createExecutionRef(workflowId, '999')),
+		).resolves.toBeNull();
+	});
+});
+
+describe('ExecutionDataRepository', () => {
+	it('should read payloads, snapshots and sizes in the active transaction', async () => {
+		const execution = await createExecution();
+		await dbStore.write(createExecutionRef(workflowId, execution.id), payload, em);
+		const executionDataRepository = Container.get(ExecutionDataRepository);
+
+		await Container.get(TransactionRunner).run({}, async (ctx) => {
+			await expect(
+				executionDataRepository.findPayloadByExecutionId(execution.id, ctx),
+			).resolves.toEqual(payload);
+			await expect(
+				executionDataRepository.findWorkflowSnapshotByExecutionId(execution.id, ctx),
+			).resolves.toEqual({
+				workflowData: payload.workflowData,
+				workflowVersionId: payload.workflowVersionId,
+			});
+			await expect(
+				executionDataRepository.findPayloadsByExecutionIds([execution.id], ctx),
+			).resolves.toEqual([{ ...payload, executionId: execution.id }]);
+			await expect(executionDataRepository.getDataByteSize(execution.id, ctx)).resolves.toBe(
+				payload.data.length,
+			);
+		});
 	});
 });

@@ -44,15 +44,22 @@ export const useDataTableColumns = ({
 	onAddColumn,
 	isTextEditorOpen,
 	readOnly = computed(() => false),
+	schemaReadOnly = computed(() => false),
+	schemaReadOnlyTooltip = computed(() => undefined),
 }: {
 	onDeleteColumn: (columnId: string) => void;
 	onRenameColumn: (columnId: string, columnName: string) => void;
 	onAddRowClick: () => void;
 	onAddColumn: (column: DataTableColumnCreatePayload) => Promise<AddColumnResponse>;
 	isTextEditorOpen: Ref<boolean>;
+	/** Locks the whole grid: rows and columns. */
 	readOnly?: Ref<boolean>;
+	/** Locks only the columns, for example on a protected instance. Rows stay editable. */
+	schemaReadOnly?: Ref<boolean>;
+	schemaReadOnlyTooltip?: Ref<string | undefined>;
 }) => {
 	const colDefs = ref<ColDef[]>([]);
+	const isSchemaReadOnly = () => readOnly.value || schemaReadOnly.value;
 	const { mapToAGCellType } = useDataTableTypes();
 	const i18n = useI18n();
 
@@ -73,8 +80,8 @@ export const useDataTableColumns = ({
 			headerComponentParams: {
 				onDelete: onDeleteColumn,
 				onRename: onRenameColumn,
-				allowMenuActions: !readOnly.value,
-				readOnly: readOnly.value,
+				allowMenuActions: true,
+				readOnly: isSchemaReadOnly,
 			},
 			cellEditorPopup: false,
 			cellDataType: mapToAGCellType(col.type),
@@ -162,7 +169,7 @@ export const useDataTableColumns = ({
 						if (params.value === ADD_ROW_ROW_ID) {
 							return {
 								component: AddRowButton,
-								params: { onClick: onAddRowClick, disabled: readOnly.value },
+								params: { onClick: onAddRowClick, disabled: () => readOnly.value },
 							};
 						}
 						return undefined;
@@ -205,7 +212,12 @@ export const useDataTableColumns = ({
 					minWidth: MIN_ADD_COLUMN_BUTTON_COLUMN_WIDTH,
 					flex: 1,
 					headerComponent: AddColumnButton,
-					headerComponentParams: { onAddColumn, disabled: readOnly.value },
+					headerComponentParams: {
+						onAddColumn,
+						disabled: isSchemaReadOnly,
+						disabledTooltip: () =>
+							!readOnly.value && schemaReadOnly.value ? schemaReadOnlyTooltip.value : undefined,
+					},
 				},
 			),
 		];

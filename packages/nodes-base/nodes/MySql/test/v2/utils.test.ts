@@ -1,15 +1,17 @@
-import { mock } from 'jest-mock-extended';
+import { mock } from 'vitest-mock-extended';
 import type { IExecuteFunctions, INode } from 'n8n-workflow';
 
-import type { SortRule, WhereClause } from '../../v2/helpers/interfaces';
+import type { Mysql2Pool, QueryValues, SortRule, WhereClause } from '../../v2/helpers/interfaces';
 import * as utils from '../../v2/helpers/utils';
 import {
 	prepareQueryAndReplacements,
+	prepareSafeQuery,
 	wrapData,
 	addWhereClauses,
 	addSortRules,
 	replaceEmptyStringsByNulls,
 	escapeSqlIdentifier,
+	getUniqueKeyColumns,
 	splitQueryToStatements,
 } from '../../v2/helpers/utils';
 
@@ -110,34 +112,31 @@ describe('Test MySql V2, prepareQueryAndReplacements', () => {
 		);
 	});
 
-	it('should handle escaped double quotes correctly', () => {
+	it('should not treat a double quote inside a single-quoted string as closing it', () => {
 		const preparedQuery = prepareQueryAndReplacements(
-			"INSERT INTO test_table(content) VALUES('Don\"'t replace $1 here')",
+			"INSERT INTO test_table(content) VALUES('Don\"t replace $1 here')",
 			2.5,
 			['should_not_appear', 123],
 		);
 		expect(preparedQuery).toBeDefined();
 		expect(preparedQuery.query).toEqual(
-			"INSERT INTO test_table(content) VALUES('Don\"'t replace $1 here')",
+			"INSERT INTO test_table(content) VALUES('Don\"t replace $1 here')",
 		);
 	});
 
+	// The two code paths can't be distinguished by spying on the (sibling, ESM-bound)
+	// prepareQueryLegacy call under Vitest, so assert the observable behaviour instead:
+	// legacy processing does not validate referenced parameters, new processing does.
 	it('should use legacy processing for versions < 2.5', () => {
-		const legacySpy = jest.spyOn(utils, 'prepareQueryLegacy');
-
-		prepareQueryAndReplacements('SELECT * FROM $1:name WHERE id = $2', 2.4, ['users', 123]);
-
-		expect(legacySpy).toHaveBeenCalledWith('SELECT * FROM $1:name WHERE id = $2', ['users', 123]);
-
-		legacySpy.mockRestore();
+		expect(() =>
+			prepareQueryAndReplacements('SELECT * FROM users WHERE id = $4', 2.4, ['value1', 'value2']),
+		).not.toThrow();
 	});
 
 	it('should use new processing for versions >= 2.5', () => {
-		const legacySpy = jest.spyOn(utils, 'prepareQueryLegacy');
-
-		prepareQueryAndReplacements('SELECT * FROM $1:name WHERE id = $2', 2.5, ['users', 123]);
-
-		expect(legacySpy).not.toHaveBeenCalled();
+		expect(() =>
+			prepareQueryAndReplacements('SELECT * FROM users WHERE id = $4', 2.5, ['value1', 'value2']),
+		).toThrow('Parameter $4 referenced in query but no replacement value provided at index 4');
 	});
 
 	it('should throw error when parameter is referenced but no replacement value provided', () => {
@@ -168,6 +167,46 @@ describe('Test MySql V2, prepareQueryAndReplacements', () => {
 				['123', 'John'], // Correct number of values
 			);
 		}).not.toThrow();
+	});
+
+	it('should throw a clear error for a null identifier value, both legacy and current versions', () => {
+		const valuesWithNull = [null, 1] as unknown as QueryValues;
+
+		expect(() =>
+			prepareQueryAndReplacements('SELECT * FROM $1:name WHERE id = $2', 2.5, valuesWithNull),
+		).toThrow('Parameter $1 has no value to use as an identifier');
+
+		expect(() =>
+			prepareQueryAndReplacements('SELECT * FROM $1:name WHERE id = $2', 2.4, valuesWithNull),
+		).toThrow('Parameter $1 has no value to use as an identifier');
+	});
+});
+
+describe('Test MySql, prepareSafeQuery', () => {
+	it('should bind placeholders outside quotes as parameters', () => {
+		const preparedQuery = prepareSafeQuery('select * from users where id = $1', ['1 OR 1=1']);
+		expect(preparedQuery.query).toEqual('select * from users where id = ?');
+		expect(preparedQuery.values).toEqual(['1 OR 1=1']);
+	});
+
+	it('should leave placeholders inside quoted strings untouched', () => {
+		const preparedQuery = prepareSafeQuery("select * from users where label = '$5' and id = $1", [
+			'7',
+		]);
+		expect(preparedQuery.query).toEqual("select * from users where label = '$5' and id = ?");
+		expect(preparedQuery.values).toEqual(['7']);
+	});
+
+	it('should return the query unchanged when replacements are undefined', () => {
+		const preparedQuery = prepareSafeQuery('select * from users where id = $1');
+		expect(preparedQuery.query).toEqual('select * from users where id = $1');
+		expect(preparedQuery.values).toEqual([]);
+	});
+
+	it('should throw when a referenced parameter has no replacement value', () => {
+		expect(() => prepareSafeQuery('select * from users where id = $1', [])).toThrow(
+			'Parameter $1 referenced in query but no replacement value provided at index 1',
+		);
 	});
 });
 
@@ -391,7 +430,7 @@ describe('Test MySql V2, splitQueryToStatements', () => {
 		test.each(invalidOperations)(
 			'getWhereClauses throws an exception for "%s" operation',
 			(operation) => {
-				const getNodeParameterMock = jest.fn().mockReturnValue({
+				const getNodeParameterMock = vi.fn().mockReturnValue({
 					values: [
 						{
 							column: 'test',
@@ -430,12 +469,54 @@ describe('Test MySql V2, splitQueryToStatements', () => {
 						value: 'angry',
 					},
 				];
-				const getNodeParameterMock = jest.fn().mockReturnValue({
+				const getNodeParameterMock = vi.fn().mockReturnValue({
 					values: clauses,
 				});
 				const ctx = mock<IExecuteFunctions>({ getNodeParameter: getNodeParameterMock });
 				expect(utils.getWhereClauses(ctx, 0)).toBe(clauses);
 			},
 		);
+	});
+});
+
+describe('Test MySql V2, getUniqueKeyColumns', () => {
+	it('should return lower-cased single-column unique keys of a qualified table', async () => {
+		const pool = {
+			query: vi
+				.fn()
+				.mockResolvedValueOnce([
+					[
+						{ Key_name: 'PRIMARY', Non_unique: '0', Seq_in_index: 1, Column_name: 'id', Null: '' },
+						{
+							Key_name: 'uq_email',
+							Non_unique: 0,
+							Seq_in_index: 1,
+							Column_name: 'Email',
+							Null: 'YES',
+						},
+						{ Key_name: 'uq_pair', Non_unique: 0, Seq_in_index: 1, Column_name: 'a' },
+						{ Key_name: 'uq_pair', Non_unique: 0, Seq_in_index: 2, Column_name: 'b' },
+						{ Key_name: 'uq_expr', Non_unique: 0, Seq_in_index: 1, Column_name: null },
+						{ Key_name: 'uq_mixed', Non_unique: 0, Seq_in_index: 1, Column_name: 'c' },
+						{ Key_name: 'uq_mixed', Non_unique: 0, Seq_in_index: 2, Column_name: null },
+						{ Key_name: 'idx_name', Non_unique: 1, Seq_in_index: 1, Column_name: 'name' },
+					],
+					[],
+				])
+				.mockResolvedValueOnce([
+					[
+						{ Field: 'id', Type: 'BIGINT unsigned' },
+						{ Field: 'Email', Type: 'varchar(64)' },
+					],
+					[],
+				]),
+		} as unknown as Mysql2Pool;
+
+		await expect(getUniqueKeyColumns(pool, 'otherdb.orders')).resolves.toEqual([
+			{ column: 'id', nullable: false, type: 'bigint unsigned' },
+			{ column: 'email', nullable: true, type: 'varchar(64)' },
+		]);
+		expect(pool.query).toHaveBeenCalledWith('SHOW COLUMNS FROM `otherdb`.`orders`');
+		expect(pool.query).toHaveBeenCalledWith('SHOW INDEX FROM `otherdb`.`orders`');
 	});
 });

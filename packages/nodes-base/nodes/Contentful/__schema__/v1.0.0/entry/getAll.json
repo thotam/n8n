@@ -4,8 +4,175 @@
         "fields": {
             "type": "object",
             "properties": {
+                "author": {
+                    "type": "object",
+                    "properties": {
+                        "sys": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string"
+                                },
+                                "linkType": {
+                                    "type": "string"
+                                },
+                                "type": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                },
+                "content": {
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "content": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {}
+                                                    }
+                                                },
+                                                "data": {
+                                                    "type": "object",
+                                                    "properties": {}
+                                                },
+                                                "marks": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {}
+                                                    }
+                                                },
+                                                "nodeType": {
+                                                    "type": "string"
+                                                },
+                                                "value": {
+                                                    "type": "string"
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "data": {
+                                        "type": "object",
+                                        "properties": {
+                                            "target": {
+                                                "type": "object",
+                                                "properties": {}
+                                            }
+                                        }
+                                    },
+                                    "nodeType": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        },
+                        "nodeType": {
+                            "type": "string"
+                        }
+                    }
+                },
+                "coverImage": {
+                    "type": "object",
+                    "properties": {
+                        "sys": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string"
+                                },
+                                "linkType": {
+                                    "type": "string"
+                                },
+                                "type": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                },
+                "date": {
+                    "type": "string"
+                },
                 "internalName": {
                     "type": "string"
+                },
+                "metaContentType": {
+                    "type": "object",
+                    "properties": {
+                        "sys": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string"
+                                },
+                                "linkType": {
+                                    "type": "string"
+                                },
+                                "type": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                },
+                "seo": {
+                    "type": "object",
+                    "properties": {
+                        "sys": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string"
+                                },
+                                "linkType": {
+                                    "type": "string"
+                                },
+                                "type": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "title": {
+                    "type": "string"
+                },
+                "topic": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "sys": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {
+                                        "type": "string"
+                                    },
+                                    "linkType": {
+                                        "type": "string"
+                                    },
+                                    "type": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         },
@@ -96,5 +263,5 @@
             }
         }
     },
-    "version": 2
+    "version": 4
 }

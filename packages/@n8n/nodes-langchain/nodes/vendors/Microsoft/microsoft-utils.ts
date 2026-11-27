@@ -8,33 +8,39 @@ import type {
 } from '@microsoft/agents-hosting';
 
 import { MemoryStorage, AgentApplication, CloudAdapter } from '@microsoft/agents-hosting';
+import { TracingSourcesConfig } from '@n8n/config';
+import { Container } from '@n8n/di';
 import {
 	NodeOperationError,
 	type IDataObject,
 	type IWebhookFunctions,
 	type INodePropertyOptions,
+	type NodeEgressFilter,
 } from 'n8n-workflow';
 
 import {
-	ExecutionType,
-	type InvokeAgentDetails,
-	InvokeAgentScope,
-	type TenantDetails,
+	AgenticTokenCacheInstance,
 	BaggageBuilder,
-	ObservabilityManager,
-	type Builder,
-	defaultObservabilityConfigurationProvider,
-} from '@microsoft/agents-a365-observability';
+	InvokeAgentScope,
+} from '@microsoft/opentelemetry';
 import { type Activity, ActivityTypes } from '@microsoft/agents-activity';
-import { v4 as uuid } from 'uuid';
 import { invokeAgent } from './langchain-utils';
 import {
 	McpToolServerConfigurationService,
 	defaultToolingConfigurationProvider,
+	resolveTokenScopeForServer,
+	Utility as MicrosoftToolingUtility,
+	type MCPServerConfig,
+	type ToolOptions,
 } from '@microsoft/agents-a365-tooling';
+import {
+	AgenticAuthenticationService,
+	Utility as MicrosoftRuntimeUtility,
+} from '@microsoft/agents-a365-runtime';
 
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StructuredToolkit } from 'n8n-core';
+import { proxyFetch } from '@n8n/ai-utilities';
 import { connectMcpClient, getAllTools } from '../../mcp/shared/utils';
 import {
 	buildMcpToolName,
@@ -131,12 +137,202 @@ export const microsoftMcpServers: INodePropertyOptions[] = [
 ];
 
 const MS_TENANT_ID_HEADER = 'x-ms-tenant-id';
+const MICROSOFT_TOOL_OPTIONS: ToolOptions = { orchestratorName: 'LangChain' };
 
-function isMicrosoftObservabilityEnabled(): boolean {
-	return (
-		process.env.ENABLE_OBSERVABILITY === 'true' &&
-		process.env.ENABLE_A365_OBSERVABILITY_EXPORTER === 'true'
-	);
+function hasAuthorizationHeader(headers: Record<string, string>) {
+	return Object.keys(headers).some((headerName) => headerName.toLowerCase() === 'authorization');
+}
+
+function getAuthorizationHeader(headers: Record<string, string> | undefined) {
+	if (!headers) return undefined;
+
+	for (const [headerName, headerValue] of Object.entries(headers)) {
+		if (headerName.toLowerCase() === 'authorization') {
+			return headerValue;
+		}
+	}
+
+	return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getStringProperty(value: Record<string, unknown>, key: string) {
+	const property = value[key];
+	return typeof property === 'string' ? property : undefined;
+}
+
+function getHeadersProperty(value: Record<string, unknown>) {
+	const headers = value.headers;
+	if (!isRecord(headers)) return undefined;
+
+	const result: Record<string, string> = {};
+	for (const [headerName, headerValue] of Object.entries(headers)) {
+		if (typeof headerValue === 'string') {
+			result[headerName] = headerValue;
+		}
+	}
+
+	return result;
+}
+
+function getRawMcpServers(payload: unknown) {
+	if (Array.isArray(payload)) return payload;
+	if (!isRecord(payload)) return undefined;
+
+	const mcpServers = payload.mcpServers;
+	if (Array.isArray(mcpServers)) return mcpServers;
+
+	const value = payload.value;
+	if (Array.isArray(value)) return value;
+
+	return undefined;
+}
+
+function getMcpPlatformBaseUrl() {
+	return defaultToolingConfigurationProvider.getConfiguration().mcpPlatformEndpoint;
+}
+
+function getToolingGatewayUrl(agenticAppId: string) {
+	return `${getMcpPlatformBaseUrl()}/agents/v2/${agenticAppId}/mcpServers`;
+}
+
+function getMcpServerUrl(mcpServerName: string) {
+	return `${getMcpPlatformBaseUrl()}/agents/servers/${mcpServerName}/`;
+}
+
+function normalizeMcpServerConfig(rawServer: unknown): MCPServerConfig | undefined {
+	if (!isRecord(rawServer)) return undefined;
+
+	const mcpServerName =
+		getStringProperty(rawServer, 'mcpServerName') ??
+		getStringProperty(rawServer, 'mcpServerUniqueName');
+	if (!mcpServerName) return undefined;
+
+	return {
+		mcpServerName,
+		url: getStringProperty(rawServer, 'url') ?? getMcpServerUrl(mcpServerName),
+		headers: getHeadersProperty(rawServer),
+		audience: getStringProperty(rawServer, 'audience'),
+		scope: getStringProperty(rawServer, 'scope'),
+		publisher: getStringProperty(rawServer, 'publisher'),
+	};
+}
+
+async function getMcpServerConfigsWithoutAudienceTokens(
+	turnContext: TurnContext,
+	mcpAuthToken: string,
+	secureEgressFilter: NodeEgressFilter,
+) {
+	MicrosoftToolingUtility.ValidateAuthToken(mcpAuthToken);
+
+	const agenticAppId = MicrosoftRuntimeUtility.ResolveAgentIdentity(turnContext, mcpAuthToken);
+	const endpoint = getToolingGatewayUrl(agenticAppId);
+	const response = await proxyFetch({
+		input: endpoint,
+		init: {
+			headers: MicrosoftToolingUtility.GetToolRequestHeaders(
+				mcpAuthToken,
+				turnContext,
+				MICROSOFT_TOOL_OPTIONS,
+			),
+		},
+		egressFilter: secureEgressFilter,
+	});
+
+	if (!response.ok) {
+		throw new Error(`Failed to read MCP servers from endpoint: ${response.status}`);
+	}
+
+	const payload: unknown = await response.json();
+	const rawServers = getRawMcpServers(payload);
+	if (!rawServers) {
+		// Log only the payload type, never the raw body: it's an untrusted external
+		// response that may carry sensitive values.
+		console.error('Microsoft MCP server discovery returned an unsupported payload shape', {
+			payloadType: Array.isArray(payload) ? 'array' : typeof payload,
+		});
+		throw new Error('Failed to read MCP servers from endpoint: response is not a server list');
+	}
+
+	const servers = rawServers
+		.map((rawServer) => normalizeMcpServerConfig(rawServer))
+		.filter((server): server is MCPServerConfig => server !== undefined);
+
+	console.warn(`Microsoft MCP server discovery completed: ${servers.length} servers found`);
+
+	return servers;
+}
+
+async function attachMcpServerAuthorization(
+	server: MCPServerConfig,
+	turnContext: TurnContext,
+	authorization: Authorization,
+	mcpAuthToken: string,
+) {
+	const sharedScope =
+		defaultToolingConfigurationProvider.getConfiguration().mcpPlatformAuthenticationScope;
+	const scope = resolveTokenScopeForServer(server, sharedScope);
+
+	if (scope === sharedScope && hasAuthorizationHeader(server.headers ?? {})) return server;
+
+	const token =
+		scope === sharedScope
+			? mcpAuthToken
+			: await AgenticAuthenticationService.GetAgenticUserToken(
+					authorization,
+					'agentic',
+					turnContext,
+					[scope],
+				);
+
+	if (!token) {
+		throw new Error(`Failed to obtain token for MCP server '${server.mcpServerName}'`);
+	}
+
+	return {
+		...server,
+		headers: {
+			...server.headers,
+			Authorization: `Bearer ${token}`,
+		},
+	};
+}
+
+function getMcpServerHeaders(
+	server: MCPServerConfig,
+	turnContext: TurnContext,
+	mcpAuthToken: string,
+	tenantId: string | undefined,
+) {
+	const headers: Record<string, string> = {
+		...MicrosoftToolingUtility.GetToolRequestHeaders(
+			mcpAuthToken,
+			turnContext,
+			MICROSOFT_TOOL_OPTIONS,
+		),
+	};
+
+	for (const [headerName, headerValue] of Object.entries(server.headers ?? {})) {
+		if (headerName.toLowerCase() !== 'authorization') {
+			headers[headerName] = headerValue;
+		}
+	}
+
+	const serverAuthorization = getAuthorizationHeader(server.headers);
+	if (serverAuthorization) {
+		headers.Authorization = serverAuthorization;
+	} else if (mcpAuthToken && !hasAuthorizationHeader(headers)) {
+		headers.Authorization = `Bearer ${mcpAuthToken}`;
+	}
+
+	if (tenantId) {
+		headers[MS_TENANT_ID_HEADER] = tenantId;
+	}
+
+	return headers;
 }
 
 export function createMicrosoftAgentApplication(credentials: MicrosoftAgent365Credentials) {
@@ -156,7 +352,7 @@ export function createMicrosoftAgentApplication(credentials: MicrosoftAgent365Cr
 		},
 	});
 
-	return agent;
+	return { agent, authConfig };
 }
 
 export async function getMicrosoftMcpTools(
@@ -164,15 +360,29 @@ export async function getMicrosoftMcpTools(
 	authorization: Authorization,
 	mcpAuthToken: string,
 	selectedTools: string[] | undefined,
+	secureEgressFilter: NodeEgressFilter,
 ) {
 	const configService: McpToolServerConfigurationService = new McpToolServerConfigurationService();
 
-	let servers = await configService.listToolServers(
-		turnContext,
-		authorization,
-		'agentic',
-		mcpAuthToken,
-	);
+	let shouldAttachServerAuthorization = false;
+	let servers: MCPServerConfig[];
+	try {
+		servers = await configService.listToolServers(
+			turnContext,
+			authorization,
+			'agentic',
+			mcpAuthToken,
+			MICROSOFT_TOOL_OPTIONS,
+		);
+	} catch (error) {
+		console.warn('Microsoft SDK listToolServers failed, falling back to direct discovery');
+		servers = await getMcpServerConfigsWithoutAudienceTokens(
+			turnContext,
+			mcpAuthToken,
+			secureEgressFilter,
+		);
+		shouldAttachServerAuthorization = true;
+	}
 
 	if (servers.length === 0) return undefined;
 
@@ -189,24 +399,37 @@ export async function getMicrosoftMcpTools(
 	const timeout = 60000;
 
 	for (const server of servers) {
-		const headers: Record<string, string> = {};
-		if (mcpAuthToken) {
-			headers['Authorization'] = `Bearer ${mcpAuthToken}`;
+		let authorizedServer = server;
+		if (shouldAttachServerAuthorization) {
+			try {
+				authorizedServer = await attachMcpServerAuthorization(
+					server,
+					turnContext,
+					authorization,
+					mcpAuthToken,
+				);
+			} catch (error) {
+				console.warn(`Skipping MCP server ${server.mcpServerName}: failed to authorize`, error);
+				continue;
+			}
 		}
-		if (tenantId) {
-			headers[MS_TENANT_ID_HEADER] = tenantId;
-		}
+
+		const headers = getMcpServerHeaders(authorizedServer, turnContext, mcpAuthToken, tenantId);
 
 		const clientResult = await connectMcpClient({
 			serverTransport: 'httpStreamable', // Microsoft servers use HTTP
-			endpointUrl: server.url,
+			endpointUrl: authorizedServer.url,
 			headers,
 			name: 'Microsoft-Agent-365',
 			version: 1,
+			secureEgressFilter,
 		});
 
 		if (!clientResult.ok) {
-			console.error(`Failed to connect to MCP server ${server.mcpServerName}:`, clientResult.error);
+			console.warn(
+				`Skipping MCP server ${server.mcpServerName}: failed to connect`,
+				clientResult.error,
+			);
 			continue;
 		}
 
@@ -217,7 +440,7 @@ export async function getMicrosoftMcpTools(
 		try {
 			mcpTools = await getAllTools(client);
 		} catch (error) {
-			console.error(`Failed to get tools from MCP server ${server.mcpServerName}:`, error);
+			console.warn(`Skipping MCP server ${server.mcpServerName}: failed to list tools`, error);
 			continue;
 		}
 
@@ -274,38 +497,36 @@ export const configureActivityCallback = (
 	activityCapture: ActivityCapture,
 ) => {
 	const systemPrompt = nodeContext.getNodeParameter('systemPrompt') as string;
-	const { clientId, tenantId } = credentials;
 
 	return async (turnContext: TurnContext) => {
-		const agentId = turnContext.activity.recipient?.agenticAppId ?? clientId;
+		const { agentId, tenantId } = getAgentIdentity(turnContext, credentials);
 		const agentName = turnContext.activity.recipient?.name ?? 'Microsoft Agent 365';
-		const tenantDetails: TenantDetails = {
-			tenantId: turnContext.activity.recipient?.tenantId ?? tenantId ?? '',
-		};
 		const conversationId = turnContext.activity.conversation?.id;
 		const inputText = turnContext.activity.text || '';
 
 		const baggageScope = new BaggageBuilder()
-			.tenantId(tenantDetails.tenantId)
+			.tenantId(tenantId)
 			.agentId(agentId)
-			.correlationId(uuid())
 			.agentName(agentName)
 			.conversationId(conversationId)
 			.build();
 
 		await baggageScope.run(async () => {
-			const invokeAgentDetails: InvokeAgentDetails = {
-				agentId,
-				agentName,
+			const request = {
+				content: inputText || 'Unknown text',
+				sessionId: conversationId,
 				conversationId,
-				request: {
-					content: inputText || 'Unknown text',
-					executionType: ExecutionType.HumanToAgent,
-					sessionId: conversationId,
-				},
 			};
 
-			const invokeAgentScope = InvokeAgentScope.start(invokeAgentDetails, tenantDetails);
+			const invokeScopeDetails = {};
+
+			const agentDetails = {
+				agentId,
+				agentName,
+				tenantId,
+			};
+
+			const invokeAgentScope = InvokeAgentScope.start(request, invokeScopeDetails, agentDetails);
 
 			await invokeAgentScope.withActiveSpanAsync(async () => {
 				invokeAgentScope.recordInputMessages([inputText || 'Unknown text']);
@@ -338,6 +559,7 @@ export const configureActivityCallback = (
 								authorization,
 								mcpTokenRef.token,
 								selectedTools,
+								nodeContext.helpers.getSecureEgressFilter(),
 							);
 
 							mcpClient = result?.client;
@@ -345,7 +567,7 @@ export const configureActivityCallback = (
 							mcpLogs = result?.logs;
 						}
 					} catch (error) {
-						console.log('Error retrieving MCP tools');
+						console.error('Error retrieving MCP tools:', error);
 					}
 				}
 
@@ -372,6 +594,10 @@ export const configureActivityCallback = (
 					if (mcpLogs?.length) {
 						activityCapture.mcpToolLogs = mcpLogs;
 					}
+					// The spans leave after the turn, and a long turn can outlive the token.
+					if (isExportToMicrosoftEnabled()) {
+						void refreshExportToken(turnContext, authorization, credentials);
+					}
 					await disposeActivityResources(invokeAgentScope, mcpClient);
 				}
 			});
@@ -397,6 +623,86 @@ export async function disposeActivityResources(
 	}
 }
 
+function getAgentIdentity(turnContext: TurnContext, credentials: MicrosoftAgent365Credentials) {
+	return {
+		agentId: turnContext.activity.recipient?.agenticAppId ?? credentials.clientId,
+		tenantId: turnContext.activity.recipient?.tenantId ?? credentials.tenantId ?? '',
+	};
+}
+
+function isExportToMicrosoftEnabled(): boolean {
+	return Container.get(TracingSourcesConfig).microsoftAgent365ExportEnabled;
+}
+
+const exportTokenRefreshes = new Map<string, Promise<string | null>>();
+
+const agentsWarnedWithoutExportToken = new Set<string>();
+
+async function refreshExportToken(
+	turnContext: TurnContext,
+	authorization: Authorization,
+	credentials: MicrosoftAgent365Credentials,
+): Promise<string | null> {
+	const { agentId, tenantId } = getAgentIdentity(turnContext, credentials);
+	const key = `${agentId}:${tenantId}`;
+	const inFlight = exportTokenRefreshes.get(key);
+	if (inFlight) return await inFlight;
+
+	const refresh = fetchExportToken(agentId, tenantId, turnContext, authorization).finally(() =>
+		exportTokenRefreshes.delete(key),
+	);
+	exportTokenRefreshes.set(key, refresh);
+	return await refresh;
+}
+
+async function fetchExportToken(
+	agentId: string,
+	tenantId: string,
+	turnContext: TurnContext,
+	authorization: Authorization,
+): Promise<string | null> {
+	// The cache only hands the turn context back to exchangeToken, and its own turn context
+	// type does not match the one from agents-hosting, so the real context stays in this closure.
+	const turnContextForCache = { activity: {}, turnState: new Map<string, unknown>() };
+	try {
+		await AgenticTokenCacheInstance.refreshObservabilityToken(
+			agentId,
+			tenantId,
+			turnContextForCache,
+			{
+				exchangeToken: async (_, authHandlerName, options) =>
+					await authorization.exchangeToken(turnContext, authHandlerName, options),
+			},
+		);
+	} catch {
+		return null;
+	}
+
+	return AgenticTokenCacheInstance.getObservabilityToken(agentId, tenantId);
+}
+
+function startExportTokenRefresh(
+	nodeContext: IWebhookFunctions,
+	turnContext: TurnContext,
+	authorization: Authorization,
+	credentials: MicrosoftAgent365Credentials,
+) {
+	const { agentId, tenantId } = getAgentIdentity(turnContext, credentials);
+	const key = `${agentId}:${tenantId}`;
+	void refreshExportToken(turnContext, authorization, credentials).then((token) => {
+		if (token) {
+			agentsWarnedWithoutExportToken.delete(key);
+			return;
+		}
+		if (agentsWarnedWithoutExportToken.has(key)) return;
+
+		agentsWarnedWithoutExportToken.add(key);
+		nodeContext.logger.warn(
+			`Microsoft Agent 365: no observability token was issued for agent ${agentId}, so its spans do not go to Microsoft until one is. Set A365_OBSERVABILITY_LOG_LEVEL=error to see why. Set ENABLE_OBSERVABILITY=false or ENABLE_A365_OBSERVABILITY_EXPORTER=false to stop the export.`,
+		);
+	});
+}
+
 export function configureAdapterProcessCallback(
 	nodeContext: IWebhookFunctions,
 	agent: AgentApplication<TurnState<DefaultConversationState, DefaultUserState>>,
@@ -404,26 +710,8 @@ export function configureAdapterProcessCallback(
 	activityCapture: ActivityCapture,
 ) {
 	return async (turnContext: TurnContext) => {
-		let observability: ReturnType<typeof ObservabilityManager.configure> | undefined;
-
-		if (isMicrosoftObservabilityEnabled()) {
-			const observabilityScopes = [
-				...defaultObservabilityConfigurationProvider.getConfiguration()
-					.observabilityAuthenticationScopes,
-			];
-			const { token: aauToken } = await agent.authorization.exchangeToken(
-				turnContext,
-				observabilityScopes,
-				'agentic',
-			);
-
-			observability = ObservabilityManager.configure((builder: Builder) =>
-				builder
-					.withService('n8n-microsoft-agent-365')
-					.withTokenResolver((_agentId: string, _tenantId: string) => aauToken || ''),
-			);
-
-			observability.start();
+		if (isExportToMicrosoftEnabled()) {
+			startExportTokenRefresh(nodeContext, turnContext, agent.authorization, credentials);
 		}
 
 		const mcpTokenRef = { token: undefined as string | undefined };
@@ -436,8 +724,20 @@ export function configureAdapterProcessCallback(
 				],
 			});
 			mcpTokenRef.token = tokenResult.token;
+			// The exchange can succeed yet return no token (e.g. the agent's Entra identity
+			// blueprint lacks inheritable permissions for the tooling scope). Surface it, since
+			// otherwise Work IQ tools are silently unavailable with no signal.
+			if (!mcpTokenRef.token) {
+				nodeContext.logger.warn(
+					'Microsoft Agent 365: no agentic tooling token was issued; Work IQ (MCP) tools are unavailable for this turn',
+				);
+			}
 		} catch (error) {
-			console.error('Error getting MCP token');
+			nodeContext.logger.warn(
+				`Microsoft Agent 365: failed to obtain agentic tooling token; Work IQ (MCP) tools are unavailable for this turn: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
 		}
 
 		try {
@@ -468,24 +768,6 @@ export function configureAdapterProcessCallback(
 			await agent.run(turnContext);
 		} catch (error) {
 			throw new NodeOperationError(nodeContext.getNode(), error);
-		} finally {
-			if (observability) {
-				try {
-					const OBSERVABILITY_SHUTDOWN_TIMEOUT_MS = 5000;
-					await Promise.race([
-						observability.shutdown(),
-						new Promise<never>((_, reject) =>
-							setTimeout(
-								() => reject(new Error('Observability shutdown timed out')),
-								OBSERVABILITY_SHUTDOWN_TIMEOUT_MS,
-							),
-						),
-					]);
-				} catch (error) {
-					// Backend unreachable or export timed out — not a code error
-					console.warn('Failed to shut down observability:', error);
-				}
-			}
 		}
 	};
 }

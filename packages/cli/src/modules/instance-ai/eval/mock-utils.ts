@@ -1,0 +1,58 @@
+import type { FetchFn } from '@n8n/agents';
+import { extractJsonCandidate } from '@n8n/ai-utilities/llm-output';
+import type { Logger } from '@n8n/backend-common';
+import { createEvalAgent, extractText, isRetryableEvalError } from '@n8n/instance-ai';
+import { jsonParse } from 'n8n-workflow';
+
+// ---------------------------------------------------------------------------
+// Shared plumbing for the eval mocks (MCP, web search): steered LLM-to-JSON
+// generation with retry, and fetch-input helpers.
+// ---------------------------------------------------------------------------
+
+const GENERATOR_TIMEOUT_MS = 120_000;
+const MAX_GENERATOR_ATTEMPTS = 2;
+
+/**
+ * Generate JSON with the eval agent and validate its shape, retrying once on
+ * unusable output. Returns undefined when both attempts fail — callers supply
+ * their own degraded fallback. An aborted `signal` cancels the model call and
+ * stops the retries.
+ */
+export async function generateJson<T>(
+	agentName: string,
+	instructions: string,
+	userPrompt: string,
+	validate: (parsed: unknown) => T | undefined,
+	logger: Logger,
+	signal?: AbortSignal,
+): Promise<T | undefined> {
+	for (let attempt = 1; attempt <= MAX_GENERATOR_ATTEMPTS; attempt++) {
+		if (signal?.aborted) break;
+		try {
+			const timeout = AbortSignal.timeout(GENERATOR_TIMEOUT_MS);
+			const agent = createEvalAgent(agentName, { instructions });
+			const result = await agent.generate(userPrompt, {
+				providerOptions: { anthropic: { maxTokens: 4096 } },
+				abortSignal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+			});
+			const parsed = jsonParse<unknown>(extractJsonCandidate(extractText(result)), {
+				fallbackValue: undefined,
+			});
+			const validated = validate(parsed);
+			if (validated !== undefined) return validated;
+			logger.warn(`[EvalMock] ${agentName} attempt ${attempt} returned an unusable shape`);
+		} catch (error) {
+			logger.warn(
+				`[EvalMock] ${agentName} attempt ${attempt} failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			if (!isRetryableEvalError(error)) break;
+		}
+	}
+	return undefined;
+}
+
+export function resolveUrl(input: Parameters<FetchFn>[0]): string {
+	if (typeof input === 'string') return input;
+	if (input instanceof URL) return input.toString();
+	return input.url;
+}

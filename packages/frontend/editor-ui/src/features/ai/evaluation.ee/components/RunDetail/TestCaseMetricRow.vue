@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from '@n8n/i18n';
+import type { MetricScale } from '@n8n/api-types';
 import { N8nIcon, N8nText, N8nTooltip } from '@n8n/design-system';
 import {
 	formatMetricLabel,
-	formatMetricPercent,
+	formatMetricValue,
 	formatMetricRawScore,
 	type MetricCategory,
 } from '../../evaluation.utils';
@@ -13,6 +14,7 @@ const props = defineProps<{
 	name: string;
 	value: number | undefined;
 	category?: MetricCategory;
+	scale?: MetricScale;
 	sourceNodeName?: string;
 	errored?: boolean;
 	errorMessage?: string;
@@ -21,14 +23,18 @@ const props = defineProps<{
 const locale = useI18n();
 
 const formattedLabel = computed(() => formatMetricLabel(props.name));
-const formattedPercent = computed(() =>
-	formatMetricPercent(props.value, { category: props.category }),
+const formattedValue = computed(() =>
+	formatMetricValue(props.value, {
+		key: props.name,
+		category: props.category,
+		scale: props.scale,
+	}),
 );
 const formattedRawScore = computed(() =>
-	formatMetricRawScore(props.value, { category: props.category }),
+	formatMetricRawScore(props.value, { category: props.category, scale: props.scale }),
 );
 const tooltipContent = computed(() =>
-	formattedRawScore.value ? `${formattedPercent.value} • ${formattedRawScore.value}` : '',
+	formattedRawScore.value ? `${formattedValue.value} • ${formattedRawScore.value}` : '',
 );
 </script>
 
@@ -50,9 +56,9 @@ const tooltipContent = computed(() =>
 				{{ errorMessage ?? locale.baseText('evaluation.runDetail.testCase.failed') }}
 			</N8nText>
 			<N8nTooltip v-else-if="tooltipContent" :content="tooltipContent" placement="top">
-				<N8nText size="medium" :class="$style.value">{{ formattedPercent }}</N8nText>
+				<N8nText size="medium" :class="$style.value">{{ formattedValue }}</N8nText>
 			</N8nTooltip>
-			<N8nText v-else size="medium" :class="$style.value">{{ formattedPercent }}</N8nText>
+			<N8nText v-else size="medium" :class="$style.value">{{ formattedValue }}</N8nText>
 		</div>
 	</div>
 </template>

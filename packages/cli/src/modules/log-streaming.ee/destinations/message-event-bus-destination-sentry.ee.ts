@@ -1,5 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access */
-
+import { getN8nVersion } from '@n8n/backend-common';
 import * as Sentry from '@sentry/node';
 import { MessageEventBusDestinationTypeNames } from 'n8n-workflow';
 import type {
@@ -7,7 +6,6 @@ import type {
 	MessageEventBusDestinationSentryOptions,
 } from 'n8n-workflow';
 
-import { N8N_VERSION } from '@/constants';
 import type {
 	MessageEventBus,
 	MessageWithCallback,
@@ -48,10 +46,12 @@ export class MessageEventBusDestinationSentry
 			dsn: this.dsn,
 			tracesSampleRate: this.tracesSampleRate,
 			environment,
-			release: N8N_VERSION,
+			release: getN8nVersion(),
 			transport: Sentry.makeNodeTransport,
 			integrations: Sentry.getDefaultIntegrations({}),
 			stackParser: Sentry.defaultStackParser,
+			attachStacktrace: false,
+			enableRuntimeChannelInjection: false,
 		});
 	}
 

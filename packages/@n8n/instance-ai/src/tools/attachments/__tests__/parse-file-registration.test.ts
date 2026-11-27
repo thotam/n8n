@@ -1,4 +1,4 @@
-import type { InstanceAiAttachment } from '@n8n/api-types';
+import type { InstanceAiFileAttachment } from '@n8n/api-types';
 
 import { isParseableAttachment } from '../../../parsers/structured-file-parser';
 
@@ -10,12 +10,8 @@ function toBase64(content: string): string {
 	return Buffer.from(content, 'utf-8').toString('base64');
 }
 
-/**
- * Mirrors the conditional shared by createAllTools and
- * createOrchestratorDomainTools:
- *   context.currentUserAttachments?.some(isParseableAttachment)
- */
-function wouldRegisterParseTool(attachments?: InstanceAiAttachment[]): boolean {
+/** Whether a message has an attachment that parse-file can read. */
+function hasParseableAttachment(attachments?: InstanceAiFileAttachment[]): boolean {
 	return attachments?.some(isParseableAttachment) ?? false;
 }
 
@@ -23,48 +19,58 @@ function wouldRegisterParseTool(attachments?: InstanceAiAttachment[]): boolean {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('parse-file tool registration logic', () => {
-	it('does NOT register when no attachments are present', () => {
-		expect(wouldRegisterParseTool(undefined)).toBe(false);
+describe('parseable attachment detection', () => {
+	it('finds none when no attachments are present', () => {
+		expect(hasParseableAttachment(undefined)).toBe(false);
 	});
 
-	it('does NOT register when only non-structured attachments are present', () => {
+	it('finds none when only non-structured attachments are present', () => {
 		expect(
-			wouldRegisterParseTool([
-				{ data: toBase64('pixels'), mimeType: 'image/png', fileName: 'photo.png' },
+			hasParseableAttachment([
+				{ type: 'file', data: toBase64('pixels'), mimeType: 'image/png', fileName: 'photo.png' },
 			]),
 		).toBe(false);
 	});
 
-	it('registers when a parseable structured attachment is present', () => {
+	it('finds one when a parseable structured attachment is present', () => {
 		expect(
-			wouldRegisterParseTool([
-				{ data: toBase64('a,b\n1,2'), mimeType: 'text/csv', fileName: 'data.csv' },
+			hasParseableAttachment([
+				{ type: 'file', data: toBase64('a,b\n1,2'), mimeType: 'text/csv', fileName: 'data.csv' },
 			]),
 		).toBe(true);
 	});
 
-	it('registers when a mix of structured and non-structured attachments is present', () => {
+	it('finds one when a mix of structured and non-structured attachments is present', () => {
 		expect(
-			wouldRegisterParseTool([
-				{ data: toBase64('pixels'), mimeType: 'image/png', fileName: 'photo.png' },
-				{ data: toBase64('[]'), mimeType: 'application/json', fileName: 'data.json' },
+			hasParseableAttachment([
+				{ type: 'file', data: toBase64('pixels'), mimeType: 'image/png', fileName: 'photo.png' },
+				{ type: 'file', data: toBase64('[]'), mimeType: 'application/json', fileName: 'data.json' },
 			]),
 		).toBe(true);
 	});
 
-	it('registers for TSV attachments', () => {
+	it('finds one for TSV attachments', () => {
 		expect(
-			wouldRegisterParseTool([
-				{ data: toBase64('a\tb'), mimeType: 'text/tab-separated-values', fileName: 'data.tsv' },
+			hasParseableAttachment([
+				{
+					type: 'file',
+					data: toBase64('a\tb'),
+					mimeType: 'text/tab-separated-values',
+					fileName: 'data.tsv',
+				},
 			]),
 		).toBe(true);
 	});
 
-	it('registers when format is detected by extension with generic MIME', () => {
+	it('finds one when format is detected by extension with generic MIME', () => {
 		expect(
-			wouldRegisterParseTool([
-				{ data: toBase64('a,b'), mimeType: 'application/octet-stream', fileName: 'data.csv' },
+			hasParseableAttachment([
+				{
+					type: 'file',
+					data: toBase64('a,b'),
+					mimeType: 'application/octet-stream',
+					fileName: 'data.csv',
+				},
 			]),
 		).toBe(true);
 	});
@@ -80,7 +86,7 @@ describe('parse-file tool registration logic', () => {
 		['XLSX', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'sheet.xlsx'],
 		['plain text', 'text/plain', 'notes.txt'],
 		['markdown', 'text/markdown', 'readme.md'],
-	])('registers for %s attachments', (_label, mimeType, fileName) => {
-		expect(wouldRegisterParseTool([{ data: '', mimeType, fileName }])).toBe(true);
+	])('finds one for %s attachments', (_label, mimeType, fileName) => {
+		expect(hasParseableAttachment([{ type: 'file', data: '', mimeType, fileName }])).toBe(true);
 	});
 });

@@ -42,6 +42,24 @@ function childText(): InstanceAiEvent {
 	};
 }
 
+function toolCall(): InstanceAiEvent {
+	return {
+		type: 'tool-call',
+		runId,
+		agentId: rootAgentId,
+		payload: { toolCallId: 'tc-1', toolName: 'build_workflow', args: {} },
+	};
+}
+
+function previousRunRootText(): InstanceAiEvent {
+	return {
+		type: 'text-delta',
+		runId: 'run-previous',
+		agentId: rootAgentId,
+		payload: { text: 'Visible message-group text' },
+	};
+}
+
 function confirmation(
 	overrides: Partial<Extract<InstanceAiEvent, { type: 'confirmation-request' }>['payload']> = {},
 ): Extract<InstanceAiEvent, { type: 'confirmation-request' }> {
@@ -69,9 +87,28 @@ describe('InstanceAiTerminalResponseGuard', () => {
 		expect(decision.visibilitySource).toBe('root-text');
 	});
 
+	it('counts coalesced text-block facts as root text (durable-log reads carry no deltas)', () => {
+		const rootBlock: InstanceAiEvent = {
+			type: 'text-block',
+			runId,
+			agentId: rootAgentId,
+			responseId: 'resp-1',
+			payload: { text: 'hello' },
+		};
+		const decision = guard().evaluateTerminal([runStart(), rootBlock], 'completed');
+
+		expect(decision.action).toBe('none');
+		expect(decision.visibilitySource).toBe('root-text');
+	});
+
 	it('emits text fallback for silent completed runs with structured work counts only', () => {
 		const decision = guard().evaluateTerminal([runStart()], 'completed', {
-			workSummary: { totalToolCalls: 3, totalToolErrors: 1, toolCalls: [] },
+			workSummary: {
+				totalToolCalls: 3,
+				totalToolErrors: 1,
+				toolCalls: [],
+				askedClarifyingQuestion: false,
+			},
 		});
 
 		expect(decision.action).toBe('emit');
@@ -79,6 +116,45 @@ describe('InstanceAiTerminalResponseGuard', () => {
 		expect(decision.event?.payload).toEqual({
 			text: 'I finished the run, but I did not generate a final response. I ran 3 tools; 1 tool errored.',
 		});
+	});
+
+	it('emits fallback when a completed run only produced a preamble before its tool calls', () => {
+		const decision = guard().evaluateTerminal(
+			[runStart(), rootText('Let me read the current source first.'), toolCall()],
+			'completed',
+		);
+
+		expect(decision.action).toBe('emit');
+		expect(decision.reason).toBe('completed-silent');
+		expect(decision.event?.type).toBe('text-delta');
+	});
+
+	it('does not emit fallback when a completed run answers after its tool calls', () => {
+		const decision = guard().evaluateTerminal(
+			[
+				runStart(),
+				rootText('Let me read the current source first.'),
+				toolCall(),
+				rootText('Done.'),
+			],
+			'completed',
+		);
+
+		expect(decision.action).toBe('none');
+		expect(decision.visibilitySource).toBe('root-text');
+		expect(decision.reason).toBe('already-visible');
+	});
+
+	it('does not emit completed fallback when the message group already has root text', () => {
+		const decision = new InstanceAiTerminalResponseGuard({
+			runId,
+			rootAgentId,
+			messageGroupId: 'mg-1',
+		}).evaluateTerminal([previousRunRootText(), runStart()], 'completed');
+
+		expect(decision.action).toBe('none');
+		expect(decision.visibilitySource).toBe('root-text');
+		expect(decision.reason).toBe('already-visible');
 	});
 
 	it('emits sanitized error when partial root text is followed by failure', () => {
@@ -94,11 +170,46 @@ describe('InstanceAiTerminalResponseGuard', () => {
 		});
 	});
 
+	it('tags the emitted error with a structured code when provided', () => {
+		const decision = guard().evaluateTerminal([runStart()], 'errored', {
+			errorMessage: "You've run out of Assistant credits.",
+			errorCode: 'quota_exhausted',
+		});
+
+		expect(decision.action).toBe('emit');
+		expect(decision.event).toMatchObject({
+			type: 'error',
+			payload: { content: "You've run out of Assistant credits.", code: 'quota_exhausted' },
+		});
+	});
+
+	it('does not emit a second error when a root error is already visible', () => {
+		const decision = guard().evaluateTerminal(
+			[runStart(), rootError('Have reached end of quota')],
+			'errored',
+			{
+				errorMessage: 'ignored fallback',
+			},
+		);
+
+		expect(decision.action).toBe('none');
+		expect(decision.visibilitySource).toBe('root-error');
+		expect(decision.reason).toBe('already-visible');
+	});
+
 	it('does not emit cancellation fallback when partial root text exists', () => {
 		const decision = guard().evaluateTerminal([runStart(), rootText('partial')], 'cancelled');
 
 		expect(decision.action).toBe('none');
 		expect(decision.visibilitySource).toBe('root-text');
+	});
+
+	it('emits no placeholder when a run is cancelled with no output', () => {
+		const decision = guard().evaluateTerminal([runStart()], 'cancelled');
+
+		expect(decision.action).toBe('none');
+		expect(decision.reason).toBe('cancelled-silent');
+		expect(decision.event).toBeUndefined();
 	});
 
 	it('logs root error then completed as already visible', () => {
@@ -155,7 +266,7 @@ describe('InstanceAiTerminalResponseGuard', () => {
 					payload: { content: 'Previous attempt failed.' },
 				},
 			],
-			confirmation({ inputType: 'plan-review', message: 'message-only plan' }),
+			confirmation({ inputType: 'questions', message: 'message-only questions' }),
 		);
 
 		expect(decision.action).toBe('emit');
@@ -172,7 +283,7 @@ describe('InstanceAiTerminalResponseGuard', () => {
 	it('emits deterministic error for malformed confirmation payloads', () => {
 		const decision = guard().evaluateWaiting(
 			[runStart()],
-			confirmation({ inputType: 'plan-review', message: 'message-only plan' }),
+			confirmation({ inputType: 'questions', message: 'message-only questions' }),
 		);
 
 		expect(decision.action).toBe('emit');
@@ -183,7 +294,7 @@ describe('InstanceAiTerminalResponseGuard', () => {
 	it('does not let prior root text hide a malformed confirmation payload', () => {
 		const decision = guard().evaluateWaiting(
 			[runStart(), rootText()],
-			confirmation({ inputType: 'plan-review', message: 'message-only plan' }),
+			confirmation({ inputType: 'questions', message: 'message-only questions' }),
 		);
 
 		expect(decision.action).toBe('emit');
@@ -194,7 +305,7 @@ describe('InstanceAiTerminalResponseGuard', () => {
 	it('does not let prior root errors hide a malformed confirmation payload', () => {
 		const decision = guard().evaluateWaiting(
 			[runStart(), rootError()],
-			confirmation({ inputType: 'plan-review', message: 'message-only plan' }),
+			confirmation({ inputType: 'questions', message: 'message-only questions' }),
 		);
 
 		expect(decision.action).toBe('emit');

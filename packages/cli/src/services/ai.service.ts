@@ -3,14 +3,16 @@ import type {
 	AiAskRequestDto,
 	AiChatRequestDto,
 } from '@n8n/api-types';
+import { Logger } from '@n8n/backend-common';
 import { GlobalConfig } from '@n8n/config';
 import { Service } from '@n8n/di';
 import { AiAssistantClient } from '@n8n_io/ai-assistant-sdk';
-import { InstanceSettings } from 'n8n-core';
+import { ErrorReporter, InstanceSettings } from 'n8n-core';
 import { assert, type IUser } from 'n8n-workflow';
 
 import { N8N_VERSION } from '../constants';
 import { License } from '../license';
+import { callAiServiceWithRetry } from '../utils/ai-service-retry';
 
 @Service()
 export class AiService {
@@ -22,9 +24,12 @@ export class AiService {
 		private readonly licenseService: License,
 		private readonly globalConfig: GlobalConfig,
 		private readonly instanceSettings: InstanceSettings,
+		private readonly logger: Logger,
+		private readonly errorReporter: ErrorReporter,
 	) {}
 
 	async init() {
+		// oxlint-disable-next-line typescript/no-deprecated
 		const aiAssistantEnabled = this.licenseService.isAiAssistantEnabled();
 
 		if (!aiAssistantEnabled) {
@@ -61,6 +66,7 @@ export class AiService {
 		return await client.applySuggestion(payload, { id: user.id });
 	}
 
+	/** @deprecated Serves `POST /rest/ai/ask-ai`. Removed in v3. */
 	async askAi(payload: AiAskRequestDto, user: IUser) {
 		const client = await this.getClient();
 		return await client.askAi(payload, { id: user.id });
@@ -68,6 +74,7 @@ export class AiService {
 
 	/** Whether the AI service proxy is enabled (license + base URL configured). */
 	isProxyEnabled(): boolean {
+		// oxlint-disable-next-line typescript/no-deprecated
 		return this.licenseService.isAiAssistantEnabled() && !!this.globalConfig.aiAssistant.baseUrl;
 	}
 
@@ -86,6 +93,12 @@ export class AiService {
 
 	async createFreeAiCredits(user: IUser) {
 		const client = await this.getClient();
-		return await client.generateAiCreditsCredentials(user);
+		return await callAiServiceWithRetry(
+			'AI credits credential generation',
+			async () => await client.generateAiCreditsCredentials(user),
+			this.logger,
+			this.errorReporter,
+			{ retryOnTimeout: false },
+		);
 	}
 }

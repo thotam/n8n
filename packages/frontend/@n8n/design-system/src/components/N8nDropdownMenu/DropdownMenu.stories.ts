@@ -1,13 +1,15 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import type { Meta, StoryObj } from '@storybook/vue3-vite';
-import { ref, computed } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 
-import N8nBadge from '@n8n/design-system/components/N8nBadge/Badge.vue';
-import N8nButton from '@n8n/design-system/components/N8nButton/Button.vue';
-import N8nKeyboardShortcut from '@n8n/design-system/components/N8nKeyboardShortcut/N8nKeyboardShortcut.vue';
-import N8nCheckbox from '@n8n/design-system/v2/components/Checkbox/Checkbox.vue';
-
-import type { DropdownMenuItemProps } from './DropdownMenu.types';
+import N8nCheckbox from '../../v2/components/Checkbox/Checkbox.vue';
+import N8nBadge from '../N8nBadge/Badge.vue';
+import N8nButton from '../N8nButton/Button.vue';
+import N8nIcon from '../N8nIcon/Icon.vue';
+import N8nKeyboardShortcut from '../N8nKeyboardShortcut/N8nKeyboardShortcut.vue';
+import N8nTooltip from '../N8nTooltip/Tooltip.vue';
+import { useDropdownSearch } from './composables/useDropdownSearch';
+import type { DropdownMenuExposed, DropdownMenuItemProps } from './DropdownMenu.types';
 import DropdownMenu from './DropdownMenu.vue';
 
 type GenericMeta<C> = Omit<Meta<C>, 'component'> & {
@@ -15,7 +17,7 @@ type GenericMeta<C> = Omit<Meta<C>, 'component'> & {
 };
 
 const meta = {
-	title: 'Core/Dropdown Menu',
+	title: 'Core/DropdownMenu',
 	component: DropdownMenu,
 	parameters: {
 		docs: {
@@ -28,7 +30,7 @@ export default meta;
 
 type Story = StoryObj<typeof meta>;
 
-export const Basic: Story = {
+export const Default: Story = {
 	render: (args) => ({
 		components: { DropdownMenu },
 		setup() {
@@ -38,7 +40,7 @@ export const Basic: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect" />
 		</div>
 		`,
@@ -58,6 +60,60 @@ export const Basic: Story = {
 	},
 };
 
+export const WithSectionHeader: Story = {
+	render: (args) => ({
+		components: { DropdownMenu },
+		setup() {
+			const handleSelect = (action: string) => {
+				console.log('Selected:', action);
+			};
+			return { args, handleSelect };
+		},
+		template: `
+		<div>
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect" />
+		</div>
+		`,
+	}),
+	args: {
+		items: [
+			{ id: 'section-workflows', label: 'Workflows', header: true },
+			{ id: 'orders', label: 'Orders workflow', icon: { type: 'icon', value: 'workflow' } },
+			{ id: 'invoices', label: 'Invoices workflow', icon: { type: 'icon', value: 'workflow' } },
+			{ id: 'customers', label: 'Customers workflow', icon: { type: 'icon', value: 'workflow' } },
+		] as Array<DropdownMenuItemProps<string>>,
+	},
+};
+
+export const LongList: Story = {
+	render: () => ({
+		components: { DropdownMenu },
+		setup() {
+			const items: Array<DropdownMenuItemProps<string>> = Array.from(
+				{ length: 40 },
+				(_, index) => ({
+					id: `item-${index + 1}`,
+					label: `Item ${index + 1}`,
+				}),
+			);
+
+			const handleSelect = (action: string) => {
+				console.log('Selected:', action);
+			};
+
+			return { items, handleSelect };
+		},
+		template: `
+		<div>
+			<DropdownMenu placement="bottom-start" :items="items" @select="handleSelect" />
+		</div>
+		`,
+	}),
+	args: {
+		items: [] as Array<DropdownMenuItemProps<string>>,
+	},
+};
+
 export const WithCustomTrigger: Story = {
 	render: (args) => ({
 		components: { DropdownMenu, N8nButton },
@@ -69,11 +125,11 @@ export const WithCustomTrigger: Story = {
 			return { args, isOpen, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<DropdownMenu
 				v-model="isOpen"
 				:items="args.items"
-				placement="bottom-end"
+				placement="bottom-start"
 				@select="handleSelect"
 			>
 				<template #trigger>
@@ -109,9 +165,10 @@ export const EmojiActivator: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<DropdownMenu
 				:items="args.items"
+				placement="bottom-start"
 				:activator-icon="{ type: 'emoji', value: '✨' }"
 				@select="handleSelect"
 			/>
@@ -136,8 +193,8 @@ export const WithCheckedItems: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
-			<DropdownMenu :items="args.items" @select="handleSelect" />
+		<div>
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect" />
 		</div>
 		`,
 	}),
@@ -160,8 +217,8 @@ export const WithDisabledItems: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
-			<DropdownMenu :items="args.items" @select="handleSelect" />
+		<div>
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect" />
 		</div>
 		`,
 	}),
@@ -189,9 +246,9 @@ export const WithBadgesAndShortcuts: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<p>Example of using custom trailing slots to render badges and keyboard shortcuts for each item.</p>
-			<DropdownMenu :items="args.items" @select="handleSelect">
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect">
 				<template #item-trailing="{ item, ui }">
 					<N8nKeyboardShortcut
 						v-if="item.id === 'save'"
@@ -201,15 +258,14 @@ export const WithBadgesAndShortcuts: Story = {
 					/>
 					<N8nBadge
 						v-if="item.id === 'share'"
-						theme="success"
-						bold
+						variant="success"
 						:class="ui.class"
 					>
 						New
 					</N8nBadge>
 					<N8nBadge
 						v-if="item.id === 'pro'"
-						theme="primary"
+						variant="primary"
 						:class="ui.class"
 					>
 						PRO
@@ -254,9 +310,9 @@ export const WithCustomLeadingSlot: Story = {
 			return { args, handleSelect, isChecked };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<p>Example of using a custom leading slot to render checkboxes for each item.</p>
-			<DropdownMenu :items="args.items" @select="handleSelect">
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect">
 				<template #item-leading="{ item, ui }">
 					<N8nCheckbox
 						:model-value="isChecked(item.id)"
@@ -279,29 +335,6 @@ export const WithCustomLeadingSlot: Story = {
 	},
 };
 
-export const LoadingState: Story = {
-	render: (args) => ({
-		components: { DropdownMenu },
-		setup() {
-			return { args };
-		},
-		template: `
-		<div style="padding: 40px;">
-			<DropdownMenu
-				:items="args.items"
-				:loading="args.loading"
-				:loading-item-count="args.loadingItemCount"
-			/>
-		</div>
-		`,
-	}),
-	args: {
-		items: [] as Array<DropdownMenuItemProps<string>>,
-		loading: true,
-		loadingItemCount: 5,
-	},
-};
-
 export const Placements: Story = {
 	render: (args) => ({
 		components: { DropdownMenu, N8nButton },
@@ -319,7 +352,7 @@ export const Placements: Story = {
 			return { args, placements };
 		},
 		template: `
-		<div style="padding: 200px; display: flex; flex-wrap: wrap; gap: 20px; justify-content: center;">
+		<div style="display: flex; flex-wrap: wrap; gap: 20px">
 			<DropdownMenu
 				v-for="placement in placements"
 				:key="placement"
@@ -359,7 +392,7 @@ export const ControlledState: Story = {
 			return { args, isOpen, toggle, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<p style="margin-bottom: 16px; user-select: none;">Dropdown is {{ isOpen ? 'open' : 'closed' }}</p>
 			<div style="margin-bottom: 16px;">
 				<N8nButton @click="toggle">
@@ -369,6 +402,7 @@ export const ControlledState: Story = {
 			<DropdownMenu
 				v-model="isOpen"
 				:items="args.items"
+				placement="bottom-start"
 				@select="handleSelect"
 			/>
 		</div>
@@ -393,7 +427,7 @@ export const NestedMenu: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<DropdownMenu
 				:items="args.items"
 				placement="bottom-start"
@@ -433,6 +467,101 @@ export const NestedMenu: Story = {
 	},
 };
 
+export const SelectableSubmenuParent: Story = {
+	render: (args) => ({
+		components: { DropdownMenu },
+		setup() {
+			const handleSelect = (action: string) => {
+				console.log('Selected:', action);
+			};
+			return { args, handleSelect };
+		},
+		template: `
+		<div>
+			<p>
+				Select the workflow from its label or with Enter. Open its nodes from the chevron or with ArrowRight.
+			</p>
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect" />
+		</div>
+		`,
+	}),
+	args: {
+		items: [
+			{
+				id: 'orders',
+				label: 'Orders workflow',
+				selectable: true,
+				children: [
+					{ id: 'webhook', label: 'Webhook' },
+					{ id: 'create-order', label: 'Create order' },
+				],
+			},
+		] as Array<DropdownMenuItemProps<string>>,
+	},
+};
+
+export const WithTooltips: Story = {
+	render: (args) => ({
+		components: { DropdownMenu, N8nIcon, N8nTooltip },
+		setup() {
+			const handleSelect = (action: string) => {
+				console.log('Selected:', action);
+			};
+			return { args, handleSelect };
+		},
+		template: `
+		<div>
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect">
+				<template #item-label="{ item, ui }">
+					<N8nTooltip
+						v-if="item.id === 'main-menu-item'"
+						:content="item.data.tooltip"
+						placement="right"
+						teleported
+						as-child
+					>
+						<span :class="ui.class">{{ item.label }}</span>
+					</N8nTooltip>
+					<span v-else :class="ui.class">{{ item.label }}</span>
+				</template>
+				<template #item-trailing="{ item, ui }">
+					<N8nTooltip
+						v-if="item.id === 'submenu-item'"
+						:content="item.data.tooltip"
+						placement="right"
+						teleported
+						as-child
+					>
+						<N8nIcon icon="info" size="medium" :class="ui.class" />
+					</N8nTooltip>
+				</template>
+			</DropdownMenu>
+		</div>
+		`,
+	}),
+	args: {
+		items: [
+			{
+				id: 'main-menu-item',
+				label: 'Main menu item',
+				data: { tooltip: 'Tooltip for the main menu item' },
+			},
+			{
+				id: 'submenu',
+				label: 'Open submenu',
+				data: { tooltip: '' },
+				children: [
+					{
+						id: 'submenu-item',
+						label: 'Submenu item',
+						data: { tooltip: 'Tooltip for the submenu item' },
+					},
+				],
+			},
+		] as Array<DropdownMenuItemProps<string, { tooltip: string }>>,
+	},
+};
+
 export const MoreLevels: Story = {
 	render: (args) => ({
 		components: { DropdownMenu },
@@ -443,8 +572,8 @@ export const MoreLevels: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
-			<DropdownMenu :items="args.items" @select="handleSelect" />
+		<div>
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect" />
 		</div>
 		`,
 	}),
@@ -496,8 +625,8 @@ export const SubMenuLoading: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
-			<DropdownMenu :items="args.items" @select="handleSelect" />
+		<div>
+			<DropdownMenu placement="bottom-start" :items="args.items" @select="handleSelect" />
 		</div>
 		`,
 	}),
@@ -545,18 +674,11 @@ export const SearchableRoot: Story = {
 				{ id: 'settings', label: 'Settings', icon: { type: 'icon', value: 'settings' } },
 			];
 
-			const searchTerm = ref('');
-
-			const filteredItems = computed(() => {
-				if (!searchTerm.value) return allItems;
-				return allItems.filter((item) =>
-					item.label.toLowerCase().includes(searchTerm.value.toLowerCase()),
-				);
-			});
+			const { filteredItems, handleSearch: handleDropdownSearch } = useDropdownSearch(allItems);
 
 			const handleSearch = (term: string) => {
 				console.log('Search term (debounced):', term);
-				searchTerm.value = term;
+				handleDropdownSearch(term);
 			};
 
 			const handleSelect = (action: string) => {
@@ -566,9 +688,10 @@ export const SearchableRoot: Story = {
 			return { args, filteredItems, handleSearch, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<DropdownMenu
 				:items="filteredItems"
+				placement="bottom-start"
 				searchable
 				:search-placeholder="args.searchPlaceholder"
 				:search-debounce="args.searchDebounce"
@@ -581,7 +704,146 @@ export const SearchableRoot: Story = {
 	args: {
 		items: [] as Array<DropdownMenuItemProps<string>>,
 		searchPlaceholder: 'Search items',
-		searchDebounce: 300,
+		searchDebounce: 0,
+	},
+};
+
+export const ExternalSearch: Story = {
+	render: () => ({
+		components: { DropdownMenu },
+		setup() {
+			const dropdownRef = ref<DropdownMenuExposed | null>(null);
+			const textareaRef = ref<HTMLTextAreaElement | null>(null);
+			const isOpen = ref(true);
+			const query = ref('');
+			const allItems: Array<DropdownMenuItemProps<string>> = [
+				{ id: 'orders', label: 'Orders workflow' },
+				{ id: 'invoices', label: 'Invoices workflow' },
+				{ id: 'customers', label: 'Customers workflow' },
+			];
+			const filteredItems = computed(() =>
+				allItems.filter((item) => item.label.toLowerCase().includes(query.value.toLowerCase())),
+			);
+
+			const handleKeydown = (event: KeyboardEvent) => {
+				dropdownRef.value?.handleExternalKeydown(event);
+			};
+
+			const handleSelect = (action: string) => {
+				console.log('Selected:', action);
+			};
+
+			return {
+				dropdownRef,
+				textareaRef,
+				isOpen,
+				query,
+				filteredItems,
+				handleKeydown,
+				handleSelect,
+			};
+		},
+		template: `
+		<div style="display: flex; align-items: flex-start; gap: var(--spacing--xs);">
+			<textarea
+				ref="textareaRef"
+				v-model="query"
+				placeholder="Type to filter workflows"
+				@focus="isOpen = true"
+				@keydown="handleKeydown"
+			/>
+			<DropdownMenu
+				ref="dropdownRef"
+				v-model="isOpen"
+				:items="filteredItems"
+				placement="bottom-start"
+				:external-focus-target="textareaRef"
+				searchable
+				search-mode="external"
+				@select="handleSelect"
+			/>
+		</div>
+		`,
+	}),
+	args: {
+		items: [] as Array<DropdownMenuItemProps<string>>,
+	},
+};
+
+export const ExternalSearchWithHeader: Story = {
+	render: () => ({
+		components: { DropdownMenu },
+		setup() {
+			const dropdownRef = ref<DropdownMenuExposed | null>(null);
+			const textareaRef = ref<HTMLTextAreaElement | null>(null);
+			const isOpen = ref(true);
+			const query = ref('');
+			const allItems: Array<DropdownMenuItemProps<string>> = [
+				{ id: 'section-workflows', label: 'Workflows', header: true },
+				{ id: 'orders', label: 'Orders workflow' },
+				{ id: 'invoices', label: 'Invoices workflow' },
+				{ id: 'customers', label: 'Customers workflow' },
+			];
+			const filteredItems = computed(() => {
+				const term = query.value.trim().toLowerCase();
+				if (!term) return allItems;
+				return allItems.filter((item) => !item.header && item.label.toLowerCase().includes(term));
+			});
+
+			const handleKeydown = (event: KeyboardEvent) => {
+				const handled = dropdownRef.value?.handleExternalKeydown(event) ?? false;
+				// An unhandled Up or Down moves the caret. The mention menu treats that as leaving the query and closes.
+				if (!handled && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+					isOpen.value = false;
+				}
+			};
+
+			const handleSelect = (action: string) => {
+				console.log('Selected:', action);
+			};
+
+			onMounted(async () => {
+				await nextTick();
+				dropdownRef.value?.highlightFirstItem();
+			});
+
+			return {
+				dropdownRef,
+				textareaRef,
+				isOpen,
+				query,
+				filteredItems,
+				handleKeydown,
+				handleSelect,
+			};
+		},
+		template: `
+		<div style="display: flex; flex-direction: column; align-items: flex-start; gap: var(--spacing--xs);">
+			<p style="margin: 0;">
+				A section header sits above the first row. Press Up. The highlight stays on the first row, and the menu stays open.
+			</p>
+			<textarea
+				ref="textareaRef"
+				v-model="query"
+				placeholder="Type to filter workflows"
+				@focus="isOpen = true"
+				@keydown="handleKeydown"
+			/>
+			<DropdownMenu
+				ref="dropdownRef"
+				v-model="isOpen"
+				:items="filteredItems"
+				:external-focus-target="textareaRef"
+				searchable
+				search-mode="external"
+				placement="bottom-start"
+				@select="handleSelect"
+			/>
+		</div>
+		`,
+	}),
+	args: {
+		items: [] as Array<DropdownMenuItemProps<string>>,
 	},
 };
 
@@ -590,6 +852,86 @@ export const SearchableRootWithSubmenus: Story = {
 		components: { DropdownMenu },
 		setup() {
 			const allItems: Array<DropdownMenuItemProps<string>> = [
+				{
+					id: 'fruits',
+					label: 'Fruits',
+					icon: { type: 'icon', value: 'folder' },
+					children: [
+						{ id: 'apple', label: 'Apple' },
+						{ id: 'banana', label: 'Banana' },
+						{ id: 'cherry', label: 'Cherry' },
+						...Array.from({ length: 40 }, (_, index) => ({
+							id: `long-fruit-${index + 1}`,
+							label: `Long submenu fruit ${index + 1}`,
+						})),
+					],
+				},
+				{
+					id: 'vegetables',
+					label: 'Vegetables',
+					icon: { type: 'icon', value: 'folder' },
+					children: [
+						{ id: 'carrot', label: 'Carrot' },
+						{ id: 'broccoli', label: 'Broccoli' },
+						{ id: 'spinach', label: 'Spinach' },
+					],
+				},
+				{
+					id: 'dairy',
+					label: 'Dairy',
+					icon: { type: 'icon', value: 'folder' },
+					children: [
+						{ id: 'milk', label: 'Milk' },
+						{ id: 'cheese', label: 'Cheese' },
+						{ id: 'yogurt', label: 'Yogurt' },
+					],
+				},
+				{ id: 'water', label: 'Water', divided: true },
+			];
+
+			const { filteredItems, handleSearch: handleDropdownSearch } = useDropdownSearch(allItems);
+
+			const handleSearch = (term: string) => {
+				console.log('Search term (debounced):', term);
+				handleDropdownSearch(term);
+			};
+
+			const handleSelect = (action: string) => {
+				console.log('Selected:', action);
+			};
+
+			return { args, filteredItems, handleSearch, handleSelect };
+		},
+		template: `
+		<div>
+			<p style="margin-bottom: 16px; color: var(--color--text--tint-1);">
+				The main menu is searchable, and the non-searchable "Fruits" submenu has enough
+				items to scroll. Use this to verify hover and keyboard focus do not cause scroll jumps.
+			</p>
+			<DropdownMenu
+				:items="filteredItems"
+				placement="bottom-start"
+				searchable
+				search-placeholder="Search all items..."
+				:search-debounce="200"
+				@search="handleSearch"
+				@select="handleSelect"
+			/>
+		</div>
+		`,
+	}),
+	args: {
+		items: [] as Array<DropdownMenuItemProps<string>>,
+	},
+};
+
+export const SearchableRootWithFlatResults: Story = {
+	render: () => ({
+		components: { DropdownMenu },
+		setup() {
+			type Item = DropdownMenuItemProps<string>;
+
+			const allItems: Item[] = [
 				{
 					id: 'fruits',
 					label: 'Fruits',
@@ -620,57 +962,41 @@ export const SearchableRootWithSubmenus: Story = {
 						{ id: 'yogurt', label: 'Yogurt' },
 					],
 				},
-				{ id: 'water', label: 'Water', divided: true },
 			];
 
-			const searchTerm = ref('');
+			const {
+				search,
+				filteredItems: searchResults,
+				handleSearch: handleDropdownSearch,
+			} = useDropdownSearch(allItems, {
+				flatList: true,
+				mapResult: (item, path) => ({
+					...item,
+					label: path.map((pathItem) => pathItem.label).join(' › '),
+					divided: false,
+				}),
+			});
 
-			// Recursive filter function that searches through nested items
-			const filterItems = (
-				items: Array<DropdownMenuItemProps<string>>,
-				term: string,
-			): Array<DropdownMenuItemProps<string>> => {
-				if (!term) return items;
-
-				return items.reduce<Array<DropdownMenuItemProps<string>>>((acc, item) => {
-					const labelMatches = item.label.toLowerCase().includes(term.toLowerCase());
-
-					if (item.children) {
-						const filteredChildren = filterItems(item.children, term);
-						// Include parent if it matches OR if any children match
-						if (labelMatches || filteredChildren.length > 0) {
-							acc.push({
-								...item,
-								children: filteredChildren.length > 0 ? filteredChildren : item.children,
-							});
-						}
-					} else if (labelMatches) {
-						acc.push(item);
-					}
-
-					return acc;
-				}, []);
-			};
-
-			const filteredItems = computed(() => filterItems(allItems, searchTerm.value));
+			const filteredItems = computed(() => (search.value.trim() ? searchResults.value : allItems));
 
 			const handleSearch = (term: string) => {
 				console.log('Search term (debounced):', term);
-				searchTerm.value = term;
+				handleDropdownSearch(term);
 			};
 
 			const handleSelect = (action: string) => {
 				console.log('Selected:', action);
 			};
 
-			return { args, filteredItems, handleSearch, handleSelect };
+			return { filteredItems, handleSearch, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<DropdownMenu
 				:items="filteredItems"
+				placement="bottom-start"
 				searchable
-				search-placeholder="Search all items..."
+				search-placeholder="Search and flatten results..."
 				:search-debounce="200"
 				@search="handleSearch"
 				@select="handleSelect"
@@ -687,7 +1013,7 @@ export const SearchableSubmenu: Story = {
 	render: () => ({
 		components: { DropdownMenu },
 		setup() {
-			const allProjects = [
+			const allProjects: Array<DropdownMenuItemProps<string>> = [
 				{ id: 'personal', label: 'Personal', icon: { type: 'icon', value: 'user' } },
 				{ id: 'adore', label: 'Adore', icon: { type: 'emoji', value: '😍' } },
 				{ id: 'assistant', label: 'AI Assistant', icon: { type: 'emoji', value: '🔮' } },
@@ -697,14 +1023,13 @@ export const SearchableSubmenu: Story = {
 				{ id: 'evals', label: 'Evaluations workshop', icon: { type: 'icon', value: 'layers' } },
 			];
 
-			const filteredProjects = ref(allProjects);
+			const { filteredItems: filteredProjects, handleSearch: handleProjectSearch } =
+				useDropdownSearch(allProjects);
 
 			const handleSearch = (term: string, itemId?: string) => {
 				console.log('Search event:', { term, itemId });
 				if (itemId === 'workflow') {
-					filteredProjects.value = term
-						? allProjects.filter((tag) => tag.label.toLowerCase().includes(term.toLowerCase()))
-						: allProjects;
+					handleProjectSearch(term);
 				}
 			};
 
@@ -741,7 +1066,7 @@ export const SearchableSubmenu: Story = {
 			return { items, handleSearch, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<DropdownMenu
 				:items="items"
 				:activator-icon="{ type: 'icon', value: 'plus' }"
@@ -852,13 +1177,14 @@ export const LazyLoadingSubmenu: Story = {
 			return { items, handleSelect, handleOpenChange, handleSubmenuToggle };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<p style="margin-bottom: 16px; color: var(--color--text--tint-1);">
 				Open the dropdown and hover over "Recent Files" or "Shared With Me" to see lazy loading in action.
 				Each submenu fetches its content independently when hovered.
 			</p>
 			<DropdownMenu
 				:items="items"
+				placement="bottom-start"
 				@select="handleSelect"
 				@update:model-value="handleOpenChange"
 				@submenu:toggle="handleSubmenuToggle"
@@ -881,13 +1207,14 @@ export const TruncatedLabelsWithTooltip: Story = {
 			return { args, handleSelect };
 		},
 		template: `
-		<div style="padding: 40px;">
+		<div>
 			<p style="margin-bottom: 16px; color: var(--color--text--tint-1);">
 				Hover over items with long labels to see the full text in a tooltip.
 				Short labels (under 20 characters) won't show a tooltip.
 			</p>
 			<DropdownMenu
 				:items="args.items"
+				placement="bottom-start"
 				show-full-label-on-hover
 				@select="handleSelect"
 			/>
@@ -919,8 +1246,8 @@ export const EmptyState: Story = {
 			return { args };
 		},
 		template: `
-		<div style="padding: 40px;">
-			<DropdownMenu :items="args.items" />
+		<div>
+			<DropdownMenu placement="bottom-start" :items="args.items" />
 		</div>
 		`,
 	}),
@@ -936,8 +1263,8 @@ export const CustomEmptyState: Story = {
 			return { args };
 		},
 		template: `
-		<div style="padding: 40px;">
-			<DropdownMenu :items="args.items">
+		<div>
+			<DropdownMenu placement="bottom-start" :items="args.items">
 				<template #empty>
 					<div style="padding: 24px; text-align: center; color: var(--color--text--tint-1);">
 						<div style="font-size: 12px; margin-bottom: 8px;">🔍</div>

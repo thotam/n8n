@@ -1,4 +1,5 @@
 import type { INode, INodeTypeDescription } from 'n8n-workflow';
+import type { Mock } from 'vitest';
 
 import {
 	identifyPinDataNodes,
@@ -352,7 +353,7 @@ describe('generateEvalPinData', () => {
 
 	function createMockLLM(responseContent: string) {
 		return {
-			invoke: jest.fn().mockResolvedValue({ content: responseContent }),
+			invoke: vi.fn().mockResolvedValue({ content: responseContent }),
 		} as never;
 	}
 
@@ -395,7 +396,7 @@ describe('generateEvalPinData', () => {
 
 		expect(result).toEqual({});
 		// LLM should not be called
-		expect((llm as unknown as { invoke: jest.Mock }).invoke).not.toHaveBeenCalled();
+		expect((llm as unknown as { invoke: Mock }).invoke).not.toHaveBeenCalled();
 	});
 
 	it('should handle markdown-fenced JSON response', async () => {
@@ -406,6 +407,24 @@ describe('generateEvalPinData', () => {
 		};
 
 		const llmResponse = '```json\n{"Slack": [{"json": {"ok": true}}]}\n```';
+
+		const result = await generateEvalPinData(workflow, {
+			llm: createMockLLM(llmResponse),
+			nodeTypes,
+		});
+
+		expect(result.Slack).toHaveLength(1);
+	});
+
+	it('should read fenced JSON that the model explains afterwards', async () => {
+		const workflow: SimpleWorkflow = {
+			name: 'Test',
+			nodes: [makeNode({ name: 'Slack', type: 'n8n-nodes-base.slack' })],
+			connections: {},
+		};
+
+		const llmResponse =
+			'```json\n{"Slack": [{"json": {"ok": true}}]}\n```\n\n**Slack:** the post succeeds, so one item.';
 
 		const result = await generateEvalPinData(workflow, {
 			llm: createMockLLM(llmResponse),
@@ -444,7 +463,7 @@ describe('generateEvalPinData', () => {
 		};
 
 		const llm = {
-			invoke: jest.fn().mockRejectedValue(new Error('LLM error')),
+			invoke: vi.fn().mockRejectedValue(new Error('LLM error')),
 		} as never;
 
 		const result = await generateEvalPinData(workflow, { llm, nodeTypes });

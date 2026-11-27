@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue';
+import type { RouteLocationRaw } from 'vue-router';
 import { useI18n } from '@n8n/i18n';
 import { type Project, ProjectTypes } from '@/features/collaboration/projects/projects.types';
-import { isIconOrEmoji, type IconOrEmoji } from '@n8n/design-system/components/N8nIconPicker/types';
+import { isIconOrEmoji, type IconOrEmoji } from '@n8n/design-system';
 
 import { N8nLink, N8nText } from '@n8n/design-system';
 import ProjectIcon from '@/features/collaboration/projects/components/ProjectIcon.vue';
@@ -10,12 +11,17 @@ type Props = {
 	currentProject?: Project;
 	isDragging?: boolean;
 	isShared?: boolean;
+	icon?: IconOrEmoji;
+	/** Replaces the default link to the project. */
+	to?: RouteLocationRaw;
 };
 
 const props = withDefaults(defineProps<Props>(), {
 	currentProject: undefined,
 	isDragging: false,
 	isShared: false,
+	icon: undefined,
+	to: undefined,
 });
 
 const emit = defineEmits<{
@@ -26,6 +32,10 @@ const emit = defineEmits<{
 const i18n = useI18n();
 
 const projectIcon = computed((): IconOrEmoji => {
+	if (props.icon) {
+		return props.icon;
+	}
+
 	if (props.isShared) {
 		return { type: 'icon', value: 'share' };
 	}
@@ -55,6 +65,10 @@ const projectName = computed(() => {
 });
 
 const projectLink = computed(() => {
+	if (props.to) {
+		return props.to;
+	}
+
 	if (props.isShared) {
 		return '/shared';
 	}
@@ -84,7 +98,7 @@ const onProjectMouseUp = () => {
 		@mouseenter="onHover"
 		@mouseup="isDragging ? onProjectMouseUp() : null"
 	>
-		<N8nLink :to="projectLink" :class="[$style['project-link']]">
+		<N8nLink :to="projectLink" :underline="false" :class="[$style['project-link']]">
 			<ProjectIcon :icon="projectIcon" :border-less="true" size="mini" :title="projectName" />
 			<N8nText
 				size="medium"
@@ -99,6 +113,8 @@ const onProjectMouseUp = () => {
 </template>
 
 <style module lang="scss">
+@use '@/app/css/variables' as *;
+
 .home-project {
 	display: flex;
 	padding: var(--spacing--3xs) var(--spacing--4xs) var(--spacing--4xs);

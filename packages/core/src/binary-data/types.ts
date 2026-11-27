@@ -1,3 +1,4 @@
+import type { BlobMetadata, PreWriteBlobMetadata } from '@n8n/blob-storage';
 import type { Readable } from 'stream';
 
 import type { BINARY_DATA_MODES } from './binary-data.config';
@@ -24,19 +25,19 @@ export namespace BinaryData {
 	 */
 	export type StoredMode = Exclude<ConfigMode | UpgradedMode, 'default'>;
 
-	export type Metadata = {
-		fileName?: string;
-		mimeType?: string;
-		fileSize: number;
-	};
+	export type Metadata = BlobMetadata;
 
 	export type WriteResult = { fileId: string; fileSize: number };
 
-	export type PreWriteMetadata = Omit<Metadata, 'fileSize'>;
+	export type PreWriteMetadata = PreWriteBlobMetadata;
 
 	export type FileLocation =
 		| { type: 'execution'; workflowId: string; executionId: string }
 		| { type: 'custom'; pathSegments: string[]; sourceType?: string; sourceId?: string };
+
+	export type DuplicateOptions = {
+		shouldDuplicate?: (binaryDataId: string) => Promise<boolean>;
+	};
 
 	export interface Manager {
 		init(): Promise<void>;
@@ -70,5 +71,7 @@ export namespace BinaryData {
 
 	export type SigningPayload = {
 		id: string;
+		/** Set when the reader must check that this workflow owns the file. Absent when signing already authorized the read. */
+		workflowId?: string;
 	};
 }

@@ -4,7 +4,7 @@ import { getNonWorkflowAdditionalKeys } from 'n8n-core';
 import type { INode, INodeParameters } from 'n8n-workflow';
 import { isNodeParameters, Workflow } from 'n8n-workflow';
 
-import { NodeTypes } from '@/node-types';
+import { NodeTypesProxy } from '@n8n/backend-services';
 import { getBase } from '@/workflow-execute-additional-data';
 
 /**
@@ -13,14 +13,17 @@ import { getBase } from '@/workflow-execute-additional-data';
  */
 @Service()
 export class ResolverConfigExpressionService {
-	constructor(private readonly nodeTypes: NodeTypes) {}
+	constructor(private readonly nodeTypes: NodeTypesProxy) {}
 
 	/**
 	 * Resolves expressions in config using global data only (secrets, variables).
 	 * Does not use runtime execution context or workflow data.
 	 * @throws Error if expression syntax is invalid
 	 */
-	async resolve(config: CredentialResolverConfiguration): Promise<CredentialResolverConfiguration> {
+	async resolve(
+		config: CredentialResolverConfiguration,
+		canUseExternalSecrets = false,
+	): Promise<CredentialResolverConfiguration> {
 		// If config is not INodeParameters, return as is
 		if (!isNodeParameters(config)) {
 			return config;
@@ -35,7 +38,9 @@ export class ResolverConfigExpressionService {
 		});
 
 		const additionalData = await getBase();
-		const additionalKeys = getNonWorkflowAdditionalKeys(additionalData);
+		const additionalKeys = getNonWorkflowAdditionalKeys(additionalData, {
+			secretsEnabled: canUseExternalSecrets,
+		});
 
 		await workflow.expression.acquireIsolate();
 		try {

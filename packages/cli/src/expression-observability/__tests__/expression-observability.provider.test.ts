@@ -4,19 +4,25 @@
 import type { Logger } from '@n8n/backend-common';
 import { ExpressionEngineConfig, type GlobalConfig } from '@n8n/config';
 import { EXPRESSION_METRICS } from '@n8n/expression-runtime';
-import { trace } from '@opentelemetry/api';
-import { mock } from 'jest-mock-extended';
+import { trace, type Tracer } from '@opentelemetry/api';
 import promClient from 'prom-client';
+import { mock } from 'vitest-mock-extended';
 
 import { ExpressionObservabilityProvider } from '../expression-observability.provider';
 
 const scopedLogger = mock<Logger>();
+const startSpanMock = vi.fn().mockReturnValue({
+	setStatus: vi.fn(),
+	setAttribute: vi.fn(),
+	recordException: vi.fn(),
+	end: vi.fn(),
+});
 
 function buildConfig(overrides: Partial<ExpressionEngineConfig> = {}): ExpressionEngineConfig {
 	const config = new ExpressionEngineConfig();
-	// The provider is a no-op unless engine === 'vm'. Default tests to the active
-	// engine so shared assertions exercise the real code path.
-	return Object.assign(config, { engine: 'vm' as const, ...overrides });
+	// The provider is a no-op unless engine is 'vm', and spans are off by default.
+	// Turn both on so shared assertions exercise the real code path.
+	return Object.assign(config, { engine: 'vm' as const, tracesEnabled: true, ...overrides });
 }
 
 function buildLogger(): Logger {
@@ -31,7 +37,8 @@ function buildGlobalConfig(prefix = 'n8n_'): GlobalConfig {
 
 describe('ExpressionObservabilityProvider', () => {
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
+		vi.spyOn(trace, 'getTracer').mockReturnValue({ startSpan: startSpanMock } as unknown as Tracer);
 		promClient.register.clear();
 	});
 
@@ -81,6 +88,23 @@ describe('ExpressionObservabilityProvider', () => {
 			expect(output).toContain('n8n_expression_pool_acquired_total 2');
 		});
 
+		it('registers the native evaluation counter with result and reason labels', async () => {
+			const provider = new ExpressionObservabilityProvider(
+				buildConfig(),
+				buildLogger(),
+				buildGlobalConfig(),
+			);
+			provider.metrics.counter(EXPRESSION_METRICS.nativeEvaluations.name, 1, {
+				result: 'fallback',
+				reason: 'too_large',
+			});
+
+			const output = await promClient.register.metrics();
+			expect(output).toContain(
+				'n8n_expression_native_evaluations_total{result="fallback",reason="too_large"} 1',
+			);
+		});
+
 		it('registers a prom gauge with the cleaned name', async () => {
 			const provider = new ExpressionObservabilityProvider(
 				buildConfig(),
@@ -110,21 +134,49 @@ describe('ExpressionObservabilityProvider', () => {
 		});
 	});
 
+	describe('survives a global registry clear', () => {
+		it('re-registers expression metrics on emission without warning after a clear', async () => {
+			const provider = new ExpressionObservabilityProvider(
+				buildConfig(),
+				buildLogger(),
+				buildGlobalConfig(),
+			);
+
+			promClient.register.clear();
+
+			provider.metrics.counter(EXPRESSION_METRICS.poolAcquired.name, 3);
+			provider.metrics.gauge(EXPRESSION_METRICS.codeCacheSize.name, 7);
+			provider.metrics.histogram(EXPRESSION_METRICS.evaluationDuration.name, 0.02, {
+				status: 'success',
+				type: 'none',
+			});
+
+			expect(scopedLogger.warn).not.toHaveBeenCalled();
+
+			const output = await promClient.register.metrics();
+			expect(output).toContain('n8n_expression_pool_acquired_total 3');
+			expect(output).toContain('n8n_expression_code_cache_size 7');
+			expect(output).toContain('n8n_expression_evaluation_duration_seconds_count');
+		});
+
+		it('still warns for genuinely unknown metric names after a clear', () => {
+			const provider = new ExpressionObservabilityProvider(
+				buildConfig(),
+				buildLogger(),
+				buildGlobalConfig(),
+			);
+
+			promClient.register.clear();
+
+			provider.metrics.counter('test.unknown', 1);
+
+			expect(scopedLogger.warn).toHaveBeenCalledWith('Emitted unknown expression metric', {
+				name: 'test.unknown',
+			});
+		});
+	});
+
 	describe('tail sampling', () => {
-		const startSpanMock = jest.fn().mockReturnValue({
-			setStatus: jest.fn(),
-			setAttribute: jest.fn(),
-			recordException: jest.fn(),
-			end: jest.fn(),
-		});
-
-		beforeEach(() => {
-			startSpanMock.mockClear();
-			jest.spyOn(trace, 'getTracer').mockReturnValue({
-				startSpan: startSpanMock,
-			} as unknown as ReturnType<typeof trace.getTracer>);
-		});
-
 		it('drops healthy spans under the slow threshold', () => {
 			const provider = new ExpressionObservabilityProvider(
 				buildConfig({ slowEvaluationThresholdMs: 50, tracesSampleRate: 0 }),

@@ -11,20 +11,17 @@ import type {
 } from '@n8n/expression-runtime';
 import { EXPRESSION_METRICS, NoOpProvider } from '@n8n/expression-runtime';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
-import type { Tracer } from '@opentelemetry/api';
-import { UnexpectedError } from 'n8n-workflow';
+import { UnexpectedError } from '@n8n/errors';
 import promClient, { type Counter, type Gauge, type Histogram } from 'prom-client';
 
-import {
-	ATTRIBUTE,
-	DURATION_BUCKETS_SECONDS,
-	TRACER_NAME,
-} from './expression-observability.constants';
+import { ATTRIBUTE, DURATION_BUCKETS_SECONDS } from './expression-observability.constants';
 import {
 	normalizeAttributes,
 	normalizeAttributeValue,
 	toPromName,
 } from './expression-observability.formatters';
+
+import { EXPRESSION_TRACER_NAME } from '@/observability/tracer-names';
 
 type TailSampleDecision = 'drop' | 'keep';
 
@@ -40,7 +37,9 @@ export class ExpressionObservabilityProvider implements ObservabilityProvider {
 
 	private readonly prefix!: string;
 
-	private tracer?: Tracer;
+	private readonly metricDefs = new Map<string, MetricDef>(
+		(Object.values(EXPRESSION_METRICS) as MetricDef[]).map((def) => [def.name, def]),
+	);
 
 	constructor(
 		private readonly config: ExpressionEngineConfig,
@@ -49,7 +48,10 @@ export class ExpressionObservabilityProvider implements ObservabilityProvider {
 	) {
 		this.scopedLogger = this.logger.scoped('expression-engine');
 
-		if (!this.config.observabilityEnabled || this.config.engine !== 'vm') {
+		if (
+			!this.config.observabilityEnabled ||
+			(this.config.engine !== 'vm' && this.config.engine !== 'quickjs')
+		) {
 			this.metrics = NoOpProvider.metrics;
 			this.traces = NoOpProvider.traces;
 			this.logs = NoOpProvider.logs;
@@ -58,7 +60,9 @@ export class ExpressionObservabilityProvider implements ObservabilityProvider {
 
 		this.prefix = globalConfig.endpoints.metrics.prefix;
 
-		this.registerMetrics();
+		for (const metric of this.metricDefs.values()) {
+			this.getOrRegisterMetric(metric);
+		}
 
 		this.metrics = {
 			counter: (name, value, tags) => this.counter(name, value, tags),
@@ -78,71 +82,65 @@ export class ExpressionObservabilityProvider implements ObservabilityProvider {
 		};
 	}
 
-	private registerMetrics(): void {
-		for (const def of Object.values(EXPRESSION_METRICS) as MetricDef[]) {
-			const promName = toPromName(def.name, def.kind, this.prefix);
-			switch (def.kind) {
-				case 'counter':
-					new promClient.Counter({
-						name: promName,
-						help: def.help,
-						labelNames: def.labels,
-					});
-					break;
-				case 'gauge':
-					new promClient.Gauge({
-						name: promName,
-						help: def.help,
-						labelNames: def.labels,
-					});
-					break;
-				case 'histogram':
-					new promClient.Histogram({
-						name: promName,
-						help: def.help,
-						labelNames: def.labels,
-						buckets: DURATION_BUCKETS_SECONDS,
-					});
-					break;
-				default: {
-					const _exhaustive: never = def.kind;
-					throw new UnexpectedError(`Unknown metric kind: ${String(_exhaustive)}`);
-				}
+	private getOrRegisterMetric(def: MetricDef) {
+		const promName = toPromName(def.name, def.kind, this.prefix);
+		const existing = promClient.register.getSingleMetric(promName);
+		if (existing) return existing;
+
+		switch (def.kind) {
+			case 'counter':
+				return new promClient.Counter({
+					name: promName,
+					help: def.help,
+					labelNames: def.labels,
+				});
+			case 'gauge':
+				return new promClient.Gauge({
+					name: promName,
+					help: def.help,
+					labelNames: def.labels,
+				});
+			case 'histogram':
+				return new promClient.Histogram({
+					name: promName,
+					help: def.help,
+					labelNames: def.labels,
+					buckets: DURATION_BUCKETS_SECONDS,
+				});
+			default: {
+				const _exhaustive: never = def.kind;
+				throw new UnexpectedError(`Unknown metric kind: ${String(_exhaustive)}`);
 			}
 		}
 	}
 
+	private getMetricDef(name: string, kind: MetricDef['kind']) {
+		const def = this.metricDefs.get(name);
+		if (def?.kind === kind) return def;
+		this.scopedLogger.warn('Emitted unknown expression metric', { name });
+		return undefined;
+	}
+
 	private counter(name: string, value: number, tags?: Record<string, string>): void {
-		const promName = toPromName(name, 'counter', this.prefix);
-		const counter = promClient.register.getSingleMetric(promName) as Counter<string> | undefined;
-		if (!counter) {
-			this.scopedLogger.warn('Emitted unknown expression metric', { name });
-			return;
-		}
+		const def = this.getMetricDef(name, 'counter');
+		if (!def) return;
+		const counter = this.getOrRegisterMetric(def) as Counter<string>;
 		if (tags) counter.inc(tags, value);
 		else counter.inc(value);
 	}
 
 	private gauge(name: string, value: number, tags?: Record<string, string>): void {
-		const promName = toPromName(name, 'gauge', this.prefix);
-		const gauge = promClient.register.getSingleMetric(promName) as Gauge<string> | undefined;
-		if (!gauge) {
-			this.scopedLogger.warn('Emitted unknown expression metric', { name });
-			return;
-		}
+		const def = this.getMetricDef(name, 'gauge');
+		if (!def) return;
+		const gauge = this.getOrRegisterMetric(def) as Gauge<string>;
 		if (tags) gauge.set(tags, value);
 		else gauge.set(value);
 	}
 
 	private histogram(name: string, value: number, tags?: Record<string, string>): void {
-		const promName = toPromName(name, 'histogram', this.prefix);
-		const histogram = promClient.register.getSingleMetric(promName) as
-			| Histogram<string>
-			| undefined;
-		if (!histogram) {
-			this.scopedLogger.warn('Emitted unknown expression metric', { name });
-			return;
-		}
+		const def = this.getMetricDef(name, 'histogram');
+		if (!def) return;
+		const histogram = this.getOrRegisterMetric(def) as Histogram<string>;
 		if (tags) histogram.observe(tags, value);
 		else histogram.observe(value);
 
@@ -164,11 +162,11 @@ export class ExpressionObservabilityProvider implements ObservabilityProvider {
 					? 'slow'
 					: 'healthy';
 
-		const tracer = this.getTracer();
+		const tracer = trace.getTracer(EXPRESSION_TRACER_NAME);
 		const errorType = tags?.type && tags.type !== 'none' ? tags.type : undefined;
 		const span = tracer.startSpan('expression.evaluate', {
 			attributes: {
-				[ATTRIBUTE.EXPRESSION_ENGINE]: 'vm',
+				[ATTRIBUTE.EXPRESSION_ENGINE]: this.config.engine,
 				[ATTRIBUTE.EXPRESSION_DURATION_SECONDS]: durationSeconds,
 				[ATTRIBUTE.EXPRESSION_OUTCOME]: outcome,
 				...(errorType ? { [ATTRIBUTE.EXPRESSION_ERROR_TYPE]: errorType } : {}),
@@ -191,7 +189,7 @@ export class ExpressionObservabilityProvider implements ObservabilityProvider {
 	private startSpan(name: string, attributes?: Record<string, unknown>): Span {
 		if (!this.config.tracesEnabled) return NoOpProvider.traces.startSpan(name, attributes);
 
-		const tracer = this.getTracer();
+		const tracer = trace.getTracer(EXPRESSION_TRACER_NAME);
 		const otelSpan = tracer.startSpan(name, {
 			attributes: normalizeAttributes(attributes),
 		});
@@ -208,10 +206,5 @@ export class ExpressionObservabilityProvider implements ObservabilityProvider {
 			recordException: (error) => otelSpan.recordException(error),
 			end: () => otelSpan.end(),
 		};
-	}
-
-	private getTracer(): Tracer {
-		this.tracer ??= trace.getTracer(TRACER_NAME);
-		return this.tracer;
 	}
 }

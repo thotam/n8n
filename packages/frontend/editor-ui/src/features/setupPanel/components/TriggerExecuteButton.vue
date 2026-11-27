@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { N8nButton, N8nTooltip } from '@n8n/design-system';
-import type { IconName } from '@n8n/design-system/components/N8nIcon/icons';
+import type { IconName } from '@n8n/design-system';
 
 const props = defineProps<{
 	label: string;
@@ -23,7 +23,7 @@ const onClick = async () => {
 </script>
 
 <template>
-	<N8nTooltip :disabled="!hasTooltip" placement="top">
+	<N8nTooltip as-child :disabled="!hasTooltip" placement="top">
 		<template #content>
 			<p v-for="(item, index) in tooltipItems" :key="index" :class="$style.tooltipItem">
 				{{ item }}
@@ -33,6 +33,7 @@ const onClick = async () => {
 			data-test-id="trigger-execute-button"
 			:label="label"
 			:disabled="disabled"
+			:focusable-when-disabled="hasTooltip"
 			:loading="loading"
 			:icon="icon"
 			size="small"

@@ -2,13 +2,20 @@ import { createTestingPinia } from '@pinia/testing';
 import merge from 'lodash/merge';
 import userEvent from '@testing-library/user-event';
 import { screen, within } from '@testing-library/vue';
-import { EnterpriseEditionFeature } from '@/app/constants';
+import {
+	DELETE_SECRETS_PROVIDER_MODAL_KEY,
+	EnterpriseEditionFeature,
+	SECRETS_PROVIDER_CONNECTION_MODAL_KEY,
+} from '@/app/constants';
+import { isModalPrefetchEnabled } from '@/__tests__/prefetchModals';
+
+vi.mock('@/app/composables/usePrefetchModals');
 import { STORES } from '@n8n/stores';
 import { SETTINGS_STORE_DEFAULT_STATE } from '@/__tests__/utils';
 import SettingsSecretsProviders from './SettingsSecretsProviders.ee.vue';
 import { createComponentRenderer } from '@/__tests__/render';
-import { useSettingsStore } from '@/app/stores/settings.store';
-import { useRBACStore } from '@/app/stores/rbac.store';
+import { useSettingsStore } from '@n8n/stores/settings.store';
+import { useRBACStore } from '@n8n/stores/rbac.store';
 import { setupServer } from '@/__tests__/server';
 import { computed, ref } from 'vue';
 import type { SecretProviderConnection } from '@n8n/api-types';
@@ -32,7 +39,7 @@ vi.mock('vue-router', async () => {
 const mockShowMessage = vi.fn();
 const mockShowError = vi.fn();
 
-vi.mock('@/app/composables/useToast', () => ({
+vi.mock('@n8n/composables/useToast', () => ({
 	useToast: vi.fn(() => ({
 		showMessage: mockShowMessage,
 		showError: mockShowError,
@@ -435,5 +442,15 @@ describe('SettingsSecretsProviders', () => {
 			expect(mockFetchConnection).not.toHaveBeenCalled();
 			expect(mockShowError).toHaveBeenCalled();
 		});
+	});
+
+	it('prefetches the provider modals only with a license', () => {
+		renderComponent({ pinia });
+		expect(isModalPrefetchEnabled(SECRETS_PROVIDER_CONNECTION_MODAL_KEY)).toBe(false);
+		expect(isModalPrefetchEnabled(DELETE_SECRETS_PROVIDER_MODAL_KEY)).toBe(false);
+
+		mockIsEnterpriseEnabled.value = true;
+		expect(isModalPrefetchEnabled(SECRETS_PROVIDER_CONNECTION_MODAL_KEY)).toBe(true);
+		expect(isModalPrefetchEnabled(DELETE_SECRETS_PROVIDER_MODAL_KEY)).toBe(true);
 	});
 });

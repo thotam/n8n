@@ -4,7 +4,7 @@ import { Service } from '@n8n/di';
 import type { DataSourceOptions, LoggerOptions } from '@n8n/typeorm';
 import type { PostgresConnectionOptions } from '@n8n/typeorm/driver/postgres/PostgresConnectionOptions';
 import type { SqlitePooledConnectionOptions } from '@n8n/typeorm/driver/sqlite-pooled/SqlitePooledConnectionOptions';
-import { UserError } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
 import type { TlsOptions } from 'node:tls';
 import path from 'path';
 
@@ -112,6 +112,24 @@ export class DbConnectionOptions {
 			ssl,
 			extra: {
 				idleTimeoutMillis: postgresConfig.idleTimeoutMs,
+				keepAlive: postgresConfig.keepAlive,
+				keepAliveInitialDelayMillis: postgresConfig.keepAliveInitialDelayMs,
+				// pg-pool's `maxLifetimeSeconds` is the upstream knob; we accept ms in config for unit consistency.
+				// Clamp to >= 1s so values like 500ms don't silently round down to 0 (which disables it).
+				...(postgresConfig.maxConnectionLifetimeMs > 0
+					? {
+							maxLifetimeSeconds: Math.max(
+								1,
+								Math.round(postgresConfig.maxConnectionLifetimeMs / 1000),
+							),
+						}
+					: {}),
+				// Bound how long acquiring a connection from the pool can wait (waiting for a free
+				// slot, or for a new connection to be established). Without it, pg-pool waits
+				// indefinitely. Reuse the existing connect-timeout knob rather than adding a new env var.
+				...(postgresConfig.connectionTimeoutMs > 0
+					? { connectionTimeoutMillis: postgresConfig.connectionTimeoutMs }
+					: {}),
 			},
 		};
 	}

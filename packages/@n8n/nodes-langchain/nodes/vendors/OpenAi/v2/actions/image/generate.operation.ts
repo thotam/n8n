@@ -4,8 +4,10 @@ import type {
 	INodeExecutionData,
 	IDataObject,
 } from 'n8n-workflow';
-import { updateDisplayOptions } from 'n8n-workflow';
+import { NodeOperationError, requestPath, updateDisplayOptions } from 'n8n-workflow';
 
+import type { ImageResponse } from '../../../helpers/interfaces';
+import { accumulateImageTokenUsage } from '../../../helpers/token-usage';
 import { apiRequest } from '../../../transport';
 import { imageGenerateOptions, imageGenerateOptionsRLC, modelRLC } from '../descriptions';
 
@@ -81,6 +83,11 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	}
 
 	const prompt = this.getNodeParameter('prompt', i) as string;
+	if (!prompt.trim()) {
+		throw new NodeOperationError(this.getNode(), 'A non-empty prompt is required.', {
+			itemIndex: i,
+		});
+	}
 	const options = this.getNodeParameter('options', i, {});
 	const supportsResponseFormat = !model.startsWith('gpt-image');
 	let response_format = 'b64_json';
@@ -108,7 +115,13 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		...options,
 	};
 
-	const { data } = await apiRequest.call(this, 'POST', '/images/generations', { body });
+	const response = (await apiRequest.call(this, 'POST', requestPath`/images/generations`, {
+		body,
+	})) as ImageResponse;
+	const { data, usage } = response;
+
+	accumulateImageTokenUsage(this, usage);
+
 	if (response_format === 'url') {
 		return ((data as IDataObject[]) || []).map((entry) => ({
 			json: entry,
@@ -117,7 +130,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	} else {
 		const returnData: INodeExecutionData[] = [];
 
-		for (const entry of data) {
+		for (const entry of data ?? []) {
 			const binaryData = await this.helpers.prepareBinaryData(
 				Buffer.from(entry.b64_json as string, 'base64'),
 				'data',

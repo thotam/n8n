@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import RunData from '@/features/ndv/runData/components/RunData.vue';
-import { type LogEntry } from '@/features/execution/logs/logs.types';
+import { type NodeLogEntry } from '@/features/execution/logs/logs.types';
 import { useI18n } from '@n8n/i18n';
 import type { IRunDataDisplayMode } from '@/Interface';
 import type { NodePanelType } from '@/features/ndv/shared/ndv.types';
@@ -9,7 +9,7 @@ import { waitingNodeTooltip } from '@/features/execution/executions/executions.u
 import { useExecutionRedaction } from '@/features/execution/executions/composables/useExecutionRedaction';
 import { computed, inject, ref } from 'vue';
 import { I18nT } from 'vue-i18n';
-import { PopOutWindowKey } from '@/app/constants';
+import { PopOutWindowKey } from '@n8n/composables/injectionKeys';
 import { WORKFLOW_SETTINGS_MODAL_KEY } from '@/app/constants/modals';
 import { useUIStore } from '@/app/stores/ui.store';
 import { isSubNodeLog } from '../logs.utils';
@@ -25,13 +25,19 @@ const {
 	paneType,
 	collapsingTableColumnName,
 	showRedactedOverlay = true,
+	sourceIndex = 0,
+	overrideOutputs,
 } = defineProps<{
 	title: string;
 	paneType: NodePanelType;
-	logEntry: LogEntry;
+	logEntry: NodeLogEntry;
 	collapsingTableColumnName: string | null;
 	searchShortcut?: SearchShortcut;
 	showRedactedOverlay?: boolean;
+	/** Input pane: which runData.source[] entry to render (for group boundary crossings) */
+	sourceIndex?: number;
+	/** Output pane: scope to specific output branch(es) (for group boundary crossings) */
+	overrideOutputs?: number[];
 }>();
 
 const emit = defineEmits<{
@@ -41,7 +47,8 @@ const emit = defineEmits<{
 const locale = useI18n();
 const ndvStore = injectNDVStore();
 const uiStore = useUIStore();
-const { canReveal, isDynamicCredentials, revealData } = useExecutionRedaction();
+const { canReveal, reason, revealData, credentialToShare, openCredentialSharing } =
+	useExecutionRedaction();
 
 const popOutWindow = inject(PopOutWindowKey, ref<Window | undefined>());
 
@@ -53,10 +60,10 @@ const runDataProps = computed<
 	Pick<InstanceType<typeof RunData>['$props'], 'node' | 'runIndex' | 'overrideOutputs'> | undefined
 >(() => {
 	if (isSubNodeLog(logEntry) || paneType === 'output') {
-		return { node: logEntry.node, runIndex: logEntry.runIndex };
+		return { node: logEntry.node, runIndex: logEntry.runIndex, overrideOutputs };
 	}
 
-	const source = logEntry.runData?.source[0];
+	const source = logEntry.runData?.source[sourceIndex];
 	const node = source && logEntry.workflow.getNode(source.previousNode);
 
 	if (!source || !node) {
@@ -80,7 +87,7 @@ const isExecuting = computed(
 );
 
 function handleClickOpenNdv() {
-	ndvStore.setActiveNodeName(logEntry.node.name, 'logs_view');
+	ndvStore.value.setActiveNodeName(logEntry.node.name, 'logs_view');
 }
 
 function handleChangeDisplayMode(value: IRunDataDisplayMode) {
@@ -122,10 +129,7 @@ function handleChangeDisplayMode(value: IRunDataDisplayMode) {
 		</template>
 
 		<template #header-end="itemCountProps">
-			<RunDataItemCount
-				v-bind="itemCountProps"
-				:search="displayMode === 'schema' ? '' : itemCountProps.search"
-			/>
+			<RunDataItemCount v-bind="itemCountProps" />
 		</template>
 
 		<template #no-output-data>
@@ -149,8 +153,10 @@ function handleChangeDisplayMode(value: IRunDataDisplayMode) {
 						paneType === 'output' ? 'ndv.output.redacted.title' : 'ndv.input.redacted.title',
 					)
 				"
-				:is-dynamic-credentials="isDynamicCredentials"
+				:reason="reason"
 				:can-reveal="canReveal"
+				:credential-to-share="credentialToShare"
+				@share-credential="openCredentialSharing"
 				@open-settings="uiStore.openModal(WORKFLOW_SETTINGS_MODAL_KEY)"
 				@reveal="revealData"
 			/>

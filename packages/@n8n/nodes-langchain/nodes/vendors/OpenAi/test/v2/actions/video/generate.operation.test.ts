@@ -1,4 +1,5 @@
 import type { IExecuteFunctions, INode } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 import type { Mock, Mocked } from 'vitest';
 import { mock, mockDeep } from 'vitest-mock-extended';
 
@@ -54,6 +55,38 @@ describe('Video Generate Operation', async () => {
 		vi.resetAllMocks();
 	});
 
+	describe('empty prompt validation', () => {
+		it('should throw error for empty prompt', async () => {
+			mockExecuteFunctions.getNodeParameter.mockImplementation((paramName: string) => {
+				const params = {
+					prompt: '',
+					seconds: 5,
+					options: {},
+				};
+				return params[paramName as keyof typeof params];
+			});
+
+			await expect(execute.call(mockExecuteFunctions, 0)).rejects.toThrow(
+				'A non-empty prompt is required.',
+			);
+		});
+
+		it('should throw error for whitespace-only prompt', async () => {
+			mockExecuteFunctions.getNodeParameter.mockImplementation((paramName: string) => {
+				const params = {
+					prompt: '   ',
+					seconds: 5,
+					options: {},
+				};
+				return params[paramName as keyof typeof params];
+			});
+
+			await expect(execute.call(mockExecuteFunctions, 0)).rejects.toThrow(
+				'A non-empty prompt is required.',
+			);
+		});
+	});
+
 	describe('successful execution', () => {
 		beforeEach(() => {
 			mockExecuteFunctions.getNodeParameter.mockImplementation((paramName: string) => {
@@ -104,18 +137,23 @@ describe('Video Generate Operation', async () => {
 			const result = await execute.call(mockExecuteFunctions, 0);
 
 			expect(apiRequestSpy).toHaveBeenCalledTimes(2);
-			expect(apiRequestSpy).toHaveBeenNthCalledWith(1, 'POST', '/videos', {
+			expect(apiRequestSpy).toHaveBeenNthCalledWith(1, 'POST', requestPath`/videos`, {
 				option: { formData: expect.any(Object) },
 				headers: expect.any(Object),
 			});
-			expect(apiRequestSpy).toHaveBeenNthCalledWith(2, 'GET', '/videos/video-123/content', {
-				option: {
-					useStream: true,
-					resolveWithFullResponse: true,
-					json: false,
-					encoding: null,
+			expect(apiRequestSpy).toHaveBeenNthCalledWith(
+				2,
+				'GET',
+				requestPath`/videos/video-123/content`,
+				{
+					option: {
+						useStream: true,
+						resolveWithFullResponse: true,
+						json: false,
+						encoding: null,
+					},
 				},
-			});
+			);
 
 			expect(pollUntilAvailableSpy).toHaveBeenCalledWith(
 				mockExecuteFunctions,

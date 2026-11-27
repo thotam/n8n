@@ -1,6 +1,7 @@
 import FormData from 'form-data';
 import get from 'lodash/get';
 import type { IDataObject, IExecuteFunctions } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
 
 import * as assistant from '../../v1/actions/assistant';
 import * as audio from '../../v1/actions/audio';
@@ -36,12 +37,15 @@ const createExecuteFunctionsMock = (parameters: IDataObject) => {
 			},
 			assertBinaryData() {
 				return {
-					filename: 'filenale.flac',
-					contentType: 'audio/flac',
+					fileName: 'filenale.flac',
+					mimeType: 'audio/flac',
 				};
 			},
 			getBinaryDataBuffer() {
-				return 'data buffer data';
+				return Buffer.from('data buffer data');
+			},
+			async binaryToBuffer(data: unknown) {
+				return Buffer.isBuffer(data) ? data : Buffer.from('data buffer data');
 			},
 		},
 	} as unknown as IExecuteFunctions;
@@ -92,7 +96,7 @@ describe('OpenAi', () => {
 				0,
 			);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/assistants', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/assistants`, {
 				body: {
 					description: 'description',
 					instructions: 'some instructions',
@@ -145,7 +149,7 @@ describe('OpenAi', () => {
 				0,
 			);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('DELETE', '/assistants/assistant-id', {
+			expect(apiRequestMock).toHaveBeenCalledWith('DELETE', requestPath`/assistants/assistant-id`, {
 				headers: { 'OpenAI-Beta': 'assistants=v2' },
 			});
 		});
@@ -206,10 +210,10 @@ describe('OpenAi', () => {
 			);
 
 			expect(apiRequestMock).toHaveBeenCalledTimes(2);
-			expect(apiRequestMock).toHaveBeenCalledWith('GET', '/assistants/assistant-id', {
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/assistants/assistant-id`, {
 				headers: { 'OpenAI-Beta': 'assistants=v2' },
 			});
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/assistants/assistant-id', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/assistants/assistant-id`, {
 				body: {
 					instructions: 'some instructions',
 					model: 'gpt-model',
@@ -248,10 +252,10 @@ describe('OpenAi', () => {
 			);
 
 			expect(apiRequestMock).toHaveBeenCalledTimes(2);
-			expect(apiRequestMock).toHaveBeenCalledWith('GET', '/assistants/assistant-id', {
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/assistants/assistant-id`, {
 				headers: { 'OpenAI-Beta': 'assistants=v2' },
 			});
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/assistants/assistant-id', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/assistants/assistant-id`, {
 				body: {
 					instructions: 'some instructions',
 					model: 'gpt-model',
@@ -290,10 +294,10 @@ describe('OpenAi', () => {
 			);
 
 			expect(apiRequestMock).toHaveBeenCalledTimes(2);
-			expect(apiRequestMock).toHaveBeenCalledWith('GET', '/assistants/assistant-id', {
+			expect(apiRequestMock).toHaveBeenCalledWith('GET', requestPath`/assistants/assistant-id`, {
 				headers: { 'OpenAI-Beta': 'assistants=v2' },
 			});
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/assistants/assistant-id', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/assistants/assistant-id`, {
 				body: {
 					instructions: 'some instructions',
 					model: 'gpt-model',
@@ -332,7 +336,7 @@ describe('OpenAi', () => {
 			expect(returnData[0].binary?.myData).toBeDefined();
 			expect(returnData[0].pairedItem).toBeDefined();
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/audio/speech', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/audio/speech`, {
 				body: {
 					input: 'input',
 					model: 'tts-model',
@@ -364,7 +368,7 @@ describe('OpenAi', () => {
 
 			expect(apiRequestMock).toHaveBeenCalledWith(
 				'POST',
-				'/audio/transcriptions',
+				requestPath`/audio/transcriptions`,
 				expect.objectContaining({
 					headers: expect.objectContaining({
 						'content-type': expect.stringMatching(/^multipart\/form-data; boundary=/),
@@ -393,7 +397,7 @@ describe('OpenAi', () => {
 
 			expect(apiRequestMock).toHaveBeenCalledWith(
 				'POST',
-				'/audio/translations',
+				requestPath`/audio/translations`,
 				expect.objectContaining({
 					headers: expect.objectContaining({
 						'content-type': expect.stringMatching(/^multipart\/form-data; boundary=/),
@@ -417,7 +421,7 @@ describe('OpenAi', () => {
 				0,
 			);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('DELETE', '/files/file-id');
+			expect(apiRequestMock).toHaveBeenCalledWith('DELETE', requestPath`/files/file-id`);
 		});
 
 		it('list => should return list of files', async () => {
@@ -464,7 +468,7 @@ describe('OpenAi', () => {
 
 			expect(apiRequestMock).toHaveBeenCalledWith(
 				'POST',
-				'/files',
+				requestPath`/files`,
 				expect.objectContaining({
 					headers: expect.objectContaining({
 						'content-type': expect.stringMatching(/^multipart\/form-data; boundary=/),
@@ -499,7 +503,7 @@ describe('OpenAi', () => {
 			expect(returnData[0].binary?.myData).toBeDefined();
 			expect(returnData[0].pairedItem).toBeDefined();
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/images/generations', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/images/generations`, {
 				body: {
 					model: 'dall-e-3',
 					prompt: 'cat with a hat',
@@ -533,7 +537,7 @@ describe('OpenAi', () => {
 			expect(returnData[0].pairedItem).toBeDefined();
 			expect(returnData).toEqual([{ json: { url: 'image-url' }, pairedItem: { item: 0 } }]);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/images/generations', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/images/generations`, {
 				body: {
 					model: 'dall-e-3',
 					prompt: 'cat with a hat',
@@ -564,9 +568,9 @@ describe('OpenAi', () => {
 			expect(returnData[0].pairedItem).toBeDefined();
 			expect(returnData[0].json).toEqual({ success: true });
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/chat/completions', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/chat/completions`, {
 				body: {
-					max_tokens: 300,
+					max_completion_tokens: 300,
 					messages: [
 						{
 							content: [
@@ -580,6 +584,97 @@ describe('OpenAi', () => {
 					model: 'gpt-4-vision-preview',
 				},
 			});
+		});
+
+		it("analyze => should send the caller's token limit as max_completion_tokens", async () => {
+			apiRequestMock.mockResolvedValueOnce({ success: true });
+
+			await image.analyze.execute.call(
+				createExecuteFunctionsMock({
+					text: 'image text',
+					inputType: 'url',
+					imageUrls: 'image-url1',
+					options: { detail: 'low', maxTokens: 1024 },
+				}),
+				0,
+			);
+
+			const [, , { body }] = apiRequestMock.mock.calls[0];
+			expect(body).toHaveProperty('max_completion_tokens', 1024);
+			// `max_tokens` is what the newer models reject.
+			expect(body).not.toHaveProperty('max_tokens');
+		});
+	});
+
+	describe('Empty Prompt Validation', () => {
+		it('image generate => should throw error for empty prompt', async () => {
+			await expect(
+				image.generate.execute.call(
+					createExecuteFunctionsMock({
+						model: 'dall-e-3',
+						prompt: '',
+						options: {},
+					}),
+					0,
+				),
+			).rejects.toThrow('A non-empty prompt is required.');
+		});
+
+		it('image generate => should throw error for whitespace-only prompt', async () => {
+			await expect(
+				image.generate.execute.call(
+					createExecuteFunctionsMock({
+						model: 'dall-e-3',
+						prompt: '   ',
+						options: {},
+					}),
+					0,
+				),
+			).rejects.toThrow('A non-empty prompt is required.');
+		});
+
+		it('image analyze => should throw error for empty text', async () => {
+			await expect(
+				image.analyze.execute.call(
+					createExecuteFunctionsMock({
+						text: '',
+						inputType: 'url',
+						imageUrls: 'https://example.com/image.jpg',
+						options: {},
+					}),
+					0,
+				),
+			).rejects.toThrow('A non-empty prompt is required.');
+		});
+
+		it('text message => should throw error for empty messages', async () => {
+			await expect(
+				text.message.execute.call(
+					createExecuteFunctionsMock({
+						modelId: 'gpt-model',
+						messages: {
+							values: [{ role: 'user', content: '' }],
+						},
+						options: {},
+					}),
+					0,
+				),
+			).rejects.toThrow('A non-empty prompt is required.');
+		});
+
+		it('text message => should throw error for whitespace-only messages', async () => {
+			await expect(
+				text.message.execute.call(
+					createExecuteFunctionsMock({
+						modelId: 'gpt-model',
+						messages: {
+							values: [{ role: 'user', content: '   ' }],
+						},
+						options: {},
+					}),
+					0,
+				),
+			).rejects.toThrow('A non-empty prompt is required.');
 		});
 	});
 
@@ -599,7 +694,7 @@ describe('OpenAi', () => {
 			expect(returnData[0].pairedItem).toBeDefined();
 			expect(returnData[0].json).toEqual({ flagged: true });
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/moderations', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/moderations`, {
 				body: { input: 'input', model: 'text-moderation-stable' },
 			});
 		});
@@ -621,7 +716,7 @@ describe('OpenAi', () => {
 				0,
 			);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/chat/completions', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/chat/completions`, {
 				body: {
 					messages: [{ content: 'message', role: 'user' }],
 					model: 'gpt-model',

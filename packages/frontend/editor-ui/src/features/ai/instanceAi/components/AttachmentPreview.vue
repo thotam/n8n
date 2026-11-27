@@ -1,8 +1,10 @@
 <script lang="ts" setup>
-import type { InstanceAiAttachment } from '@n8n/api-types';
-import ChatFile from '@n8n/chat/components/ChatFile.vue';
-import { N8nIcon } from '@n8n/design-system';
-import { computed, onBeforeUnmount, ref } from 'vue';
+import type { InstanceAiAttachment, InstanceAiNodesAttachment } from '@n8n/api-types';
+import { useAttachmentPreviews } from '@/features/ai/shared/composables/useAttachmentPreviews';
+import { N8nAttachment, type IconName } from '@n8n/design-system';
+import { computed } from 'vue';
+import { elementAttachmentLabel } from '../utils/elementAttachment';
+import NodesAttachmentChips from './NodesAttachmentChips.vue';
 
 const props = defineProps<{
 	file?: File;
@@ -12,129 +14,89 @@ const props = defineProps<{
 
 const emit = defineEmits<{
 	remove: [file: File];
+	'remove-start': [];
+	'remove-end': [];
+	'remove-resource': [];
+	'update:attachment': [attachment: InstanceAiNodesAttachment];
 }>();
 
-const loading = ref(true);
+const { previewUrl } = useAttachmentPreviews(() => (props.file ? [props.file] : []));
 
-const mimeType = computed(() => props.file?.type ?? props.attachment?.mimeType ?? '');
-const fileName = computed(() => props.file?.name ?? props.attachment?.fileName ?? '');
-const isImage = computed(() => mimeType.value.startsWith('image/'));
-
-const objectUrl = computed(() => {
-	if (props.file && isImage.value) {
-		return URL.createObjectURL(props.file);
+const nodesAttachment = computed(() =>
+	props.attachment?.type === 'nodes' ? props.attachment : undefined,
+);
+/** Workflows, agents and page elements show as attachments, with an icon in place of a preview. */
+const resourceCard = computed((): { name: string; icon: IconName; testId: string } | undefined => {
+	const attachment = props.attachment;
+	switch (attachment?.type) {
+		case 'workflow':
+			return {
+				name: attachment.name ?? 'Workflow',
+				icon: 'workflow',
+				testId: 'attachment-preview-resource',
+			};
+		case 'agent':
+			return {
+				name: attachment.name ?? 'Agent',
+				icon: 'robot',
+				testId: 'attachment-preview-resource',
+			};
+		case 'element':
+			return {
+				name: elementAttachmentLabel(attachment),
+				icon: 'mouse-pointer',
+				testId: 'attachment-preview-element',
+			};
+		default:
+			return undefined;
 	}
-	return null;
 });
+const fileAttachment = computed(() =>
+	props.attachment?.type === 'file' ? props.attachment : undefined,
+);
 
 const thumbnailSrc = computed(() => {
-	if (objectUrl.value) return objectUrl.value;
-	if (props.attachment && isImage.value) {
-		return `data:${props.attachment.mimeType};base64,${props.attachment.data}`;
-	}
-	return null;
-});
-
-const fallbackFile = computed(() => {
-	if (props.file) return props.file;
-	if (props.attachment) {
-		return new File([], props.attachment.fileName, { type: props.attachment.mimeType });
-	}
-	return new File([], 'unknown');
-});
-
-function handleLoad() {
-	loading.value = false;
-}
-
-function handleRemove() {
-	if (props.file) {
-		emit('remove', props.file);
-	}
-}
-
-onBeforeUnmount(() => {
-	if (objectUrl.value) {
-		URL.revokeObjectURL(objectUrl.value);
-	}
+	const attachment = fileAttachment.value;
+	return attachment?.mimeType.startsWith('image/')
+		? `data:${attachment.mimeType};base64,${attachment.data}`
+		: undefined;
 });
 </script>
 
 <template>
-	<div v-if="isImage && thumbnailSrc" :class="$style.thumbnailWrapper">
-		<div v-if="loading" :class="$style.loadingSkeleton">
-			<N8nIcon icon="spinner" color="primary" spin size="small" />
-		</div>
-		<img :src="thumbnailSrc" :alt="fileName" :class="$style.thumbnail" @load="handleLoad" />
-		<button
-			v-if="isRemovable"
-			:class="$style.removeBtn"
-			data-test-id="attachment-preview-remove"
-			@click.stop="handleRemove"
-		>
-			<N8nIcon icon="x" size="small" />
-		</button>
-	</div>
-	<ChatFile
-		v-else
-		:file="fallbackFile"
+	<NodesAttachmentChips
+		v-if="nodesAttachment"
+		:attachment="nodesAttachment"
 		:is-removable="isRemovable ?? false"
-		@remove="emit('remove', $event)"
+		@update:attachment="emit('update:attachment', $event)"
+		@remove-all="emit('remove-resource')"
+	/>
+	<N8nAttachment
+		v-else-if="resourceCard"
+		:file-name="resourceCard.name"
+		:icon="resourceCard.icon"
+		:is-removable="isRemovable ?? false"
+		:data-test-id="resourceCard.testId"
+		@remove="emit('remove-resource')"
+	/>
+	<N8nAttachment
+		v-else-if="props.file"
+		:file-name="props.file.name"
+		:mime-type="props.file.type"
+		:size-bytes="props.file.size"
+		:src="previewUrl(props.file)"
+		:is-removable="isRemovable ?? false"
+		@remove-start="emit('remove-start')"
+		@remove="emit('remove', props.file)"
+		@remove-end="emit('remove-end')"
+	/>
+	<N8nAttachment
+		v-else-if="fileAttachment"
+		:file-name="fileAttachment.fileName"
+		:mime-type="fileAttachment.mimeType"
+		:src="thumbnailSrc"
+		:is-removable="isRemovable ?? false"
+		@remove-start="emit('remove-start')"
+		@remove-end="emit('remove-end')"
 	/>
 </template>
-
-<style lang="scss" module>
-.thumbnailWrapper {
-	position: relative;
-	width: 80px;
-	height: 80px;
-	border-radius: var(--radius--lg);
-	overflow: hidden;
-	border: var(--border);
-	flex-shrink: 0;
-}
-
-.thumbnail {
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
-	display: block;
-}
-
-.loadingSkeleton {
-	position: absolute;
-	inset: 0;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	background: var(--color--foreground--tint-2);
-	z-index: 1;
-}
-
-.removeBtn {
-	position: absolute;
-	top: var(--spacing--4xs);
-	right: var(--spacing--4xs);
-	width: 20px;
-	height: 20px;
-	border-radius: 50%;
-	background: color-mix(in srgb, var(--color--foreground--shade-2) 70%, transparent);
-	color: white;
-	border: none;
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	font-size: var(--font-size--3xs);
-	opacity: 0;
-	transition: opacity 0.15s;
-
-	.thumbnailWrapper:hover & {
-		opacity: 1;
-	}
-
-	@media (hover: none) {
-		opacity: 1;
-	}
-}
-</style>

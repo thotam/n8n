@@ -1,11 +1,13 @@
+import type { EventService } from '@n8n/backend-services';
 import type { GlobalConfig, TaskRunnersConfig } from '@n8n/config';
-import { mock } from 'jest-mock-extended';
+import { UserError } from '@n8n/errors';
 import get from 'lodash/get';
 import set from 'lodash/set';
 import type { ErrorReporter } from 'n8n-core';
+import { mock } from 'vitest-mock-extended';
 
-import type { EventService } from '@/events/event.service';
 import type { NodeTypes } from '@/node-types';
+import { TaskCancelledError } from '@/task-runners/errors/task-cancelled.error';
 import type { Task } from '@/task-runners/task-managers/task-requester';
 import { TaskRequester } from '@/task-runners/task-managers/task-requester';
 
@@ -46,7 +48,7 @@ describe('TaskRequester', () => {
 			['helpers.httpRequest', [{ url: 'http://localhost' }]],
 			['helpers.request', [{ url: 'http://localhost' }]],
 		])('should handle %s rpc call', async (methodName, args) => {
-			const executeFunctions = set({}, methodName.split('.'), jest.fn());
+			const executeFunctions = set({}, methodName.split('.'), vi.fn());
 
 			const mockTask = mock<Task>({
 				taskId: 'taskId',
@@ -71,7 +73,7 @@ describe('TaskRequester', () => {
 		});
 
 		it('converts any serialized buffer arguments into buffers', async () => {
-			const mockPrepareBinaryData = jest.fn().mockResolvedValue(undefined);
+			const mockPrepareBinaryData = vi.fn().mockResolvedValue(undefined);
 			const mockTask = mock<Task>({
 				taskId: 'taskId',
 				data: {
@@ -97,6 +99,77 @@ describe('TaskRequester', () => {
 			);
 		});
 
+		it('converts base64 serialized buffer arguments into buffers', async () => {
+			const mockPrepareBinaryData = vi.fn().mockResolvedValue(undefined);
+			const mockTask = mock<Task>({
+				taskId: 'taskId',
+				data: { executeFunctions: { helpers: { prepareBinaryData: mockPrepareBinaryData } } },
+			});
+			instance.tasks.set('taskId', mockTask);
+
+			await instance.handleRpc('taskId', 'callId', 'helpers.prepareBinaryData', [
+				{ type: 'Buffer', base64: Buffer.from('data').toString('base64') },
+				'filename',
+			]);
+
+			expect(mockPrepareBinaryData).toHaveBeenCalledWith(Buffer.from('data'), 'filename');
+		});
+
+		it('sends a buffer return value as base64', async () => {
+			const buffer = Buffer.from([0, 255, 128, 10]);
+			const mockTask = mock<Task>({
+				taskId: 'taskId',
+				data: {
+					executeFunctions: {
+						helpers: { getBinaryDataBuffer: vi.fn().mockResolvedValue(buffer) },
+					},
+				},
+			});
+			instance.tasks.set('taskId', mockTask);
+
+			await instance.handleRpc('taskId', 'callId', 'helpers.getBinaryDataBuffer', [0, 'data']);
+
+			expect(instance.sentMessages).toEqual([
+				{
+					type: 'requester:rpcresponse',
+					taskId: 'taskId',
+					callId: 'callId',
+					status: 'success',
+					data: { type: 'Buffer', base64: buffer.toString('base64') },
+				},
+			]);
+		});
+
+		it('sends a readable error when the buffer return value cannot be encoded', async () => {
+			const buffer = Buffer.from('data');
+			vi.spyOn(buffer, 'toString').mockImplementation(() => {
+				throw Object.assign(new Error('Cannot create a string longer than 0x1fffffe8 characters'), {
+					code: 'ERR_STRING_TOO_LONG',
+				});
+			});
+			const mockTask = mock<Task>({
+				taskId: 'taskId',
+				data: {
+					executeFunctions: {
+						helpers: { getBinaryDataBuffer: vi.fn().mockResolvedValue(buffer) },
+					},
+				},
+			});
+			instance.tasks.set('taskId', mockTask);
+
+			await instance.handleRpc('taskId', 'callId', 'helpers.getBinaryDataBuffer', [0, 'data']);
+
+			expect(instance.sentMessages).toEqual([
+				{
+					type: 'requester:rpcresponse',
+					taskId: 'taskId',
+					callId: 'callId',
+					status: 'error',
+					data: 'Failed to encode RPC response: Cannot create a string longer than 0x1fffffe8 characters',
+				},
+			]);
+		});
+
 		describe('errors', () => {
 			it('sends method not allowed error if method is not in the allow list', async () => {
 				const mockTask = mock<Task>({
@@ -120,14 +193,44 @@ describe('TaskRequester', () => {
 				]);
 			});
 
-			it('sends error if method throws', async () => {
-				const error = new Error('Test error');
+			it('sends the error message if method throws', async () => {
+				const error = new UserError('This binary data is not available to the current workflow.');
 				const mockTask = mock<Task>({
 					taskId: 'taskId',
 					data: {
 						executeFunctions: {
 							helpers: {
-								assertBinaryData: jest.fn().mockRejectedValue(error),
+								assertBinaryData: vi.fn().mockRejectedValue(error),
+							},
+						},
+					},
+				});
+				instance.tasks.set('taskId', mockTask);
+
+				await instance.handleRpc('taskId', 'callId', 'helpers.assertBinaryData', []);
+
+				expect(instance.sentMessages).toEqual([
+					{
+						callId: 'callId',
+						data: expect.objectContaining({
+							message: 'This binary data is not available to the current workflow.',
+							name: 'UserError',
+						}),
+						status: 'error',
+						taskId: 'taskId',
+						type: 'requester:rpcresponse',
+					},
+				]);
+			});
+
+			it('preserves a non-Error value if method rejects with one', async () => {
+				const error = { code: 'ERR_TEST' };
+				const mockTask = mock<Task>({
+					taskId: 'taskId',
+					data: {
+						executeFunctions: {
+							helpers: {
+								assertBinaryData: vi.fn().mockRejectedValue(error),
 							},
 						},
 					},
@@ -146,6 +249,36 @@ describe('TaskRequester', () => {
 					},
 				]);
 			});
+		});
+	});
+
+	describe('cancelTasks', () => {
+		it('rejects pending tasks with TaskCancelledError when their execution is cancelled', async () => {
+			const taskId = 'taskId';
+			const executionId = 'executionId';
+
+			const mockTask = mock<Task>({ taskId });
+			instance.tasks.set(taskId, mockTask);
+
+			let capturedRejection: unknown;
+			const pending = new Promise((_, reject) => {
+				instance.taskAcceptRejects.set(taskId, {
+					accept: vi.fn(),
+					reject: (reason) => {
+						capturedRejection = reason;
+						reject(reason);
+					},
+				});
+			});
+
+			(
+				instance as unknown as { executionIdsToTaskIds: Map<string, Set<string>> }
+			).executionIdsToTaskIds.set(executionId, new Set([taskId]));
+
+			instance.cancelTasks(executionId);
+
+			await expect(pending).rejects.toBeInstanceOf(TaskCancelledError);
+			expect(capturedRejection).toBeInstanceOf(TaskCancelledError);
 		});
 	});
 });

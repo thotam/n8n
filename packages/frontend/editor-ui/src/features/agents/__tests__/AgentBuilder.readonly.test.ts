@@ -1,18 +1,33 @@
 /* eslint-disable import-x/no-extraneous-dependencies, @typescript-eslint/no-unsafe-assignment -- test-only patterns */
 import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
-import { ref } from 'vue';
+import { createTestingPinia } from '@pinia/testing';
 
 vi.mock('@n8n/i18n', () => ({
 	useI18n: () => ({ baseText: (key: string) => key }),
 	i18n: { baseText: (key: string) => key },
 }));
 
+vi.mock('../composables/useProjectAgentsList', () => ({
+	useProjectAgentsList: () => ({
+		list: { value: [] },
+		ensureLoaded: vi.fn().mockResolvedValue([]),
+	}),
+}));
+
+const triggerRedesignFlag = vi.hoisted(() => ({ value: false }));
+vi.mock('../composables/useAgentTriggerRedesignFlag', async () => {
+	const { computed } = await import('vue');
+	return {
+		useAgentTriggerRedesignFlag: () => computed(() => triggerRedesignFlag.value),
+	};
+});
+
 // First mount of these SFCs eats the Vite transform cost; give them headroom.
 vi.setConfig({ testTimeout: 30_000 });
 
 describe('AgentBuilderEditorColumn — childrenDisabled composes streaming and canEditAgent', () => {
-	it('child panels see disabled=true when canEditAgent is false', async () => {
+	it('Agent tab child panels see disabled=true when canEditAgent is false', async () => {
 		const { default: AgentBuilderEditorColumn } = await import(
 			'../components/AgentBuilderEditorColumn.vue'
 		);
@@ -20,23 +35,39 @@ describe('AgentBuilderEditorColumn — childrenDisabled composes streaming and c
 		const wrapper = mount(AgentBuilderEditorColumn, {
 			props: {
 				activeMainTab: 'agent',
-				mainTabOptions: [{ label: 'Agent', value: 'agent' }],
+				mainTabOptions: [
+					{ label: 'Build', value: 'agent' },
+					{ label: 'Sessions', value: 'sessions' },
+					{ label: 'Settings', value: 'settings' },
+				],
 				localConfig: {} as never,
 				agent: null,
 				projectId: 'p1',
 				agentId: 'a1',
+				agentFiles: [],
+				agentFilesLoading: false,
+				agentFilesUploading: false,
+				knowledgeBaseEnabled: true,
 				appliedSkills: [],
 				connectedTriggers: [],
-				isBuildChatStreaming: false,
 				canEditAgent: false, // <<< Agent is read only
 				executionsDescription: '',
 			},
 			global: {
+				plugins: [createTestingPinia({ createSpy: vi.fn })],
 				stubs: {
 					N8nCard: { template: '<div><slot /></div>' },
 					N8nHeading: { template: '<div><slot /></div>' },
-					N8nRadioButtons: { template: '<div />' },
+					N8nButton: { template: '<button><slot /><slot name="icon" /></button>' },
+					N8nIcon: { template: '<span />', props: ['icon', 'size'] },
+					N8nIconButton: { template: '<button />' },
+					N8nOption: { template: '<div />', props: ['value', 'label', 'disabled'] },
+					N8nScrollArea: { template: '<div><slot /></div>' },
+					N8nSelect: { template: '<div><slot /></div>', props: ['modelValue', 'disabled'] },
+					N8nSwitch2: { template: '<button />', props: ['modelValue', 'disabled'] },
+					N8nTabs: { template: '<div />', props: ['modelValue', 'options'] },
 					N8nText: { template: '<span><slot /></span>' },
+					N8nTooltip: { template: '<div><slot /></div>' },
 					AgentIdentityHeader: {
 						name: 'AgentIdentityHeader',
 						template: '<div data-testid="stub-identity" />',
@@ -51,6 +82,11 @@ describe('AgentBuilderEditorColumn — childrenDisabled composes streaming and c
 						name: 'AgentMemoryPanel',
 						template: '<div data-testid="stub-memory" />',
 						props: ['config', 'disabled', 'embedded'],
+					},
+					AgentFilesPanel: {
+						name: 'AgentFilesPanel',
+						template: '<div data-testid="stub-files" />',
+						props: ['files', 'disabled', 'loading', 'uploading'],
 					},
 					AgentAdvancedPanel: {
 						name: 'AgentAdvancedPanel',
@@ -70,12 +106,9 @@ describe('AgentBuilderEditorColumn — childrenDisabled composes streaming and c
 							'projectId',
 							'agentId',
 							'isPublished',
+							'taskRefs',
+							'reloadKey',
 						],
-					},
-					AgentJsonEditor: {
-						name: 'AgentJsonEditor',
-						template: '<div data-testid="stub-json" />',
-						props: ['value', 'readOnly', 'copyButtonTestId'],
 					},
 					AgentSessionsListView: { template: '<div />' },
 					AgentPanelHeader: { template: '<div />', props: ['title', 'description'] },
@@ -85,139 +118,149 @@ describe('AgentBuilderEditorColumn — childrenDisabled composes streaming and c
 
 		expect(wrapper.findComponent({ name: 'AgentIdentityHeader' }).props('disabled')).toBe(true);
 		expect(wrapper.findComponent({ name: 'AgentInfoPanel' }).props('disabled')).toBe(true);
-		expect(wrapper.findComponent({ name: 'AgentMemoryPanel' }).props('disabled')).toBe(true);
-		expect(wrapper.findComponent({ name: 'AgentAdvancedPanel' }).props('disabled')).toBe(true);
+		expect(wrapper.getComponent({ name: 'AgentTriggersSection' }).props('disabled')).toBe(true);
 		expect(wrapper.findComponent({ name: 'AgentCapabilitiesSection' }).props('disabled')).toBe(
 			true,
 		);
+		expect(wrapper.findComponent({ name: 'AgentMemoryPanel' }).exists()).toBe(false);
+		expect(wrapper.findComponent({ name: 'AgentAdvancedPanel' }).exists()).toBe(false);
 	});
 
-	it('JSON editor receives readOnly=true when canEditAgent is false', async () => {
+	it('Settings tab child panels see disabled=true when canEditAgent is false', async () => {
 		const { default: AgentBuilderEditorColumn } = await import(
 			'../components/AgentBuilderEditorColumn.vue'
 		);
 
 		const wrapper = mount(AgentBuilderEditorColumn, {
 			props: {
-				activeMainTab: 'raw',
-				mainTabOptions: [{ label: 'Raw', value: 'raw' }],
+				activeMainTab: 'settings',
+				mainTabOptions: [
+					{ label: 'Build', value: 'agent' },
+					{ label: 'Sessions', value: 'sessions' },
+					{ label: 'Settings', value: 'settings' },
+				],
 				localConfig: {} as never,
 				agent: null,
 				projectId: 'p1',
 				agentId: 'a1',
+				agentFiles: [],
+				agentFilesLoading: false,
+				agentFilesUploading: false,
+				knowledgeBaseEnabled: true,
 				appliedSkills: [],
 				connectedTriggers: [],
-				isBuildChatStreaming: false,
 				canEditAgent: false,
 				executionsDescription: '',
 			},
 			global: {
+				plugins: [createTestingPinia({ createSpy: vi.fn })],
 				stubs: {
 					N8nCard: { template: '<div><slot /></div>' },
 					N8nHeading: { template: '<div><slot /></div>' },
-					N8nRadioButtons: { template: '<div />' },
+					N8nIcon: { template: '<span />', props: ['icon', 'size'] },
+					N8nIconButton: { template: '<button />' },
+					N8nOption: { template: '<div />', props: ['value', 'label', 'disabled'] },
+					N8nScrollArea: { template: '<div><slot /></div>' },
+					N8nSelect: { template: '<div><slot /></div>', props: ['modelValue', 'disabled'] },
+					N8nSwitch2: { template: '<button />', props: ['modelValue', 'disabled'] },
+					N8nTabs: { template: '<div />', props: ['modelValue', 'options'] },
 					N8nText: { template: '<span><slot /></span>' },
-					AgentJsonEditor: {
-						name: 'AgentJsonEditor',
-						template: '<div data-testid="stub-json" />',
-						props: ['value', 'readOnly', 'copyButtonTestId'],
+					N8nTooltip: { template: '<div><slot /></div>' },
+					AgentSubAgentsPanel: {
+						name: 'AgentSubAgentsPanel',
+						template: '<div data-testid="stub-sub-agents" />',
+						props: ['config', 'disabled', 'projectId', 'agentId'],
+					},
+					AgentMemoryPanel: {
+						name: 'AgentMemoryPanel',
+						template: '<div data-testid="stub-memory" />',
+						props: ['config', 'disabled', 'embedded'],
+					},
+					AgentAdvancedPanel: {
+						name: 'AgentAdvancedPanel',
+						template: '<div data-testid="stub-advanced" />',
+						props: ['config', 'disabled', 'collapsible'],
 					},
 					AgentPanelHeader: { template: '<div />', props: ['title', 'description'] },
 				},
 			},
 		});
 
-		expect(wrapper.findComponent({ name: 'AgentJsonEditor' }).props('readOnly')).toBe(true);
+		expect(wrapper.findComponent({ name: 'AgentSubAgentsPanel' }).props('disabled')).toBe(true);
+		expect(wrapper.findComponent({ name: 'AgentMemoryPanel' }).exists()).toBe(false);
+		expect(wrapper.findComponent({ name: 'AgentAdvancedPanel' }).props('disabled')).toBe(true);
 	});
 });
 
-describe('AgentChatPanel — read-only build chat input', () => {
-	it('disables ChatInputBase when endpoint=build and canEditAgent=false', async () => {
-		vi.doMock('../composables/useAgentChatStream', () => ({
-			useAgentChatStream: () => ({
-				messages: ref([]),
-				isStreaming: ref(false),
-				messagingState: ref('idle'),
-				fatalError: ref(null),
-				loadHistory: vi.fn(),
-				sendMessage: vi.fn(),
-				stopGenerating: vi.fn(),
-				resume: vi.fn(),
-				dismissFatalError: vi.fn(),
-			}),
-		}));
-		vi.doMock('../composables/useAgentTelemetry', () => ({
-			useAgentTelemetry: () => ({ trackSubmittedMessage: vi.fn() }),
-		}));
-		vi.doMock('../composables/agentTelemetry.utils', () => ({
-			buildAgentConfigFingerprint: vi.fn().mockResolvedValue({}),
-		}));
+const REDESIGN_PANEL_ORDER = [
+	'agent-triggers-panel',
+	'agent-info-panel',
+	'agent-skills-panel',
+	'agent-capabilities-panel',
+	'agent-memory-panel',
+];
 
-		const { default: AgentChatPanel } = await import('../components/AgentChatPanel.vue');
+const DEFAULT_PANEL_ORDER = [
+	'agent-info-panel',
+	'agent-skills-panel',
+	'agent-triggers-panel',
+	'agent-capabilities-panel',
+	'agent-memory-panel',
+];
 
-		const wrapper = mount(AgentChatPanel, {
-			props: {
-				projectId: 'p1',
-				agentId: 'a1',
-				endpoint: 'build',
-				agentConfig: null,
-				agentStatus: 'draft',
-				connectedTriggers: [],
-				canEditAgent: false,
-			},
-			global: {
-				stubs: {
-					N8nButton: { template: '<button><slot /></button>' },
-					N8nCallout: { template: '<div><slot /></div>' },
-					N8nIconButton: { template: '<button />' },
-					AgentChatEmptyState: { template: '<div />' },
-					AgentChatMessageList: { template: '<div />' },
-					ChatInputBase: {
-						name: 'ChatInputBase',
-						template: '<div data-testid="stub-chat-input" />',
-						props: ['modelValue', 'placeholder', 'isStreaming', 'canSubmit', 'disabled'],
+describe('AgentBuilderEditorColumn — Agent tab panel order', () => {
+	it.each([
+		{ flag: true, expected: REDESIGN_PANEL_ORDER },
+		{ flag: false, expected: DEFAULT_PANEL_ORDER },
+	])(
+		'renders panels in order when the trigger redesign flag is $flag',
+		async ({ flag, expected }) => {
+			triggerRedesignFlag.value = flag;
+
+			const { default: AgentBuilderEditorColumn } = await import(
+				'../components/AgentBuilderEditorColumn.vue'
+			);
+
+			const wrapper = mount(AgentBuilderEditorColumn, {
+				props: {
+					activeMainTab: 'agent',
+					mainTabOptions: [{ label: 'Build', value: 'agent' }],
+					localConfig: {} as never,
+					agent: null,
+					projectId: 'p1',
+					agentId: 'a1',
+					agentFiles: [],
+					agentFilesLoading: false,
+					agentFilesUploading: false,
+					knowledgeBaseEnabled: true,
+					appliedSkills: [],
+					connectedTriggers: [],
+					canEditAgent: true,
+					executionsDescription: '',
+				},
+				global: {
+					plugins: [createTestingPinia({ createSpy: vi.fn })],
+					stubs: {
+						N8nTabs: { template: '<div />', props: ['modelValue', 'options'] },
+						AgentIdentityHeader: { template: '<div />' },
+						AgentTestButton: { template: '<div />' },
+						AgentInfoPanel: { template: '<div data-testid="agent-info-panel" />' },
+						AgentTriggersSection: { template: '<div />' },
+						AgentSkillsSection: { template: '<div />' },
+						AgentCapabilitiesSection: { template: '<div />' },
+						AgentMemoryPanel: { template: '<div data-testid="agent-memory-panel" />' },
 					},
 				},
-			},
-		});
+			});
 
-		const chatInput = wrapper.findComponent({ name: 'ChatInputBase' });
-		expect(chatInput.props('disabled')).toBe(true);
-		expect(chatInput.props('canSubmit')).toBe(false);
-		expect(chatInput.props('placeholder')).toBe('agents.builder.readonly.placeholder');
-	});
+			const tabContent = wrapper.get('[data-testid="agent-tab-content"]');
+			const selector = expected.map((id) => `[data-testid="${id}"]`).join(',');
+			/** querySelectorAll returns matches in document (tree) order. */
+			const renderedOrder = Array.from(tabContent.element.querySelectorAll(selector)).map((el) =>
+				el.getAttribute('data-testid'),
+			);
 
-	it('does not disable ChatInputBase for endpoint=chat (test mode) regardless of canEditAgent', async () => {
-		const { default: AgentChatPanel } = await import('../components/AgentChatPanel.vue');
-
-		const wrapper = mount(AgentChatPanel, {
-			props: {
-				projectId: 'p1',
-				agentId: 'a1',
-				endpoint: 'chat',
-				agentConfig: null,
-				agentStatus: 'production',
-				connectedTriggers: [],
-				canEditAgent: false,
-			},
-			global: {
-				stubs: {
-					N8nButton: { template: '<button><slot /></button>' },
-					N8nCallout: { template: '<div><slot /></div>' },
-					N8nIconButton: { template: '<button />' },
-					AgentChatEmptyState: { template: '<div />' },
-					AgentChatMessageList: { template: '<div />' },
-					ChatInputBase: {
-						name: 'ChatInputBase',
-						template: '<div data-testid="stub-chat-input" />',
-						props: ['modelValue', 'placeholder', 'isStreaming', 'canSubmit', 'disabled'],
-					},
-				},
-			},
-		});
-
-		const chatInput = wrapper.findComponent({ name: 'ChatInputBase' });
-		expect(chatInput.props('disabled')).toBe(false);
-		expect(chatInput.props('placeholder')).toBe('agents.chat.input.placeholder');
-	});
+			expect(renderedOrder).toEqual(expected);
+		},
+	);
 });

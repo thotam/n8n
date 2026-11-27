@@ -1,8 +1,7 @@
+import { binaryToBuffer, binaryToString } from '@n8n/backend-network';
 import { Container } from '@n8n/di';
 import chardet from 'chardet';
-import FileType from 'file-type';
 import { IncomingMessage } from 'http';
-import iconv from 'iconv-lite';
 import get from 'lodash/get';
 import { extension, lookup } from 'mime-types';
 import type { StringValue as TimeUnitValue } from 'ms';
@@ -10,6 +9,7 @@ import type {
 	BinaryHelperFunctions,
 	IBinaryData,
 	INode,
+	IRunExecutionData,
 	ITaskDataConnections,
 	IWorkflowExecuteAdditionalData,
 	WorkflowSettingsBinaryMode,
@@ -17,47 +17,90 @@ import type {
 import {
 	NodeOperationError,
 	fileTypeFromMimeType,
-	ApplicationError,
-	UnexpectedError,
 	isBinaryValue,
 	BINARY_MODE_COMBINED,
 	BINARY_MODE_SEPARATE,
 	sanitizeFilename,
 } from 'n8n-workflow';
+import { UserError, UnexpectedError } from '@n8n/errors';
 import path from 'path';
 import type { Readable } from 'stream';
 import { URL } from 'url';
 
 import { BinaryDataService } from '@/binary-data/binary-data.service';
 import type { BinaryData } from '@/binary-data/types';
-import { binaryToBuffer } from '@/binary-data/utils';
 
-import { parseIncomingMessage } from './parse-incoming-message';
+const BINARY_ACCESS_ERROR = 'This binary data is not available to the current workflow.';
 
-export async function binaryToString(body: Buffer | Readable, encoding?: string) {
-	if (!encoding && body instanceof IncomingMessage) {
-		parseIncomingMessage(body);
-		encoding = body.encoding;
-	}
-	const buffer = await binaryToBuffer(body);
-	return iconv.decode(buffer, encoding ?? 'utf-8');
+function isExplicitlyGranted(binaryDataId: string, runExecutionData?: IRunExecutionData | null) {
+	return runExecutionData?.binaryDataAccess?.includes(binaryDataId) === true;
 }
 
-function getBinaryPath(binaryDataId: string): string {
+function grantBinaryData(
+	binaryData: IBinaryData,
+	additionalData: IWorkflowExecuteAdditionalData,
+	runExecutionData?: IRunExecutionData | null,
+) {
+	if (!binaryData.id) return;
+	if (!additionalData.binaryDataAccess) return;
+	additionalData.binaryDataAccess.grant(binaryData.id);
+	if (!runExecutionData || isExplicitlyGranted(binaryData.id, runExecutionData)) return;
+
+	runExecutionData.binaryDataAccess = [...(runExecutionData.binaryDataAccess ?? []), binaryData.id];
+}
+
+async function assertBinaryDataAccess(
+	binaryDataId: string,
+	additionalData: IWorkflowExecuteAdditionalData,
+	workflowId: string,
+	runExecutionData?: IRunExecutionData | null,
+) {
+	if (!additionalData.binaryDataAccess) return;
+	if (
+		!(await additionalData.binaryDataAccess.isAllowed(
+			binaryDataId,
+			workflowId,
+			runExecutionData?.binaryDataAccess,
+		))
+	) {
+		throw new UserError(BINARY_ACCESS_ERROR);
+	}
+}
+
+async function getBinaryPath(
+	binaryDataId: string,
+	additionalData: IWorkflowExecuteAdditionalData,
+	workflowId: string,
+	runExecutionData?: IRunExecutionData | null,
+): Promise<string> {
+	await assertBinaryDataAccess(binaryDataId, additionalData, workflowId, runExecutionData);
 	return Container.get(BinaryDataService).getPath(binaryDataId);
 }
 
 /**
  * Returns binary file metadata
  */
-async function getBinaryMetadata(binaryDataId: string): Promise<BinaryData.Metadata> {
+async function getBinaryMetadata(
+	binaryDataId: string,
+	additionalData: IWorkflowExecuteAdditionalData,
+	workflowId: string,
+	runExecutionData?: IRunExecutionData | null,
+): Promise<BinaryData.Metadata> {
+	await assertBinaryDataAccess(binaryDataId, additionalData, workflowId, runExecutionData);
 	return await Container.get(BinaryDataService).getMetadata(binaryDataId);
 }
 
 /**
  * Returns binary file stream for piping
  */
-async function getBinaryStream(binaryDataId: string, chunkSize?: number): Promise<Readable> {
+async function getBinaryStream(
+	binaryDataId: string,
+	additionalData: IWorkflowExecuteAdditionalData,
+	workflowId: string,
+	runExecutionData?: IRunExecutionData | null,
+	chunkSize?: number,
+): Promise<Readable> {
+	await assertBinaryDataAccess(binaryDataId, additionalData, workflowId, runExecutionData);
 	return await Container.get(BinaryDataService).getAsStream(binaryDataId, chunkSize);
 }
 
@@ -144,6 +187,9 @@ export async function getBinaryDataBuffer(
 	parameterData: string | IBinaryData,
 	inputIndex: number,
 	binaryMode: WorkflowSettingsBinaryMode = BINARY_MODE_SEPARATE,
+	additionalData: IWorkflowExecuteAdditionalData,
+	workflowId: string,
+	runExecutionData?: IRunExecutionData | null,
 ): Promise<Buffer> {
 	let binaryData: IBinaryData;
 
@@ -160,6 +206,10 @@ export async function getBinaryDataBuffer(
 		binaryData = data;
 	} else {
 		throw new UnexpectedError('Provided parameter is not a string or binary data object.');
+	}
+
+	if (binaryData.id) {
+		await assertBinaryDataAccess(binaryData.id, additionalData, workflowId, runExecutionData);
 	}
 
 	return await Container.get(BinaryDataService).getAsBuffer(binaryData);
@@ -211,7 +261,8 @@ export async function copyBinaryFile(
 
 		if (!mimeType) {
 			// read the first bytes of the file to guess mime type
-			const fileTypeData = await FileType.fromFile(filePath);
+			const { fileTypeFromFile } = await import('file-type');
+			const fileTypeData = await fileTypeFromFile(filePath);
 			if (fileTypeData) {
 				mimeType = fileTypeData.mime;
 				fileExtension = fileTypeData.ext;
@@ -248,6 +299,24 @@ export async function copyBinaryFile(
 	);
 }
 
+export const getNodeBinaryHelperFunctions = (
+	workflow: { id: string },
+	additionalData: IWorkflowExecuteAdditionalData,
+	runExecutionData?: IRunExecutionData | null,
+) => ({
+	copyBinaryFile: async (filePath: string, fileName: string, mimeType?: string) => {
+		const stored = await copyBinaryFile(
+			workflow.id,
+			additionalData.executionId!,
+			filePath,
+			fileName,
+			mimeType,
+		);
+		grantBinaryData(stored, additionalData, runExecutionData);
+		return stored;
+	},
+});
+
 /**
  * Takes a buffer and converts it into the format n8n uses. It encodes the binary data as
  * base64 and adds metadata.
@@ -272,12 +341,16 @@ export async function prepareBinaryData(
 					const parsed = new URL(responseUrl);
 					parsed.username = '';
 					parsed.password = '';
+					parsed.search = '';
+					parsed.hash = '';
 					sanitizedUrl = parsed.toString();
 					urlPathname = parsed.pathname;
 				}
+				const requestPathname = binaryData.req?.path
+					? new URL(binaryData.req.path, 'http://localhost').pathname
+					: undefined;
 				filePath =
-					binaryData.contentDisposition?.filename ??
-					(urlPathname ?? binaryData.req?.path)?.slice(1);
+					binaryData.contentDisposition?.filename ?? (urlPathname ?? requestPathname)?.slice(1);
 				fullUrl = sanitizedUrl;
 			} catch {}
 		}
@@ -300,7 +373,8 @@ export async function prepareBinaryData(
 		if (!mimeType) {
 			if (Buffer.isBuffer(binaryData)) {
 				// Use buffer to guess mime type
-				const fileTypeData = await FileType.fromBuffer(binaryData);
+				const { fileTypeFromBuffer } = await import('file-type');
+				const fileTypeData = await fileTypeFromBuffer(binaryData);
 				if (fileTypeData) {
 					mimeType = fileTypeData.mime;
 					fileExtension = fileTypeData.ext;
@@ -351,23 +425,52 @@ export async function prepareBinaryData(
 }
 
 export const getBinaryHelperFunctions = (
-	{ executionId, restApiUrl }: IWorkflowExecuteAdditionalData,
+	additionalData: IWorkflowExecuteAdditionalData,
 	workflowId: string,
-): BinaryHelperFunctions => ({
-	getBinaryPath,
-	getBinaryStream,
-	getBinaryMetadata,
-	binaryToBuffer,
-	binaryToString,
-	createBinarySignedUrl(binaryData: IBinaryData, expiresIn?: TimeUnitValue) {
-		const token = Container.get(BinaryDataService).createSignedToken(binaryData, expiresIn);
-		return `${restApiUrl}/binary-data/signed?token=${token}`;
-	},
-	prepareBinaryData: async (binaryData, filePath, mimeType) =>
-		await prepareBinaryData(binaryData, executionId!, workflowId, filePath, mimeType),
-	setBinaryDataBuffer: async (data, binaryData) =>
-		await setBinaryDataBuffer(data, binaryData, workflowId, executionId!),
-	copyBinaryFile: async () => {
-		throw new ApplicationError('`copyBinaryFile` has been removed. Please upgrade this node.');
-	},
-});
+	runExecutionData?: IRunExecutionData | null,
+): BinaryHelperFunctions => {
+	const { executionId, restApiUrl } = additionalData;
+
+	return {
+		getBinaryPath: async (binaryDataId) =>
+			await getBinaryPath(binaryDataId, additionalData, workflowId, runExecutionData),
+		getBinaryStream: async (binaryDataId, chunkSize) =>
+			await getBinaryStream(binaryDataId, additionalData, workflowId, runExecutionData, chunkSize),
+		getBinaryMetadata: async (binaryDataId) =>
+			await getBinaryMetadata(binaryDataId, additionalData, workflowId, runExecutionData),
+		binaryToBuffer,
+		binaryToString,
+		createBinarySignedUrl(binaryData: IBinaryData, expiresIn?: TimeUnitValue) {
+			if (!binaryData.id) throw new UserError('URL signing is not available in memory mode');
+			const granted =
+				isExplicitlyGranted(binaryData.id, runExecutionData) ||
+				additionalData.binaryDataAccess?.isGranted(binaryData.id) !== false;
+			const token = Container.get(BinaryDataService).createSignedToken(
+				binaryData,
+				expiresIn,
+				granted ? undefined : workflowId,
+			);
+			return `${restApiUrl}/binary-data/signed?token=${token}`;
+		},
+		prepareBinaryData: async (binaryData, filePath, mimeType) => {
+			const prepared = await prepareBinaryData(
+				binaryData,
+				executionId!,
+				workflowId,
+				filePath,
+				mimeType,
+			);
+			grantBinaryData(prepared, additionalData, runExecutionData);
+			return prepared;
+		},
+		setBinaryDataBuffer: async (data, binaryData) => {
+			const stored = await setBinaryDataBuffer(data, binaryData, workflowId, executionId!);
+			grantBinaryData(stored, additionalData, runExecutionData);
+			return stored;
+		},
+		// oxlint-disable-next-line typescript/no-deprecated -- Keep the upgrade error for nodes that call the removed helper.
+		copyBinaryFile: async () => {
+			throw new UserError('`copyBinaryFile` has been removed. Please upgrade this node.');
+		},
+	};
+};

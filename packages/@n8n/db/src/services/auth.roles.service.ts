@@ -1,4 +1,5 @@
 import { Logger } from '@n8n/backend-common';
+import { GlobalConfig } from '@n8n/config';
 import { Service } from '@n8n/di';
 // eslint-disable-next-line import-x/order
 import {
@@ -11,9 +12,11 @@ import {
 	EXTERNAL_SECRETS_SYSTEM_ROLES_ENABLED_SETTING,
 	PROJECT_ADMIN_ROLE_SLUG,
 	PROJECT_EDITOR_ROLE_SLUG,
+	PROMOTION_PROJECT_ACCESS_SETTING_KEYS,
+	readPromotionProjectAccess,
+	getPromotionScopesOfProjectRoles,
 } from '@n8n/permissions';
 
-// eslint-disable-next-line n8n-local-rules/misplaced-n8n-typeorm-import
 import { In } from '@n8n/typeorm';
 import type { EntityManager } from '@n8n/typeorm';
 
@@ -25,6 +28,7 @@ export class AuthRolesService {
 	constructor(
 		private readonly logger: Logger,
 		private readonly dbLockService: DbLockService,
+		private readonly globalConfig: GlobalConfig,
 	) {}
 
 	private async syncScopes(tx: EntityManager) {
@@ -84,19 +88,26 @@ export class AuthRolesService {
 				`Deleting ${scopesToDelete.length} obsolete scopes: ${scopesToDelete.map((s) => s.slug).join(', ')}`,
 			);
 
-			// First, remove these scopes from any roles that reference them
+			// Step 1: find slugs of roles that reference any obsolete scope
 			const obsoleteScopeSlugs = scopesToDelete.map((s) => s.slug);
-			const rolesWithObsoleteScopes = await roleRepo.find({
-				relations: ['scopes'],
+			const affectedRoles = await roleRepo.find({
+				select: { slug: true },
 				where: { scopes: { slug: In(obsoleteScopeSlugs) } },
 			});
+			const affectedRoleSlugs = affectedRoles.map((role) => role.slug);
 
-			const rolesToUpdate = rolesWithObsoleteScopes.map((role) => {
-				role.scopes = role.scopes.filter((scope) => !obsoleteScopeSlugs.includes(scope.slug));
-				return role;
-			});
+			// Step 2: reload those roles with ALL their scopes
+			if (affectedRoleSlugs.length > 0) {
+				const rolesWithAllScopes = await roleRepo.find({
+					relations: ['scopes'],
+					where: { slug: In(affectedRoleSlugs) },
+				});
 
-			if (rolesToUpdate.length > 0) {
+				const rolesToUpdate = rolesWithAllScopes.map((role) => {
+					role.scopes = role.scopes.filter((scope) => !obsoleteScopeSlugs.includes(scope.slug));
+					return role;
+				});
+
 				this.logger.debug(`Removing obsolete scopes from ${rolesToUpdate.length} roles...`);
 				await roleRepo.save(rolesToUpdate);
 			}
@@ -137,6 +148,22 @@ export class AuthRolesService {
 		return scopes;
 	}
 
+	/**
+	 * Canvas-only mode lets an operator take some scopes away from the personal
+	 * owner role through `N8N_CANVAS_ONLY_PERSONAL_SPACE_SCOPE_DENY_LIST`.
+	 * The config already limits the list to the scopes that may be removed.
+	 */
+	private removeCanvasOnlyPersonalOwnerScopes(scopes: string[]) {
+		const { enabled, personalSpaceScopeDenyList } = this.globalConfig.canvasOnly;
+		if (!enabled || personalSpaceScopeDenyList.length === 0) return scopes;
+
+		this.logger.debug(
+			`Canvas-only mode - removing ${personalSpaceScopeDenyList.join(', ')} scopes from ${PROJECT_OWNER_ROLE_SLUG} role`,
+		);
+		const denied: readonly string[] = personalSpaceScopeDenyList;
+		return scopes.filter((slug) => !denied.includes(slug));
+	}
+
 	private async getExternalSecretsSystemRolesScopes(
 		roleSlug: string,
 		tx: EntityManager,
@@ -162,10 +189,21 @@ export class AuthRolesService {
 		return [];
 	}
 
+	private async getPromotionProjectRoleScopes(
+		roleSlug: typeof PROJECT_ADMIN_ROLE_SLUG | typeof PROJECT_EDITOR_ROLE_SLUG,
+		tx: EntityManager,
+	): Promise<string[]> {
+		const rows = await tx.findBy(Settings, {
+			key: In(Object.values(PROMOTION_PROJECT_ACCESS_SETTING_KEYS)),
+		});
+		return getPromotionScopesOfProjectRoles(readPromotionProjectAccess(rows))[roleSlug];
+	}
+
 	/**
 	 * Modifies the expected scopes for a role based on settings.
 	 * Uses a "closed first" approach: certain scopes are not in the base definition
-	 * and are added when the corresponding setting is enabled.
+	 * and are added when the corresponding setting is enabled. Canvas-only mode
+	 * can also remove scopes from the personal owner role through config.
 	 */
 	private async updateScopesBasedOnSettings(
 		roleSlug: string,
@@ -176,11 +214,13 @@ export class AuthRolesService {
 		// Special handling for project:personalOwner role
 		if (roleSlug === PROJECT_OWNER_ROLE_SLUG) {
 			scopes.push(...(await this.getPersonalOwnerSettingsScopes(tx)));
+			return this.removeCanvasOnlyPersonalOwnerScopes(scopes);
 		}
 
-		// External secrets system roles scopes
+		// Scopes that instance settings give to the system project roles
 		if (roleSlug === PROJECT_ADMIN_ROLE_SLUG || roleSlug === PROJECT_EDITOR_ROLE_SLUG) {
 			scopes.push(...(await this.getExternalSecretsSystemRolesScopes(roleSlug, tx)));
+			scopes.push(...(await this.getPromotionProjectRoleScopes(roleSlug, tx)));
 		}
 
 		return scopes;

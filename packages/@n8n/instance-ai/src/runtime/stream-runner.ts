@@ -1,21 +1,17 @@
-import type { InstanceAiEvent } from '@n8n/api-types';
-
 import type { InstanceAiEventBus } from '../event-bus';
 import type { Logger } from '../logger';
+import { emitBuilderMetric } from '../tracing/builder-metric-event';
+import { resumeAgentStream } from '../utils/stream-helpers';
+import type { OrchestratorRunStopSignal } from './orchestrator-run-control';
 import {
-	createLlmStepTraceHooks,
 	executeResumableStream,
-	type LlmStepTraceHooks,
+	normalizeStreamSource,
+	type ExecuteResumableStreamResult,
 	type ResumableStreamSource,
-	type TraceStatus,
 } from './resumable-stream-executor';
-import type { WorkSummary } from '../stream/work-summary-accumulator';
-import { getTraceParentRun, withTraceParentContext } from '../tracing/langsmith-tracing';
-import { asResumable } from '../utils/stream-helpers';
-import type { SuspensionInfo } from '../utils/stream-helpers';
 
 export interface StreamableAgent {
-	stream: (input: unknown, options: Record<string, unknown>) => Promise<ResumableStreamSource>;
+	stream: (input: unknown, options: Record<string, unknown>) => Promise<unknown>;
 }
 
 export interface StreamRunOptions {
@@ -26,16 +22,10 @@ export interface StreamRunOptions {
 	eventBus: InstanceAiEventBus;
 	logger: Logger;
 	onActivity?: () => void;
+	stopSignal?: () => OrchestratorRunStopSignal | undefined;
 }
 
-export interface StreamRunResult {
-	status: TraceStatus;
-	mastraRunId: string;
-	text?: Promise<string>;
-	workSummary: WorkSummary;
-	suspension?: SuspensionInfo;
-	confirmationEvent?: Extract<InstanceAiEvent, { type: 'confirmation-request' }>;
-}
+export type StreamRunResult = ExecuteResumableStreamResult;
 
 export async function streamAgentRun(
 	agent: StreamableAgent,
@@ -43,42 +33,32 @@ export async function streamAgentRun(
 	streamOptions: Record<string, unknown>,
 	options: StreamRunOptions,
 ): Promise<StreamRunResult> {
-	const traceParent = getTraceParentRun();
-	return await withTraceParentContext(traceParent, async () => {
-		const llmStepTraceHooks = createLlmStepTraceHooks(traceParent);
-		const result = await agent.stream(input, {
-			...streamOptions,
-			...(llmStepTraceHooks?.executionOptions ?? {}),
-		});
-		const mastraRunId = typeof result.runId === 'string' ? result.runId : '';
-		return await consumeStream(agent, result, { ...options, mastraRunId, llmStepTraceHooks });
-	});
+	const result = await agent.stream(input, streamOptions);
+	const stream = normalizeStreamSource(result);
+	const agentRunId = typeof stream.runId === 'string' ? stream.runId : '';
+	return await consumeStream(agent, stream, { ...options, agentRunId }, 'message');
 }
 
 export async function resumeAgentRun(
 	agent: unknown,
 	resumeData: Record<string, unknown>,
 	resumeOptions: Record<string, unknown>,
-	options: StreamRunOptions & { mastraRunId: string },
+	options: StreamRunOptions & { agentRunId: string },
 ): Promise<StreamRunResult> {
-	const resumeTraceParent = getTraceParentRun();
-	return await withTraceParentContext(resumeTraceParent, async () => {
-		const llmStepTraceHooks = createLlmStepTraceHooks(resumeTraceParent);
-		const resumed = await asResumable(agent).resumeStream(resumeData, {
-			...resumeOptions,
-			...(llmStepTraceHooks?.executionOptions ?? {}),
-		});
-		const mastraRunId = (typeof resumed.runId === 'string' && resumed.runId) || options.mastraRunId;
-		return await consumeStream(agent, resumed, { ...options, mastraRunId, llmStepTraceHooks });
-	});
+	const resumed = await resumeAgentStream(agent, resumeData, resumeOptions);
+	const stream = normalizeStreamSource(resumed);
+	const agentRunId = (typeof stream.runId === 'string' && stream.runId) || options.agentRunId;
+	return await consumeStream(agent, stream, { ...options, agentRunId }, 'resume');
 }
 
 async function consumeStream(
 	agent: unknown,
 	stream: ResumableStreamSource,
-	options: StreamRunOptions & { mastraRunId: string; llmStepTraceHooks?: LlmStepTraceHooks },
+	options: StreamRunOptions & { agentRunId: string },
+	phase: 'message' | 'resume',
 ): Promise<StreamRunResult> {
-	const result = await executeResumableStream({
+	let firstResponseRecorded = false;
+	return await executeResumableStream({
 		agent,
 		stream,
 		context: {
@@ -89,32 +69,15 @@ async function consumeStream(
 			signal: options.signal,
 			logger: options.logger,
 			onActivity: options.onActivity,
+			onResponseChunk: () => {
+				if (firstResponseRecorded) return;
+				firstResponseRecorded = true;
+				// Not awaited: the span must not delay the first chunk for the user.
+				void emitBuilderMetric(undefined, 'first_response', { success: true, phase });
+			},
+			stopSignal: options.stopSignal,
 		},
 		control: { mode: 'manual' },
-		initialMastraRunId: options.mastraRunId,
-		llmStepTraceHooks: options.llmStepTraceHooks,
+		initialAgentRunId: options.agentRunId,
 	});
-
-	if (result.status === 'suspended' && result.suspension) {
-		return {
-			status: 'suspended',
-			mastraRunId: result.mastraRunId,
-			text: result.text,
-			workSummary: result.workSummary,
-			suspension: result.suspension,
-			...(result.confirmationEvent ? { confirmationEvent: result.confirmationEvent } : {}),
-		};
-	}
-
-	return {
-		status:
-			result.status === 'cancelled'
-				? 'cancelled'
-				: result.status === 'errored'
-					? 'errored'
-					: 'completed',
-		mastraRunId: result.mastraRunId,
-		text: result.text,
-		workSummary: result.workSummary,
-	};
 }

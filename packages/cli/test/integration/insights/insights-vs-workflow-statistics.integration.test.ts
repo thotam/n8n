@@ -4,68 +4,41 @@
  * properly distinguishing between root executions and subworkflow executions.
  *
  * This test actually executes workflows (not just mocking) to ensure end-to-end correctness.
- * It configures the system for fast compaction and waits for automatic processing.
+ * It configures the system for fast flushing and drives compaction explicitly.
  */
 
 import { createTeamProject, createWorkflow, testDb, testModules } from '@n8n/backend-test-utils';
+import { GlobalConfig } from '@n8n/config';
 import type { Project, WorkflowEntity } from '@n8n/db';
 import { ExecutionRepository, StatisticsNames, WorkflowStatisticsRepository } from '@n8n/db';
 import { Container } from '@n8n/di';
-import { readFileSync } from 'fs';
-import { InstanceSettings, UnrecognizedNodeTypeError } from 'n8n-core';
-import type { INodeType, INodeTypeData, NodeLoadingDetails } from 'n8n-workflow';
+import * as core from 'n8n-core';
+import { InstanceSettings } from 'n8n-core';
 import { createRunExecutionData } from 'n8n-workflow';
-import path from 'path';
 
-import { InsightsByPeriodRepository } from '@/modules/insights/database/repositories/insights-by-period.repository';
-import { InsightsRawRepository } from '@/modules/insights/database/repositories/insights-raw.repository';
-import { InsightsCollectionService } from '@/modules/insights/insights-collection.service';
-import { InsightsCompactionService } from '@/modules/insights/insights-compaction.service';
+import {
+	compactInsights,
+	getCompactedInsightsByWorkflow,
+	initializeInsightsCollection,
+} from '@n8n/backend-module-insights/testing';
+import { CredentialsPermissionChecker } from '@/executions/pre-execution-checks';
+import { packagedModules } from '@/modules/modules.manifest';
 import { WorkflowStatisticsService } from '@/services/workflow-statistics.service';
 import { WorkflowRunner } from '@/workflow-runner';
 
 import * as utils from '../shared/utils';
+import { loadNodesFromDist } from '../shared/utils/node-types-data';
 import { createSimpleWorkflowFixture } from '../shared/workflow-fixtures';
-
-// ============================================================
-// Helper to load nodes from dist folder
-// ============================================================
-
-const BASE_DIR = path.resolve(__dirname, '../../../..');
-
-function loadNodesFromDist(nodeNames: string[]): INodeTypeData {
-	const nodeTypes: INodeTypeData = {};
-
-	const knownNodes = JSON.parse(
-		readFileSync(path.join(BASE_DIR, 'nodes-base/dist/known/nodes.json'), 'utf-8'),
-	) as Record<string, NodeLoadingDetails>;
-
-	for (const nodeName of nodeNames) {
-		const loadInfo = knownNodes[nodeName.replace('n8n-nodes-base.', '')];
-		if (!loadInfo) {
-			throw new UnrecognizedNodeTypeError('n8n-nodes-base', nodeName);
-		}
-		// Load from dist .js files (sourcePath already includes 'dist/')
-		const nodeDistPath = path.join(BASE_DIR, 'nodes-base', loadInfo.sourcePath);
-		const node = new (require(nodeDistPath)[loadInfo.className])() as INodeType;
-		nodeTypes[nodeName] = {
-			sourcePath: '',
-			type: node,
-		};
-	}
-
-	return nodeTypes;
-}
+import { findWorkflowStatistic } from '../shared/workflow-statistics';
 
 describe('Insights vs Workflow Statistics Integration', () => {
 	beforeAll(async () => {
 		// Configure insights for fast flushing and compaction BEFORE loading modules
 		process.env.N8N_INSIGHTS_FLUSH_BATCH_SIZE = '10'; // Flush after 10 events
 		process.env.N8N_INSIGHTS_FLUSH_INTERVAL_SECONDS = '1'; // Flush every 1 second
-		process.env.N8N_INSIGHTS_COMPACTION_INTERVAL_MINUTES = '0.05'; // Compact every ~3 seconds
 		process.env.N8N_INSIGHTS_COMPACTION_BATCH_SIZE = '100'; // Process up to 100 items per batch
 
-		await testModules.loadModules(['insights']);
+		await testModules.loadModules(['insights'], packagedModules);
 		await testDb.init();
 
 		// Load required node types from dist folder
@@ -73,6 +46,7 @@ describe('Insights vs Workflow Statistics Integration', () => {
 			'n8n-nodes-base.manualTrigger',
 			'n8n-nodes-base.executeWorkflow',
 			'n8n-nodes-base.executeWorkflowTrigger',
+			'n8n-nodes-base.httpRequest',
 		]);
 
 		await utils.initNodeTypes(nodeTypes);
@@ -98,10 +72,6 @@ describe('Insights vs Workflow Statistics Integration', () => {
 		await testDb.terminate();
 	});
 
-	let insightsCollectionService: InsightsCollectionService;
-	let insightsCompactionService: InsightsCompactionService;
-	let insightsByPeriodRepository: InsightsByPeriodRepository;
-	let insightsRawRepository: InsightsRawRepository;
 	let workflowStatisticsRepository: WorkflowStatisticsRepository;
 	let workflowRunner: WorkflowRunner;
 	let executionRepository: ExecutionRepository;
@@ -118,24 +88,12 @@ describe('Insights vs Workflow Statistics Integration', () => {
 		// This must be done BEFORE any workflows are executed
 		Container.get(WorkflowStatisticsService);
 
-		insightsCollectionService = Container.get(InsightsCollectionService);
-		insightsCompactionService = Container.get(InsightsCompactionService);
-		insightsByPeriodRepository = Container.get(InsightsByPeriodRepository);
-		insightsRawRepository = Container.get(InsightsRawRepository);
 		workflowStatisticsRepository = Container.get(WorkflowStatisticsRepository);
 		workflowRunner = Container.get(WorkflowRunner);
 		executionRepository = Container.get(ExecutionRepository);
 
 		// Initialize insights collection service (config already set via env vars)
-		insightsCollectionService.init();
-
-		// Start automatic compaction timer
-		insightsCompactionService.startCompactionTimer();
-	});
-
-	afterAll(() => {
-		// Stop compaction timer
-		insightsCompactionService.stopCompactionTimer();
+		initializeInsightsCollection();
 	});
 
 	beforeEach(async () => {
@@ -180,14 +138,19 @@ describe('Insights vs Workflow Statistics Integration', () => {
 		workflowId: string,
 		expectedCount: number,
 		timeout = 10000,
+		name = StatisticsNames.productionSuccess,
 	): Promise<void> {
+		const isPostgres = Container.get(GlobalConfig).database.type === 'postgresdb';
 		const start = Date.now();
 		while (Date.now() - start < timeout) {
+			if (isPostgres) {
+				await workflowStatisticsRepository.rollupIncrements(
+					workflowStatisticsRepository.manager,
+					10_000,
+				);
+			}
 			const stats = await workflowStatisticsRepository.findOne({
-				where: {
-					workflowId,
-					name: StatisticsNames.productionSuccess,
-				},
+				where: { workflowId, name },
 			});
 			if (stats && stats.count >= expectedCount) {
 				return;
@@ -200,28 +163,40 @@ describe('Insights vs Workflow Statistics Integration', () => {
 	}
 
 	/**
-	 * Helper to wait for insights to be compacted (raw insights cleared and compacted data available)
+	 * Helper to compact insights and wait for the result.
+	 *
+	 * Runs a compaction pass per poll (the periodic cadence lives on the `insights-compaction`
+	 * system task, which is not running here) and polls until the compacted success count
+	 * reaches the expected total. Waiting on the terminal count (rather than "some compacted
+	 * data exists and raw is drained") avoids a race where events still buffered in the
+	 * collection service haven't been flushed to InsightsRaw yet, so compaction runs on a
+	 * partial set and the count comes up short.
 	 */
-	async function waitForCompaction(workflowId: string, timeout = 10000): Promise<void> {
+	async function waitForCompaction(
+		workflowId: string,
+		expectedSuccessCount: number,
+		timeout = 20000,
+		type = 'success',
+	): Promise<void> {
+		const controller = new AbortController();
 		const start = Date.now();
 		while (Date.now() - start < timeout) {
-			// Check if raw insights have been compacted (should be low or zero)
-			const rawInsights = await insightsRawRepository.find();
-			// Check if compacted insights exist for this workflow
-			const compactedInsights = await insightsByPeriodRepository.find({
-				where: {
-					metadata: { workflowId },
-				},
-				relations: ['metadata'],
-			});
+			await compactInsights(controller.signal);
 
-			// Compaction is done if we have compacted data and few/no raw insights
-			if (compactedInsights.length > 0 && rawInsights.length < 10) {
+			const compactedInsights = await getCompactedInsightsByWorkflow(workflowId);
+
+			const successCount = compactedInsights
+				.filter((insight) => insight.type === type)
+				.reduce((sum, insight) => sum + insight.value, 0);
+
+			if (successCount >= expectedSuccessCount) {
 				return;
 			}
-			await new Promise((resolve) => setTimeout(resolve, 500));
+			await new Promise((resolve) => setTimeout(resolve, 200));
 		}
-		throw new Error(`Insights compaction did not complete within ${timeout}ms`);
+		throw new Error(
+			`Insights compaction did not reach ${expectedSuccessCount} ${type} events within ${timeout}ms`,
+		);
 	}
 
 	/**
@@ -236,7 +211,6 @@ describe('Insights vs Workflow Statistics Integration', () => {
 		const executionId = await workflowRunner.run(
 			{
 				workflowData: workflow,
-				userId: project.id,
 				executionMode: mode,
 				executionData,
 			},
@@ -262,8 +236,8 @@ describe('Insights vs Workflow Statistics Integration', () => {
 		// Wait for workflow statistics to be recorded
 		await waitForStatistics(workflow.id, 10);
 
-		// Wait for automatic compaction to complete
-		await waitForCompaction(workflow.id);
+		// Compact and wait for the result
+		await waitForCompaction(workflow.id, 10);
 
 		// ============================================================
 		// ASSERT: Query workflow statistics
@@ -283,12 +257,7 @@ describe('Insights vs Workflow Statistics Integration', () => {
 		// ============================================================
 		// ASSERT: Query insights data (compacted)
 		// ============================================================
-		const allInsights1 = await insightsByPeriodRepository.find({
-			where: {
-				metadata: { workflowId: workflow.id },
-			},
-			relations: ['metadata'],
-		});
+		const allInsights1 = await getCompactedInsightsByWorkflow(workflow.id);
 
 		// Filter by type 'success'
 		const insights1 = allInsights1.filter((insight) => insight.type === 'success');
@@ -308,4 +277,137 @@ describe('Insights vs Workflow Statistics Integration', () => {
 		const totalTimeSaved1 = insights1TimeSaved.reduce((sum, insight) => sum + insight.value, 0);
 		expect(totalTimeSaved1).toBe(10 * 5); // 10 executions * 5 minutes saved per execution
 	}, 60000);
+
+	test('should keep billable insights in sync with root production executions', async () => {
+		const executionCount = 10;
+		const executionIds: string[] = [];
+		for (let i = 0; i < executionCount; i++) {
+			executionIds.push(await executeWorkflow(workflow, 'webhook'));
+		}
+
+		await Promise.all(executionIds.map(async (id) => await waitForExecution(id)));
+		await waitForStatistics(workflow.id, executionCount);
+		await waitForCompaction(workflow.id, executionCount);
+
+		const productionSuccess = await workflowStatisticsRepository.findOne({
+			where: {
+				workflowId: workflow.id,
+				name: StatisticsNames.productionSuccess,
+			},
+		});
+		const productionError = await workflowStatisticsRepository.findOne({
+			where: {
+				workflowId: workflow.id,
+				name: StatisticsNames.productionError,
+			},
+		});
+
+		const rootProductionCount =
+			(productionSuccess?.rootCount ?? 0) + (productionError?.rootCount ?? 0);
+
+		const compactedInsights = await getCompactedInsightsByWorkflow(workflow.id);
+		const billableCount = compactedInsights
+			.filter((insight) => insight.type === 'billable')
+			.reduce((sum, insight) => sum + insight.value, 0);
+
+		expect(rootProductionCount).toBe(executionCount);
+		expect(billableCount).toBe(rootProductionCount);
+	}, 60000);
+
+	const httpRequestWithoutUrl = {
+		parameters: { url: '' },
+		type: 'n8n-nodes-base.httpRequest',
+		typeVersion: 4.2,
+		position: [200, 0] as [number, number],
+		id: 'http-request-without-url',
+		name: 'HTTP Request',
+	};
+
+	test.each([
+		{
+			cause: 'an unusable credential',
+			error: 'Credential not usable',
+			reason: 'credentialAccess',
+			workflowFixture: createSimpleWorkflowFixture,
+			fail: () =>
+				vi
+					.spyOn(Container.get(CredentialsPermissionChecker), 'check')
+					.mockRejectedValue(new Error('Credential not usable')),
+		},
+		{
+			cause: 'an execution context failure',
+			error: 'No identity',
+			reason: 'contextHook',
+			workflowFixture: createSimpleWorkflowFixture,
+			fail: () =>
+				vi.spyOn(core, 'establishExecutionContext').mockRejectedValue(new Error('No identity')),
+		},
+		{
+			cause: 'a missing required parameter',
+			error: "The 'HTTP Request' node has issues",
+			reason: 'invalidWorkflow',
+			workflowFixture: () => {
+				const fixture = createSimpleWorkflowFixture();
+				return {
+					...fixture,
+					nodes: [...fixture.nodes, httpRequestWithoutUrl],
+					connections: { Trigger: { main: [[{ node: 'HTTP Request', type: 'main', index: 0 }]] } },
+				};
+			},
+			fail: () => undefined,
+		},
+	])(
+		'should count runs refused by $cause as Insights failures, but not as billable or in workflow statistics',
+		async ({ error, reason, workflowFixture, fail }) => {
+			const blockedCount = 3;
+			const blockedWorkflow = await createWorkflow(
+				{ name: 'Refused before start', ...workflowFixture() },
+				project,
+			);
+
+			// A trigger item on the stack, so the engine checks the nodes after the trigger.
+			const [trigger] = blockedWorkflow.nodes;
+			const runWithTriggerItem = async () =>
+				await workflowRunner.run(
+					{
+						workflowData: blockedWorkflow,
+						executionMode: 'webhook',
+						executionData: createRunExecutionData({
+							executionData: {
+								nodeExecutionStack: [
+									{ node: trigger, data: { main: [[{ json: {} }]] }, source: null },
+								],
+							},
+						}),
+					},
+					true,
+				);
+
+			const spy = fail();
+			for (let i = 0; i < blockedCount; i++) await runWithTriggerItem();
+			spy?.mockRestore();
+
+			await waitForCompaction(blockedWorkflow.id, blockedCount, 20000, 'failure');
+
+			expect(
+				await findWorkflowStatistic(blockedWorkflow.id, StatisticsNames.productionError),
+			).toBeNull();
+
+			const [refused] = await executionRepository.findMultipleExecutions(
+				{ where: { workflowId: blockedWorkflow.id } },
+				{ includeData: true, unflattenData: true },
+			);
+			expect(refused.data.resultData.error?.message).toContain(error);
+			expect(refused.data.resultData.failedBeforeStart).toBe(reason);
+
+			const compactedInsights = await getCompactedInsightsByWorkflow(blockedWorkflow.id);
+			const sum = (type: string) =>
+				compactedInsights
+					.filter((insight) => insight.type === type)
+					.reduce((total, insight) => total + insight.value, 0);
+			expect(sum('failure')).toBe(blockedCount);
+			expect(sum('billable')).toBe(0);
+		},
+		60000,
+	);
 });

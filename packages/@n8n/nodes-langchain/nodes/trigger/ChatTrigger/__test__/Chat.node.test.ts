@@ -1,6 +1,7 @@
 import type { INode, IExecuteFunctions } from 'n8n-workflow';
 import {
 	CHAT_NODE_TYPE,
+	CHAT_TOOL_NODE_TYPE,
 	CHAT_TRIGGER_NODE_TYPE,
 	FREE_TEXT_CHAT_RESPONSE_TYPE,
 	SEND_AND_WAIT_OPERATION,
@@ -37,30 +38,33 @@ describe('Test Chat Node', () => {
 			typeVersion: 1.0,
 		});
 
-		it('should execute and send message', async () => {
-			const items = [{ json: { data: 'test' } }];
-			mockExecuteFunctions.getInputData.mockReturnValue(items);
-			mockExecuteFunctions.getNodeParameter.mockReturnValueOnce('message');
-			mockExecuteFunctions.getNodeParameter.mockReturnValueOnce(false);
-			mockExecuteFunctions.getNodeParameter.mockReturnValueOnce(true); // autoSaveHighlightedData
-			mockExecuteFunctions.getNodeParameter.mockReturnValueOnce({
-				limitType: 'afterTimeInterval',
-				resumeAmount: 1,
-				resumeUnit: 'minutes',
-			});
-			mockExecuteFunctions.getNode.mockReturnValue(chatNode);
-			mockExecuteFunctions.getParentNodes.mockReturnValue([
-				{
-					type: CHAT_TRIGGER_NODE_TYPE,
-					disabled: false,
-					parameters: { mode: 'hostedChat', options: { responseMode: 'responseNodes' } },
-				} as any,
-			]);
+		it.each(['hostedChat', 'webhook'])(
+			'should execute and send message (%s mode)',
+			async (mode) => {
+				const items = [{ json: { data: 'test' } }];
+				mockExecuteFunctions.getInputData.mockReturnValue(items);
+				mockExecuteFunctions.getNodeParameter.mockReturnValueOnce('message');
+				mockExecuteFunctions.getNodeParameter.mockReturnValueOnce(false);
+				mockExecuteFunctions.getNodeParameter.mockReturnValueOnce(true); // autoSaveHighlightedData
+				mockExecuteFunctions.getNodeParameter.mockReturnValueOnce({
+					limitType: 'afterTimeInterval',
+					resumeAmount: 1,
+					resumeUnit: 'minutes',
+				});
+				mockExecuteFunctions.getNode.mockReturnValue(chatNode);
+				mockExecuteFunctions.getParentNodes.mockReturnValue([
+					{
+						type: CHAT_TRIGGER_NODE_TYPE,
+						disabled: false,
+						parameters: { mode, options: { responseMode: 'responseNodes' } },
+					} as any,
+				]);
 
-			const result = await chat.execute.call(mockExecuteFunctions);
+				const result = await chat.execute.call(mockExecuteFunctions);
 
-			expect(result).toEqual([[{ json: {}, sendMessage: 'message' }]]);
-		});
+				expect(result).toEqual([[{ json: {}, sendMessage: 'message' }]]);
+			},
+		);
 
 		it('should execute and handle memory connection', async () => {
 			const items = [{ json: { data: 'test' } }];
@@ -315,6 +319,32 @@ describe('Test Chat Node', () => {
 			const result = await chat.onMessage(mockExecuteFunctions, message);
 
 			expect(result).toEqual([[message]]);
+		});
+
+		it('v1.3 should return a tool-friendly response when used as a tool without waiting for reply', async () => {
+			const chatToolNode = mock<INode>({
+				name: 'Chat',
+				type: CHAT_TOOL_NODE_TYPE,
+				parameters: {},
+				typeVersion: 1.3,
+			});
+			const message = { json: { chatInput: '' } };
+			mockExecuteFunctions.getInputData.mockReturnValue([{ json: { chatInput: 'other input' } }]);
+			mockExecuteFunctions.getNode.mockReturnValue(chatToolNode);
+			mockExecuteFunctions.getNodeParameter.mockImplementation((parameterName) => {
+				switch (parameterName) {
+					case 'operation':
+						return 'send';
+					case 'options':
+						return { memoryConnection: false };
+					default:
+						return undefined;
+				}
+			});
+
+			const result = await chat.onMessage(mockExecuteFunctions, message);
+
+			expect(result).toEqual([[{ json: { sent: true } }]]);
 		});
 
 		it('v1.2 should return output data directly without nesting into `data` field (except `approved`)', async () => {

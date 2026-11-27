@@ -9,6 +9,7 @@
  */
 
 export { createEngineRequests } from './createEngineRequests';
+export { executeEngineAction } from './executeEngineAction';
 export { buildResponseMetadata } from './buildResponseMetadata';
 export { buildSteps } from './buildSteps';
 export { processEventStream } from './processEventStream';
@@ -26,3 +27,4 @@ export type {
 	AnthropicThinkingMetadata,
 	HitlMetadata,
 } from './types';
+export { INTERNAL_TOOL_ARG_STASH_KEY } from './types';

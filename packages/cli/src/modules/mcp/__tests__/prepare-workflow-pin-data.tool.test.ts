@@ -1,4 +1,5 @@
 import type { Logger } from '@n8n/backend-common';
+import { NodeTypesProxy, TelemetryProxy } from '@n8n/backend-services';
 import { mockInstance } from '@n8n/backend-test-utils';
 import { User } from '@n8n/db';
 import {
@@ -7,6 +8,10 @@ import {
 	HTTP_REQUEST_NODE_TYPE,
 	type INode,
 } from 'n8n-workflow';
+import type { Mock } from 'vitest';
+
+import { ExecutionService } from '@/executions/execution.service';
+import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 
 import { createWorkflow } from './mock.utils';
 import { WorkflowAccessError } from '../mcp.errors';
@@ -15,19 +20,14 @@ import {
 	preparePinData,
 } from '../tools/prepare-workflow-pin-data.tool';
 
-import { ExecutionService } from '@/executions/execution.service';
-import { NodeTypes } from '@/node-types';
-import { Telemetry } from '@/telemetry';
-import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
-
 // Mock @n8n/workflow-sdk functions — keep real implementations for shared utils
 // (needsPinData, normalizePinData), but mock functions that do file I/O or
 // process execution data so tests stay isolated.
-const mockDiscoverOutputSchemaForNode = jest.fn();
-const mockInferSchemasFromRunData = jest.fn();
+const mockDiscoverOutputSchemaForNode = vi.fn();
+const mockInferSchemasFromRunData = vi.fn();
 
-jest.mock('@n8n/workflow-sdk', () => {
-	const actual = jest.requireActual('@n8n/workflow-sdk');
+vi.mock('@n8n/workflow-sdk', async () => {
+	const actual = await vi.importActual<typeof import('@n8n/workflow-sdk')>('@n8n/workflow-sdk');
 	return {
 		...actual,
 		discoverOutputSchemaForNode: (...args: unknown[]) => mockDiscoverOutputSchemaForNode(...args),
@@ -43,7 +43,7 @@ const TRIGGER_NODE_TYPES = new Set([
 ]);
 
 function createMockNodeTypes() {
-	const instance = mockInstance(NodeTypes);
+	const instance = mockInstance(NodeTypesProxy);
 	instance.getByNameAndVersion.mockImplementation(((type: string) => {
 		if (type === 'n8n-nodes-base.unknownNode') throw new Error(`Unknown node type: ${type}`);
 		return {
@@ -64,21 +64,21 @@ function createMockNodeTypes() {
 
 describe('prepare-workflow-pin-data MCP tool', () => {
 	const user = Object.assign(new User(), { id: 'user-1' });
-	const logger = { debug: jest.fn(), warn: jest.fn() } as unknown as Logger;
+	const logger = { debug: vi.fn(), warn: vi.fn() } as unknown as Logger;
 	let workflowFinderService: WorkflowFinderService;
 	let executionService: ExecutionService;
 	let nodeTypes: ReturnType<typeof createMockNodeTypes>;
-	let telemetry: Telemetry;
+	let telemetry: TelemetryProxy;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		workflowFinderService = mockInstance(WorkflowFinderService);
 		executionService = mockInstance(ExecutionService);
 		nodeTypes = createMockNodeTypes();
-		telemetry = mockInstance(Telemetry, { track: jest.fn() });
+		telemetry = mockInstance(TelemetryProxy, { track: vi.fn() });
 
 		// Default: no execution history, no schema discovery
-		(executionService.getLastSuccessfulExecution as jest.Mock).mockResolvedValue(undefined);
+		(executionService.getLastSuccessfulExecution as Mock).mockResolvedValue(undefined);
 		mockDiscoverOutputSchemaForNode.mockReturnValue(undefined);
 		mockInferSchemasFromRunData.mockReturnValue({});
 	});
@@ -94,7 +94,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 				logger,
 			);
 
-			expect(tool.name).toBe('prepare_test_pin_data');
+			expect(tool.name).toBe('prepare_workflow_pin_data');
 			expect(tool.config).toBeDefined();
 			expect(typeof tool.config.description).toBe('string');
 			expect(tool.config.inputSchema).toBeDefined();
@@ -105,7 +105,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 
 	describe('workflow validation', () => {
 		test('propagates errors from getMcpWorkflow', async () => {
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(null);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(null);
 
 			await expect(
 				preparePinData(
@@ -136,7 +136,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -178,7 +178,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -217,7 +217,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -265,7 +265,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -304,7 +304,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -343,7 +343,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -363,7 +363,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 	describe('schema tier priority', () => {
 		test('tier 1: uses execution history schema when available', async () => {
 			const executionSchema = { type: 'object', properties: { id: { type: 'string' } } };
-			(executionService.getLastSuccessfulExecution as jest.Mock).mockResolvedValue({
+			(executionService.getLastSuccessfulExecution as Mock).mockResolvedValue({
 				data: {
 					resultData: {
 						runData: {
@@ -404,7 +404,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -447,7 +447,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -490,7 +490,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -531,7 +531,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -549,7 +549,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 
 	describe('execution data extraction', () => {
 		test('returns undefined when no execution found', async () => {
-			(executionService.getLastSuccessfulExecution as jest.Mock).mockResolvedValue(undefined);
+			(executionService.getLastSuccessfulExecution as Mock).mockResolvedValue(undefined);
 
 			const workflow = createWorkflow({
 				settings: { availableInMCP: true },
@@ -565,7 +565,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -580,7 +580,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 		});
 
 		test('handles executionService throwing gracefully', async () => {
-			(executionService.getLastSuccessfulExecution as jest.Mock).mockRejectedValue(
+			(executionService.getLastSuccessfulExecution as Mock).mockRejectedValue(
 				new Error('DB connection failed'),
 			);
 
@@ -598,7 +598,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			// Should not throw — falls through to other tiers
 			const result = await preparePinData(
@@ -614,7 +614,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 		});
 
 		test('skips nodes with empty json in execution data', async () => {
-			(executionService.getLastSuccessfulExecution as jest.Mock).mockResolvedValue({
+			(executionService.getLastSuccessfulExecution as Mock).mockResolvedValue({
 				data: {
 					resultData: {
 						runData: {
@@ -648,7 +648,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -670,7 +670,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 			const definitionSchema = { type: 'object', properties: { val: { type: 'number' } } };
 
 			// Execution data for SlackNode
-			(executionService.getLastSuccessfulExecution as jest.Mock).mockResolvedValue({
+			(executionService.getLastSuccessfulExecution as Mock).mockResolvedValue({
 				data: {
 					resultData: {
 						runData: {
@@ -750,7 +750,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const result = await preparePinData(
 				'wf-1',
@@ -786,7 +786,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 					} as INode,
 				],
 			});
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(workflow);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(workflow);
 
 			const tool = createPrepareTestPinDataTool(
 				user,
@@ -803,7 +803,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 				'User called mcp tool',
 				expect.objectContaining({
 					user_id: 'user-1',
-					tool_name: 'prepare_test_pin_data',
+					tool_name: 'prepare_workflow_pin_data',
 					parameters: { workflowId: 'wf-1' },
 					results: expect.objectContaining({
 						success: true,
@@ -814,7 +814,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 		});
 
 		test('tracks failure with error message', async () => {
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(null);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(null);
 
 			const tool = createPrepareTestPinDataTool(
 				user,
@@ -830,7 +830,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 			expect(telemetry.track).toHaveBeenCalledWith(
 				'User called mcp tool',
 				expect.objectContaining({
-					tool_name: 'prepare_test_pin_data',
+					tool_name: 'prepare_workflow_pin_data',
 					results: expect.objectContaining({
 						success: false,
 						error: expect.any(String),
@@ -842,7 +842,7 @@ describe('prepare-workflow-pin-data MCP tool', () => {
 
 	describe('error handling via handler', () => {
 		test('returns isError true with error message on failure', async () => {
-			(workflowFinderService.findWorkflowForUser as jest.Mock).mockResolvedValue(null);
+			(workflowFinderService.findWorkflowForUser as Mock).mockResolvedValue(null);
 
 			const tool = createPrepareTestPinDataTool(
 				user,

@@ -1,18 +1,21 @@
+import { requestPath } from 'n8n-workflow';
 import * as copy from '../../../../v2/actions/file/copy.operation';
 import * as transport from '../../../../v2/transport';
 import { createMockExecuteFunction, driveNode } from '../helpers';
+import type { Mock } from 'vitest';
+import type * as _importType0 from '../../../../v2/transport';
 
-jest.mock('../../../../v2/transport', () => {
-	const originalModule = jest.requireActual('../../../../v2/transport');
+vi.mock('../../../../v2/transport', async () => {
+	const originalModule = await vi.importActual<typeof _importType0>('../../../../v2/transport');
 	return {
 		...originalModule,
-		googleApiRequest: jest.fn(async function () {
+		googleApiRequest: vi.fn(async function () {
 			return {};
 		}),
 	};
 });
 
-const googleApiRequestMock = transport.googleApiRequest as jest.Mock;
+const googleApiRequestMock = transport.googleApiRequest as Mock;
 
 const metadataQs = { fields: 'name', supportsAllDrives: true };
 
@@ -61,7 +64,7 @@ describe('test GoogleDriveV2: file copy', () => {
 		expect(googleApiRequestMock).toHaveBeenCalledTimes(1);
 		expect(googleApiRequestMock).toHaveBeenCalledWith(
 			'POST',
-			'/drive/v3/files/fileIDxxxxxx/copy',
+			requestPath`/drive/v3/files/fileIDxxxxxx/copy`,
 			{
 				copyRequiresWriterPermission: true,
 				description: 'image copy',
@@ -94,7 +97,7 @@ describe('test GoogleDriveV2: file copy', () => {
 		expect(googleApiRequestMock).toHaveBeenCalledTimes(1);
 		expect(googleApiRequestMock).toHaveBeenCalledWith(
 			'POST',
-			'/drive/v3/files/fileIDxxxxxx/copy',
+			requestPath`/drive/v3/files/fileIDxxxxxx/copy`,
 			{
 				copyRequiresWriterPermission: false,
 				name: 'Copy of test01.png',
@@ -127,14 +130,14 @@ describe('test GoogleDriveV2: file copy', () => {
 		expect(googleApiRequestMock).toHaveBeenNthCalledWith(
 			1,
 			'GET',
-			'/drive/v3/files/fileIDxxxxxx',
+			requestPath`/drive/v3/files/fileIDxxxxxx`,
 			{},
 			metadataQs,
 		);
 		expect(googleApiRequestMock).toHaveBeenNthCalledWith(
 			2,
 			'POST',
-			'/drive/v3/files/fileIDxxxxxx/copy',
+			requestPath`/drive/v3/files/fileIDxxxxxx/copy`,
 			{
 				copyRequiresWriterPermission: false,
 				name: 'Copy of original.png',
@@ -167,14 +170,14 @@ describe('test GoogleDriveV2: file copy', () => {
 		expect(googleApiRequestMock).toHaveBeenNthCalledWith(
 			1,
 			'GET',
-			'/drive/v3/files/fileIDxxxxxx',
+			requestPath`/drive/v3/files/fileIDxxxxxx`,
 			{},
 			metadataQs,
 		);
 		expect(googleApiRequestMock).toHaveBeenNthCalledWith(
 			2,
 			'POST',
-			'/drive/v3/files/fileIDxxxxxx/copy',
+			requestPath`/drive/v3/files/fileIDxxxxxx/copy`,
 			{
 				copyRequiresWriterPermission: false,
 				name: 'Copy of from-url.pdf',
@@ -204,7 +207,7 @@ describe('test GoogleDriveV2: file copy', () => {
 		expect(googleApiRequestMock).toHaveBeenCalledTimes(1);
 		expect(googleApiRequestMock).toHaveBeenCalledWith(
 			'POST',
-			'/drive/v3/files/fileIDxxxxxx/copy',
+			requestPath`/drive/v3/files/fileIDxxxxxx/copy`,
 			{
 				copyRequiresWriterPermission: false,
 				name: 'explicit.png',
@@ -241,7 +244,7 @@ describe('test GoogleDriveV2: file copy', () => {
 			unknown,
 		];
 		expect(copyCall[0]).toBe('POST');
-		expect(copyCall[1]).toBe('/drive/v3/files/fileIDxxxxxx/copy');
+		expect(copyCall[1]).toEqual(requestPath`/drive/v3/files/fileIDxxxxxx/copy`);
 		const body = copyCall[2];
 		expect(body).not.toHaveProperty('name');
 		expect(JSON.stringify(body)).not.toContain('undefined');

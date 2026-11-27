@@ -1,5 +1,4 @@
 import { Container } from '@n8n/di';
-import { mock } from 'jest-mock-extended';
 import type {
 	INode,
 	INodeType,
@@ -12,8 +11,10 @@ import type {
 	WorkflowExpression,
 } from 'n8n-workflow';
 import { CHAT_TRIGGER_NODE_TYPE, createRunExecutionData, NodeConnectionTypes } from 'n8n-workflow';
+import { mock } from 'vitest-mock-extended';
 
 import { InstanceSettings } from '@/instance-settings';
+import { validateUrlSignature } from '@/utils/signature-helpers';
 
 import { NodeExecutionContext } from '../node-execution-context';
 
@@ -49,7 +50,7 @@ describe('NodeExecutionContext', () => {
 	let testContext: TestContext;
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		testContext = new TestContext(workflow, node, additionalData, mode);
 		nodeTypes.getByNameAndVersion.mockReturnValue(nodeType);
 	});
@@ -86,8 +87,18 @@ describe('NodeExecutionContext', () => {
 
 	describe('getChildNodes', () => {
 		it('should return an array of NodeTypeAndVersion objects for the child nodes of the given node', () => {
-			const childNode1 = mock<INode>({ name: 'Child Node 1', type: 'testType1', typeVersion: 1 });
-			const childNode2 = mock<INode>({ name: 'Child Node 2', type: 'testType2', typeVersion: 2 });
+			const childNode1 = mock<INode>({
+				id: 'child-id-1',
+				name: 'Child Node 1',
+				type: 'testType1',
+				typeVersion: 1,
+			});
+			const childNode2 = mock<INode>({
+				id: 'child-id-2',
+				name: 'Child Node 2',
+				type: 'testType2',
+				typeVersion: 2,
+			});
 			workflow.getChildNodes.mockReturnValue(['Child Node 1', 'Child Node 2']);
 			workflow.nodes = {
 				'Child Node 1': childNode1,
@@ -97,16 +108,26 @@ describe('NodeExecutionContext', () => {
 			const result = testContext.getChildNodes('Test Node');
 
 			expect(result).toMatchObject([
-				{ name: 'Child Node 1', type: 'testType1', typeVersion: 1 },
-				{ name: 'Child Node 2', type: 'testType2', typeVersion: 2 },
+				{ id: 'child-id-1', name: 'Child Node 1', type: 'testType1', typeVersion: 1 },
+				{ id: 'child-id-2', name: 'Child Node 2', type: 'testType2', typeVersion: 2 },
 			]);
 		});
 	});
 
 	describe('getParentNodes', () => {
 		it('should return an array of NodeTypeAndVersion objects for the parent nodes of the given node', () => {
-			const parentNode1 = mock<INode>({ name: 'Parent Node 1', type: 'testType1', typeVersion: 1 });
-			const parentNode2 = mock<INode>({ name: 'Parent Node 2', type: 'testType2', typeVersion: 2 });
+			const parentNode1 = mock<INode>({
+				id: 'parent-id-1',
+				name: 'Parent Node 1',
+				type: 'testType1',
+				typeVersion: 1,
+			});
+			const parentNode2 = mock<INode>({
+				id: 'parent-id-2',
+				name: 'Parent Node 2',
+				type: 'testType2',
+				typeVersion: 2,
+			});
 			workflow.getParentNodes.mockReturnValue(['Parent Node 1', 'Parent Node 2']);
 			workflow.nodes = {
 				'Parent Node 1': parentNode1,
@@ -116,8 +137,8 @@ describe('NodeExecutionContext', () => {
 			const result = testContext.getParentNodes('Test Node');
 
 			expect(result).toMatchObject([
-				{ name: 'Parent Node 1', type: 'testType1', typeVersion: 1 },
-				{ name: 'Parent Node 2', type: 'testType2', typeVersion: 2 },
+				{ id: 'parent-id-1', name: 'Parent Node 1', type: 'testType1', typeVersion: 1 },
+				{ id: 'parent-id-2', name: 'Parent Node 2', type: 'testType2', typeVersion: 2 },
 			]);
 		});
 	});
@@ -218,14 +239,15 @@ describe('NodeExecutionContext', () => {
 
 			let capturedExecutionContext: unknown;
 			const mockCredentialsHelper = {
-				getDecrypted: jest
+				getDecrypted: vi
 					.fn()
 					.mockImplementation(async (additionalData: IWorkflowExecuteAdditionalData) => {
 						// Capture the executionContext value at the moment getDecrypted is called
 						capturedExecutionContext = additionalData.executionContext;
 						return { token: 'test-token' };
 					}),
-				getCredentialsProperties: jest.fn(),
+				getCredentialsProperties: vi.fn(),
+				isCredentialUsableByNode: vi.fn().mockReturnValue(true),
 			};
 
 			const mockAdditionalData = mock<IWorkflowExecuteAdditionalData>({
@@ -254,6 +276,7 @@ describe('NodeExecutionContext', () => {
 				undefined,
 				false,
 				undefined,
+				undefined,
 			);
 		});
 
@@ -261,12 +284,12 @@ describe('NodeExecutionContext', () => {
 			const testNode = mock<INode>({ type: 'n8n-nodes-base.graphql' });
 			testNode.credentials = { httpHeaderAuth: { id: 'cred1', name: 'Header' } };
 
-			const getCredentialsProperties = jest
+			const getCredentialsProperties = vi
 				.fn()
 				.mockReturnValue([{ displayName: 'JSON', name: 'json', type: 'json', default: '' }]);
 			const evalAdditionalData = mock<IWorkflowExecuteAdditionalData>({
 				credentialsHelper: mock({ getCredentialsProperties }),
-				evalLlmMockHandler: jest.fn(),
+				evalLlmMockHandler: vi.fn(),
 				webhookWaitingBaseUrl: 'http://localhost:5678/webhook-waiting',
 				formWaitingBaseUrl: 'http://localhost:5678/form-waiting',
 			});
@@ -280,6 +303,122 @@ describe('NodeExecutionContext', () => {
 				return;
 			}
 			expect(resolved).toBeUndefined();
+		});
+
+		it('builds mock credentials for an unconfigured node whenever the eval handler is set, regardless of mode', async () => {
+			// Agent-tool eval runs execute in 'internal' mode (and their
+			// workflow-tool sub-executions in 'chat'/'manual') — handler presence,
+			// not mode, is the bypass discriminator.
+			const testNode = mock<INode>({ type: 'n8n-nodes-base.slack' });
+			testNode.credentials = undefined;
+
+			const getDecrypted = vi.fn().mockResolvedValue({ token: '<api-key>' });
+			const evalAdditionalData = mock<IWorkflowExecuteAdditionalData>({
+				credentialsHelper: mock({ getDecrypted }),
+				evalLlmMockHandler: vi.fn(),
+			});
+
+			const internalContext = new TestContext(workflow, testNode, evalAdditionalData, 'internal');
+
+			await expect(internalContext['_getCredentials']('slackApi')).resolves.toEqual({
+				token: '<api-key>',
+			});
+			expect(getDecrypted).toHaveBeenCalledWith(
+				evalAdditionalData,
+				{ id: null, name: 'slackApi' },
+				'slackApi',
+				'internal',
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+			);
+		});
+
+		it('refuses to decrypt a restricted credential for a node not in supportedNodes', async () => {
+			const credentialDetails = { id: 'cred-r1', name: 'Restricted creds' };
+			const httpNode = mock<INode>({ type: 'n8n-nodes-base.httpRequest' });
+			httpNode.credentials = { restrictedApi: credentialDetails };
+
+			const mockCredentialsHelper = {
+				getDecrypted: vi.fn(),
+				getCredentialsProperties: vi.fn(),
+				isCredentialUsableByNode: vi.fn().mockReturnValue(false),
+			};
+
+			const ctx = new TestContext(
+				workflow,
+				httpNode,
+				mock<IWorkflowExecuteAdditionalData>({ credentialsHelper: mockCredentialsHelper }),
+				mode,
+			);
+
+			await expect(ctx['_getCredentials']('restrictedApi')).rejects.toThrow(
+				/restricted to specific nodes/i,
+			);
+			expect(mockCredentialsHelper.isCredentialUsableByNode).toHaveBeenCalledWith(
+				'restrictedApi',
+				'n8n-nodes-base.httpRequest',
+			);
+			expect(mockCredentialsHelper.getDecrypted).not.toHaveBeenCalled();
+		});
+
+		it('proceeds with decryption when the credential is usable by the node', async () => {
+			// The restriction policy itself (which credentials are usable by which
+			// nodes) is exercised in the CredentialsHelper unit tests. Here we only
+			// verify that when the helper says "yes", _getCredentials calls through
+			// to getDecrypted — including on httpRequest nodes (fullAccess=true).
+			const credentialDetails = { id: 'cred-x', name: 'Some Cred' };
+			const httpNode = mock<INode>({ type: 'n8n-nodes-base.httpRequest' });
+			httpNode.credentials = { someCred: credentialDetails };
+
+			const mockCredentialsHelper = {
+				getDecrypted: vi.fn().mockResolvedValue({ token: 'ok' }),
+				getCredentialsProperties: vi.fn(),
+				isCredentialUsableByNode: vi.fn().mockReturnValue(true),
+			};
+
+			const ctx = new TestContext(
+				workflow,
+				httpNode,
+				mock<IWorkflowExecuteAdditionalData>({ credentialsHelper: mockCredentialsHelper }),
+				mode,
+			);
+
+			await expect(ctx['_getCredentials']('someCred')).resolves.toEqual({ token: 'ok' });
+		});
+	});
+
+	describe('_getRunlessCredentials', () => {
+		it('should pass placeholder execute data that only carries the node', async () => {
+			const credentialDetails = { id: 'cred-runless', name: 'Runless Cred' };
+			const runlessNode = mock<INode>({ type: 'n8n-nodes-base.httpRequest' });
+			runlessNode.credentials = { someCred: credentialDetails };
+
+			const mockCredentialsHelper = {
+				getDecrypted: vi.fn().mockResolvedValue({ token: 'ok' }),
+				getCredentialsProperties: vi.fn(),
+				isCredentialUsableByNode: vi.fn().mockReturnValue(true),
+			};
+
+			const ctx = new TestContext(
+				workflow,
+				runlessNode,
+				mock<IWorkflowExecuteAdditionalData>({ credentialsHelper: mockCredentialsHelper }),
+				mode,
+			);
+
+			await expect(ctx['_getRunlessCredentials']('someCred')).resolves.toEqual({ token: 'ok' });
+			expect(mockCredentialsHelper.getDecrypted).toHaveBeenCalledWith(
+				expect.anything(),
+				credentialDetails,
+				'someCred',
+				mode,
+				{ data: {}, node: runlessNode, source: null },
+				false,
+				undefined,
+				undefined,
+			);
 		});
 	});
 
@@ -458,7 +597,7 @@ describe('NodeExecutionContext', () => {
 
 	describe('getSignedResumeUrl', () => {
 		beforeEach(() => {
-			jest.clearAllMocks();
+			vi.clearAllMocks();
 			testContext = new TestContext(
 				workflow,
 				mock<INode>({
@@ -476,6 +615,19 @@ describe('NodeExecutionContext', () => {
 			);
 			nodeTypes.getByNameAndVersion.mockReturnValue(nodeType);
 		});
+
+		it('rejects signed resume URLs in the engine process', () => {
+			const previousInstanceType = instanceSettings.instanceType;
+			Object.assign(instanceSettings, { instanceType: 'engine' });
+			try {
+				expect(() => testContext.getSignedResumeUrl()).toThrow(
+					'Engine v2 does not support signed resume URLs yet',
+				);
+			} finally {
+				Object.assign(instanceSettings, { instanceType: previousInstanceType });
+			}
+		});
+
 		it('should return a resume URL with HMAC signature', () => {
 			const result = testContext.getSignedResumeUrl();
 
@@ -503,6 +655,48 @@ describe('NodeExecutionContext', () => {
 			const token2 = new URL(result2).searchParams.get('signature');
 
 			expect(token1).toBe(token2);
+		});
+
+		describe('when the node id is not a plain path segment', () => {
+			const NODE_ID = '../43/dddd2020-0000-4000-8000-000000002099';
+
+			const signedUrlForNodeId = (nodeId: string) =>
+				new URL(
+					new TestContext(
+						workflow,
+						mock<INode>({ id: nodeId }),
+						mock<IWorkflowExecuteAdditionalData>({
+							executionId: '123',
+							webhookWaitingBaseUrl: 'http://localhost/waiting-webhook',
+							formWaitingBaseUrl: 'http://localhost/form-waiting',
+						}),
+						mode,
+						createRunExecutionData({ resultData: { runData: {} } }),
+					).getSignedResumeUrl({ approved: 'true' }),
+				);
+
+			it('should keep the node id inside its own path segment', () => {
+				expect(signedUrlForNodeId(NODE_ID).pathname).toBe(
+					'/waiting-webhook/123/..%2F43%2Fdddd2020-0000-4000-8000-000000002099',
+				);
+			});
+
+			it('should keep the signature scoped to the escaped path', () => {
+				const signature = signedUrlForNodeId(NODE_ID).searchParams.get('signature')!;
+
+				// Unescaped, the same ids normalise to a different path, so the signature over the
+				// escaped one must not validate against it.
+				const normalisedUrl = new URL(
+					`http://localhost/waiting-webhook/123/${NODE_ID}?approved=true&signature=${signature}`,
+				);
+				expect(normalisedUrl.pathname).toBe(
+					'/waiting-webhook/43/dddd2020-0000-4000-8000-000000002099',
+				);
+
+				expect(
+					validateUrlSignature(signature, normalisedUrl, instanceSettings.hmacSignatureSecret),
+				).toBe(false);
+			});
 		});
 	});
 

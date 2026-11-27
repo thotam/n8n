@@ -22,6 +22,7 @@ import CanvasNodeRenderer from './CanvasNodeRenderer.vue';
 import CanvasHandleRenderer from '../handles/CanvasHandleRenderer.vue';
 import { useNodeConnections } from '@/app/composables/useNodeConnections';
 import { CanvasNodeKey } from '@/app/constants';
+import { injectCanvasRenderData } from '@/features/workflows/canvas/canvas.utils';
 import { useContextMenu } from '@/features/shared/contextMenu/composables/useContextMenu';
 import type { NodeProps, XYPosition } from '@vue-flow/core';
 import { Position } from '@vue-flow/core';
@@ -35,6 +36,7 @@ import { createEventBus } from '@n8n/utils/event-bus';
 import isEqual from 'lodash/isEqual';
 import CanvasNodeTrigger from './render-types/parts/CanvasNodeTrigger.vue';
 import { CONFIGURATION_NODE_RADIUS, GRID_SIZE } from '@/app/utils/nodeViewUtils';
+import { getAgentNodeHandleOffsetCss } from '@/features/agents/utils/agentNode';
 
 type Props = NodeProps<CanvasNodeData> & {
 	readOnly?: boolean;
@@ -59,7 +61,7 @@ const emit = defineEmits<{
 	run: [id: string];
 	select: [id: string, selected: boolean];
 	toggle: [id: string];
-	activate: [id: string, event: MouseEvent];
+	activate: [id: string, event?: MouseEvent];
 	deactivate: [id: string];
 	'open:contextmenu': [id: string, event: MouseEvent, source: 'node-button' | 'node-right-click'];
 	update: [id: string, parameters: Record<string, unknown>];
@@ -69,6 +71,7 @@ const emit = defineEmits<{
 	focus: [id: string];
 	'replace:node': [id: string];
 	'add:ai': [id: string];
+	'add-nodes-to-chat': [id: string];
 }>();
 
 const style = useCssModule();
@@ -79,12 +82,14 @@ const contextMenu = useContextMenu();
 
 const { connectingHandle, isExperimentalNdvActive } = useCanvas();
 
+const renderData = injectCanvasRenderData();
+
 /*
   Toolbar slot classes
 */
 const nodeClasses = ref<string[]>([]);
-const inputs = computed(() => props.data.inputs);
-const outputs = computed(() => props.data.outputs);
+const inputs = computed(() => renderData.value.nodeInputsByNodeId.get(props.id)?.value ?? []);
+const outputs = computed(() => renderData.value.nodeOutputsByNodeId.get(props.id)?.value ?? []);
 const connections = computed(() => props.data.connections);
 const {
 	mainInputs,
@@ -199,9 +204,11 @@ const createEndpointMappingFn =
 		const offsetValue =
 			position === Position.Bottom
 				? `${CONFIGURATION_NODE_RADIUS + GRID_SIZE * (3 * index)}px`
-				: isExperimentalNdvActive.value && endpoints.length === 1
-					? `${(1 + index) * (GRID_SIZE * 1.5)}px`
-					: `${(100 / (endpoints.length + 1)) * (index + 1)}%`;
+				: renderType.value === CanvasNodeRenderType.Agent
+					? getAgentNodeHandleOffsetCss(index, endpoints.length)
+					: isExperimentalNdvActive.value && endpoints.length === 1
+						? `${(1 + index) * (GRID_SIZE * 1.5)}px`
+						: `${(100 / (endpoints.length + 1)) * (index + 1)}%`;
 
 		return {
 			...endpoint,
@@ -259,7 +266,7 @@ function onDisabledToggle() {
 	emit('toggle', props.id);
 }
 
-function onActivate(id: string, event: MouseEvent) {
+function onActivate(id: string, event?: MouseEvent) {
 	emit('activate', id, event);
 }
 
@@ -293,6 +300,10 @@ function onReplaceNode(id: string) {
 
 function onAddToAi(id: string) {
 	emit('add:ai', id);
+}
+
+function onAddNodesToChat(id: string) {
+	emit('add-nodes-to-chat', id);
 }
 
 function onUpdateClass({ className, add = true }: CanvasNodeEventBusEvents['update:node:class']) {
@@ -424,6 +435,7 @@ onBeforeUnmount(() => {
 			@open:contextmenu="onOpenContextMenuFromToolbar"
 			@focus="onFocus"
 			@add:ai="onAddToAi"
+			@add-nodes-to-chat="onAddNodesToChat"
 		/>
 
 		<CanvasNodeRenderer

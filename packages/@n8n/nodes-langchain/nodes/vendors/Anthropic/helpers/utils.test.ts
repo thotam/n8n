@@ -1,4 +1,6 @@
+import { requestPath } from 'n8n-workflow';
 import type { IExecuteFunctions } from 'n8n-workflow';
+import type { MockInstance } from 'vitest';
 import { mockDeep } from 'vitest-mock-extended';
 
 import { downloadFile, getBaseUrl, getMimeType, splitByComma, uploadFile } from './utils';
@@ -6,10 +8,11 @@ import * as transport from '../transport';
 
 describe('Anthropic -> utils', () => {
 	const mockExecuteFunctions = mockDeep<IExecuteFunctions>();
-	const apiRequestMock = vi.spyOn(transport, 'apiRequest');
+	let apiRequestMock: MockInstance;
 
 	beforeEach(() => {
 		vi.resetAllMocks();
+		apiRequestMock = vi.spyOn(transport, 'apiRequest');
 	});
 
 	describe('getMimeType', () => {
@@ -90,7 +93,7 @@ describe('Anthropic -> utils', () => {
 
 			const result = await uploadFile.call(mockExecuteFunctions, fileContent, mimeType, fileName);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/v1/files', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/v1/files`, {
 				headers: expect.objectContaining({
 					'content-type': expect.stringContaining('multipart/form-data'),
 				}),
@@ -123,7 +126,7 @@ describe('Anthropic -> utils', () => {
 
 			const result = await uploadFile.call(mockExecuteFunctions, fileContent, mimeType);
 
-			expect(apiRequestMock).toHaveBeenCalledWith('POST', '/v1/files', {
+			expect(apiRequestMock).toHaveBeenCalledWith('POST', requestPath`/v1/files`, {
 				headers: expect.objectContaining({
 					'content-type': expect.stringContaining('multipart/form-data'),
 				}),

@@ -1,6 +1,24 @@
+import semver from 'semver';
+
 import { getMonorepoProjects } from './pnpm-utils.mjs';
 
 const NPM_REGISTRY = 'https://registry.npmjs.org';
+
+const UNSCOPED_PACKAGES_FOLLOWING_STABLE = new Set([
+	'n8n-core',
+	'n8n-editor-ui',
+	'n8n-nodes-base',
+	'n8n-workflow',
+]);
+
+// Standalone packages release from master out-of-sync with the main pipeline
+// (release-standalone-package.yml), so their `latest` follows the newest beta
+// on npm instead of the version recorded in the stable checkout.
+const STANDALONE_PACKAGES_FOLLOWING_BETA = new Set([
+	'@n8n/create-node',
+	'@n8n/eslint-plugin-community-nodes',
+	'@n8n/scan-community-package',
+]);
 
 /**
  * @param {string} name
@@ -23,26 +41,60 @@ async function setDistTag(name, version, tag, token) {
 	});
 }
 
+/** @param {string} name */
+async function getDistTags(name) {
+	const res = await fetch(`${NPM_REGISTRY}/-/package/${encodeURIComponent(name)}/dist-tags`);
+	if (!res.ok) {
+		throw new Error(`Failed to fetch dist-tags for ${name}: HTTP ${res.status}`);
+	}
+	return await res.json();
+}
+
+/**
+ * Resolve the version `latest` should point at, or null if no move is needed.
+ * Standalone packages follow the npm `beta` dist-tag; a standalone release
+ * from master may already have pushed `latest` past beta, so never downgrade.
+ * @param {import('./pnpm-utils.mjs').PnpmPackage} pkg
+ */
+export async function resolveLatestVersion(pkg) {
+	if (!STANDALONE_PACKAGES_FOLLOWING_BETA.has(pkg.name)) return pkg.version;
+
+	const tags = await getDistTags(pkg.name);
+	const target = tags.beta ?? pkg.version;
+	if (tags.latest && semver.gte(tags.latest, target)) return null;
+	return target;
+}
+
+/** @param {import('./pnpm-utils.mjs').PnpmPackage[]} packages */
+export function getPackagesToPromote(packages) {
+	return packages.filter(
+		(pkg) =>
+			!pkg.private &&
+			pkg.version &&
+			(pkg.name.startsWith('@n8n/') || UNSCOPED_PACKAGES_FOLLOWING_STABLE.has(pkg.name)),
+	);
+}
+
 async function setLatestForMonorepoPackages() {
 	const token = process.env.NPM_TOKEN;
 	if (!token) {
 		throw new Error('NPM_TOKEN environment variable is required');
 	}
 
-	const packages = await getMonorepoProjects();
-
-	const publishedPackages = packages //
-		.filter((pkg) => !pkg.private)
-		.filter((pkg) => pkg.name.startsWith('@n8n/'))
-		.filter((pkg) => pkg.version);
+	const publishedPackages = getPackagesToPromote(await getMonorepoProjects());
 
 	const failures = [];
 
 	for (const pkg of publishedPackages) {
-		const versionName = `${pkg.name}@${pkg.version}`;
-
 		try {
-			const res = await setDistTag(pkg.name, pkg.version, 'latest', token);
+			const version = await resolveLatestVersion(pkg);
+			if (version === null) {
+				console.log(`Skipped ${pkg.name}: latest is already at or ahead of beta`);
+				continue;
+			}
+
+			const versionName = `${pkg.name}@${version}`;
+			const res = await setDistTag(pkg.name, version, 'latest', token);
 
 			if (res.ok) {
 				console.log(`Set ${versionName} as latest`);
@@ -53,8 +105,8 @@ async function setLatestForMonorepoPackages() {
 			}
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			console.error(`Failed to set ${versionName} as latest: ${message}`);
-			failures.push(versionName);
+			console.error(`Failed to set latest for ${pkg.name}: ${message}`);
+			failures.push(pkg.name);
 		}
 	}
 

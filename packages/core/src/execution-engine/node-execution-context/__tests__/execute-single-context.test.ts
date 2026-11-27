@@ -1,4 +1,3 @@
-import { mock } from 'jest-mock-extended';
 import type {
 	INode,
 	IWorkflowExecuteAdditionalData,
@@ -12,8 +11,11 @@ import type {
 	INodeType,
 	INodeTypes,
 	ICredentialDataDecryptedObject,
+	WorkflowExpression,
 } from 'n8n-workflow';
-import { ApplicationError, NodeConnectionTypes, type WorkflowExpression } from 'n8n-workflow';
+import { NodeConnectionTypes } from 'n8n-workflow';
+import { UnexpectedError } from '@n8n/errors';
+import { mock } from 'vitest-mock-extended';
 
 import { describeCommonTests } from './shared-tests';
 import { ExecuteSingleContext } from '../execute-single-context';
@@ -106,6 +108,28 @@ describe('ExecuteSingleContext', () => {
 			expect(executeSingleContext.getInputData(inputIndex, connectionType)).toEqual(expectedData);
 		});
 
+		it('should read input data from a map without a prototype', () => {
+			const inputDataWithoutPrototype = { ...inputData };
+			Object.setPrototypeOf(inputDataWithoutPrototype, null);
+			const context = new ExecuteSingleContext(
+				workflow,
+				node,
+				additionalData,
+				mode,
+				runExecutionData,
+				runIndex,
+				connectionInputData,
+				inputDataWithoutPrototype,
+				itemIndex,
+				executeData,
+				abortSignal,
+			);
+
+			expect(context.getInputData(inputIndex, connectionType)).toEqual(
+				inputData.main[inputIndex]?.[itemIndex],
+			);
+		});
+
 		it('should return an empty object if the input name does not exist', () => {
 			const connectionType = 'nonExistent' as typeof NodeConnectionTypes.Main;
 			const expectedData = { json: {} };
@@ -117,7 +141,7 @@ describe('ExecuteSingleContext', () => {
 			const inputIndex = 1;
 
 			expect(() => executeSingleContext.getInputData(inputIndex, connectionType)).toThrow(
-				ApplicationError,
+				UnexpectedError,
 			);
 		});
 
@@ -125,7 +149,7 @@ describe('ExecuteSingleContext', () => {
 			inputData.main[inputIndex] = null;
 
 			expect(() => executeSingleContext.getInputData(inputIndex, connectionType)).toThrow(
-				ApplicationError,
+				UnexpectedError,
 			);
 		});
 
@@ -133,7 +157,7 @@ describe('ExecuteSingleContext', () => {
 			delete inputData.main[inputIndex]![itemIndex];
 
 			expect(() => executeSingleContext.getInputData(inputIndex, connectionType)).toThrow(
-				ApplicationError,
+				UnexpectedError,
 			);
 		});
 	});
@@ -167,6 +191,7 @@ describe('ExecuteSingleContext', () => {
 		it('should get decrypted credentials', async () => {
 			nodeTypes.getByNameAndVersion.mockReturnValue(nodeType);
 			credentialsHelper.getDecrypted.mockResolvedValue({ secret: 'token' });
+			credentialsHelper.isCredentialUsableByNode.mockReturnValue(true);
 
 			const credentials =
 				await executeSingleContext.getCredentials<ICredentialDataDecryptedObject>(

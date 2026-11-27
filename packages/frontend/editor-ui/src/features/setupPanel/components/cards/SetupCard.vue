@@ -9,7 +9,7 @@ import TriggerExecuteButton from '@/features/setupPanel/components/TriggerExecut
 import WebhookUrlPreview from '@/features/setupPanel/components/WebhookUrlPreview.vue';
 import { useTriggerExecution } from '@/features/setupPanel/composables/useTriggerExecution';
 import { useWebhookUrls } from '@/features/setupPanel/composables/useWebhookUrls';
-import { useTelemetry } from '@/app/composables/useTelemetry';
+import { useTelemetry } from '@n8n/composables/useTelemetry';
 import { useSetupPanelStore } from '@/features/setupPanel/setupPanel.store';
 import { injectWorkflowDocumentStore } from '@/app/stores/workflowDocument.store';
 
@@ -25,6 +25,7 @@ const props = withDefaults(
 		isTestingCredential?: boolean;
 		highlightNodeIds?: string[];
 		telemetryPayload?: Record<string, unknown>;
+		pinHeaderExtra?: boolean;
 	}>(),
 	{
 		loading: false,
@@ -34,6 +35,7 @@ const props = withDefaults(
 		isTestingCredential: false,
 		highlightNodeIds: () => [],
 		telemetryPayload: () => ({}),
+		pinHeaderExtra: false,
 	},
 );
 
@@ -149,7 +151,7 @@ defineExpose({ markInteracted });
 			<N8nText :class="$style['card-title']" size="medium" color="text-dark">
 				{{ title }}
 			</N8nText>
-			<div :class="$style['header-extra']">
+			<div :class="[$style['header-extra'], { [$style.pinned]: pinHeaderExtra }]">
 				<slot name="header-extra" />
 			</div>
 			<N8nIcon
@@ -239,7 +241,7 @@ defineExpose({ markInteracted });
 			display: block;
 		}
 
-		.header-extra {
+		.header-extra:not(.pinned) {
 			display: none;
 		}
 	}

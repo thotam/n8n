@@ -3,14 +3,12 @@ import { GlobalConfig } from '@n8n/config';
 import { Container } from '@n8n/di';
 import convict from 'convict';
 import { readFileSync } from 'fs';
-import { setGlobalState, UserError } from 'n8n-workflow';
+import { setGlobalState } from 'n8n-workflow';
+import { UserError } from '@n8n/errors';
 
 import { inE2ETests } from '@/constants';
-import { setMicrosoftObservabilityDefaults } from '@/utils';
 
 const globalConfig = Container.get(GlobalConfig);
-
-setMicrosoftObservabilityDefaults();
 
 if (inE2ETests) {
 	globalConfig.diagnostics.enabled = false;
@@ -19,7 +17,6 @@ if (inE2ETests) {
 	process.env.N8N_AI_ENABLED = 'true';
 } else if (inTest) {
 	globalConfig.logging.level = 'silent';
-	globalConfig.publicApi.disabled = true;
 	process.env.SKIP_STATISTICS_EVENTS = 'true';
 	globalConfig.auth.cookie.secure = false;
 	process.env.N8N_SKIP_AUTH_ON_OAUTH_CALLBACK = 'false';
@@ -38,7 +35,7 @@ if (!inE2ETests && !inTest) {
 	Object.entries(process.env).forEach(([envName, fileName]) => {
 		if (envName.endsWith('_FILE') && fileName) {
 			const configEnvName = envName.replace(/_FILE$/, '');
-			// @ts-ignore
+			// @ts-expect-error convict internal, not typed
 			// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
 			const key = config._env[configEnvName]?.[0] as string;
 			if (key) {

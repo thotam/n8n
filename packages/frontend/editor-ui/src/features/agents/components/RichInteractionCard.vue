@@ -24,6 +24,8 @@ interface RichComponent {
 	placeholder?: string;
 	options?: SelectOption[];
 	fields?: FieldPair[];
+	items?: FieldPair[];
+	altText?: string;
 }
 
 interface RichInput {
@@ -99,7 +101,7 @@ const parsed = computed(() => {
 				</div>
 
 				<div v-else-if="comp.type === 'fields'" :class="$style.fieldsGroup">
-					<div v-for="f in comp.fields" :key="f.label" :class="$style.fieldRow">
+					<div v-for="f in comp.fields ?? comp.items" :key="f.label" :class="$style.fieldRow">
 						<span :class="$style.fieldLabel">{{ f.label }}</span>
 						<span>{{ f.value }}</span>
 					</div>
@@ -108,7 +110,7 @@ const parsed = computed(() => {
 				<img
 					v-else-if="comp.type === 'image' && comp.url"
 					:src="comp.url"
-					:alt="comp.alt ?? ''"
+					:alt="comp.alt ?? comp.altText ?? ''"
 					:class="$style.image"
 				/>
 			</template>
@@ -129,7 +131,7 @@ const parsed = computed(() => {
 }
 
 .title {
-	font-weight: var(--font-weight--bold);
+	font-weight: var(--font-weight--medium);
 	margin-bottom: var(--spacing--4xs);
 }
 
@@ -166,7 +168,7 @@ const parsed = computed(() => {
 .buttonSelected {
 	background-color: var(--color--primary--tint-2);
 	color: var(--color--primary);
-	font-weight: var(--font-weight--bold);
+	font-weight: var(--font-weight--medium);
 }
 
 .selectGroup {
@@ -174,7 +176,7 @@ const parsed = computed(() => {
 }
 
 .selectLabel {
-	font-weight: var(--font-weight--bold);
+	font-weight: var(--font-weight--medium);
 	margin-bottom: var(--spacing--4xs);
 }
 
@@ -214,7 +216,7 @@ const parsed = computed(() => {
 }
 
 .fieldLabel {
-	font-weight: var(--font-weight--bold);
+	font-weight: var(--font-weight--medium);
 	color: var(--color--text--tint-1);
 }
 

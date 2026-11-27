@@ -1,8 +1,9 @@
 import { Memoized } from '@n8n/decorators';
 import callsites from 'callsites';
 import glob from 'fast-glob';
-import { mock } from 'jest-mock-extended';
+import { mock } from './mock-extended';
 import isEmpty from 'lodash/isEmpty';
+import { createDeferredPromise } from '@n8n/utils/promise/deferred-promise';
 import type {
 	ICredentialDataDecryptedObject,
 	IRun,
@@ -10,16 +11,13 @@ import type {
 	IWorkflowExecuteAdditionalData,
 	WorkflowTestData,
 } from 'n8n-workflow';
-import {
-	createDeferredPromise,
-	createRunExecutionData,
-	UnexpectedError,
-	Workflow,
-} from 'n8n-workflow';
+import { createRunExecutionData, Workflow } from 'n8n-workflow';
+import { UnexpectedError } from '@n8n/errors';
 import nock from 'nock';
 import { readFileSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { expect } from 'vitest';
 
 import { ExecutionLifecycleHooks } from '../dist/execution-engine/execution-lifecycle-hooks';
 import { WorkflowExecute } from '../dist/execution-engine/workflow-execute';
@@ -227,17 +225,29 @@ export class NodeTestHarness {
 		const waitPromise = createDeferredPromise<IRun>();
 		hooks.addHandler('workflowExecuteAfter', (fullRunData) => waitPromise.resolve(fullRunData));
 
+		const grantedBinaryDataIds = new Set<string>();
 		const additionalData = mock<IWorkflowExecuteAdditionalData>({
 			executionId: '1',
 			webhookWaitingBaseUrl: 'http://localhost/waiting-webhook',
 			formWaitingBaseUrl: 'http://localhost/waiting-form',
 			hooks,
+			binaryDataAccess: {
+				grant: (binaryDataId) => grantedBinaryDataIds.add(binaryDataId),
+				isGranted: (binaryDataId) => grantedBinaryDataIds.has(binaryDataId),
+				isAllowed: async (binaryDataId, _workflowId, explicitlyGrantedIds) =>
+					grantedBinaryDataIds.has(binaryDataId) ||
+					explicitlyGrantedIds?.includes(binaryDataId) === true,
+			},
 			// Get from node.parameters
 			currentNodeParameters: undefined,
 			parentCallbackManager: undefined,
 			ssrfBridge: undefined,
+			encryptedRunnerIdentity: undefined,
 		});
 		additionalData.credentialsHelper = credentialsHelper;
+		// Prevent the auto-mocked property from being truthy so credential and
+		// request helpers don't take the eval-mock code path.
+		(additionalData as unknown as Record<string, unknown>).evalLlmMockHandler = undefined;
 
 		let executionData: IRun;
 		const runExecutionData = createRunExecutionData({

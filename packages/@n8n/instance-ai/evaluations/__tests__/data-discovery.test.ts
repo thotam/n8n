@@ -7,7 +7,7 @@
  * runner.
  */
 
-import { loadDiscoveryTestCasesWithFiles } from '../data/discovery';
+import { discoveryTestCaseSchema, loadDiscoveryTestCasesWithFiles } from '../data/discovery';
 import { runExpectedToolsInvokedCheck } from '../discovery/expected-tools-invoked';
 
 describe('loadDiscoveryTestCasesWithFiles', () => {
@@ -22,7 +22,9 @@ describe('loadDiscoveryTestCasesWithFiles', () => {
 				'google-oauth-credential-setup',
 				'screenshot-dashboard',
 				'http-node-config-no-browser',
-				'oauth-with-computer-use-disabled',
+				'oauth-with-browser-use-disabled',
+				'workflow-builder-no-credential-ask',
+				'folder-scoped-workflow-list',
 			]),
 		);
 	});
@@ -32,7 +34,9 @@ describe('loadDiscoveryTestCasesWithFiles', () => {
 		'google-oauth-credential-setup',
 		'screenshot-dashboard',
 		'http-node-config-no-browser',
-		'oauth-with-computer-use-disabled',
+		'oauth-with-browser-use-disabled',
+		'workflow-builder-no-credential-ask',
+		'folder-scoped-workflow-list',
 	])('%s parses with a valid expectedToolInvocations rule', (slug) => {
 		const entry = cases.find((c) => c.fileSlug === slug);
 		expect(entry).toBeDefined();
@@ -49,6 +53,7 @@ describe('loadDiscoveryTestCasesWithFiles', () => {
 				workflowIds: [],
 				executionIds: [],
 				dataTableIds: [],
+				artifactRefs: [],
 				finalText: '',
 				toolCalls: [],
 				agentActivities: [],
@@ -64,5 +69,51 @@ describe('loadDiscoveryTestCasesWithFiles', () => {
 
 		expect(positive.length).toBeGreaterThan(0);
 		expect(negative.length).toBeGreaterThan(0);
+	});
+});
+
+describe('discoveryTestCaseSchema', () => {
+	const valid = {
+		id: 'my-scenario',
+		userMessage: 'do the thing',
+		expectedToolInvocations: { anyOf: ['workflow_builder_build_workflow'] },
+	};
+
+	it('accepts a minimal valid case', () => {
+		expect(discoveryTestCaseSchema.safeParse(valid).success).toBe(true);
+	});
+
+	it('rejects a typo-d key instead of passing vacuously', () => {
+		const typo = { ...valid, expectedToolInvocation: { anyOf: ['x'] } };
+		expect(discoveryTestCaseSchema.safeParse(typo).success).toBe(false);
+	});
+
+	it('rejects empty expectations — a case must assert something', () => {
+		const empty = { ...valid, expectedToolInvocations: {} };
+		expect(discoveryTestCaseSchema.safeParse(empty).success).toBe(false);
+	});
+
+	it('rejects an empty expectation list — dead config must fail at load time', () => {
+		const emptyList = { ...valid, expectedToolInvocations: { allOfToolCalls: [] } };
+		expect(discoveryTestCaseSchema.safeParse(emptyList).success).toBe(false);
+	});
+
+	it.each([
+		['connected', { status: 'connected' }, true],
+		['disconnected', { status: 'disconnected' }, true],
+		['unavailable', { status: 'unavailable' }, true],
+		['connected with tool categories', { status: 'connected', toolCategories: ['browser'] }, false],
+		['an unknown status', { status: 'on-fire' }, false],
+	])('validates the browserUse state strictly: %s', (_name, browserUse, ok) => {
+		const withState = { ...valid, instanceState: { browserUse } };
+		expect(discoveryTestCaseSchema.safeParse(withState).success).toBe(ok);
+	});
+
+	it('rejects the retired computerUse key instead of passing vacuously', () => {
+		const retired = {
+			...valid,
+			instanceState: { computerUse: { browser: { status: 'disconnected' } } },
+		};
+		expect(discoveryTestCaseSchema.safeParse(retired).success).toBe(false);
 	});
 });

@@ -1,5 +1,16 @@
 import { createHmac, timingSafeEqual } from 'crypto';
-import type { IWebhookFunctions } from 'n8n-workflow';
+import type { IHookFunctions, IWebhookFunctions } from 'n8n-workflow';
+import { requestPath } from 'n8n-workflow';
+
+/** Path of the webhooks collection that the trigger manages: an organization's or a repository's. */
+export function getHooksPath(this: IHookFunctions) {
+	const owner = this.getNodeParameter('owner', '', { extractValue: true }) as string;
+	if (this.getNodeParameter('resource', 'repository') === 'organization') {
+		return requestPath`/orgs/${owner}/hooks`;
+	}
+	const repository = this.getNodeParameter('repository', '', { extractValue: true }) as string;
+	return requestPath`/repos/${owner}/${repository}/hooks`;
+}
 
 /**
  * Verifies the GitHub webhook signature using HMAC-SHA256.
@@ -10,16 +21,23 @@ import type { IWebhookFunctions } from 'n8n-workflow';
  * This function computes the expected signature using the stored webhook secret
  * and compares it with the provided signature using a constant-time comparison.
  *
- * @returns true if signature is valid or no secret is configured, false otherwise
+ * @returns true only if the stored secret is present and the signature matches
  */
 export function verifySignature(this: IWebhookFunctions): boolean {
 	// Get the secret from workflow static data (set during webhook creation)
 	const webhookData = this.getWorkflowStaticData('node');
 	const webhookSecret = webhookData.webhookSecret as string | undefined;
 
-	// If no secret is configured, skip verification (backwards compatibility)
+	// A webhook can sit without a stored secret until it is re-registered, and
+	// rejecting is the safe answer for that window. Say so, or a stopped trigger
+	// looks identical to a bad signature.
 	if (!webhookSecret) {
-		return true;
+		this.logger.warn(
+			`Github Trigger "${this.getNode().name}" rejected a delivery because no webhook secret is stored. Activate the workflow again to re-register the webhook.`,
+			{ workflowId: this.getWorkflow().id },
+		);
+
+		return false;
 	}
 
 	const req = this.getRequestObject();

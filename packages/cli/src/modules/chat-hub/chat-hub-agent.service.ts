@@ -6,30 +6,28 @@ import {
 	type ChatHubAgentKnowledgeItem,
 	type ChatHubAgentKnowledgeItemStatus,
 } from '@n8n/api-types';
-
 import { Logger } from '@n8n/backend-common';
 import type { EntityManager, User } from '@n8n/db';
 import { Service } from '@n8n/di';
 import { readFile, unlink } from 'fs/promises';
+import { type IBinaryData } from 'n8n-workflow';
 import { nanoid } from 'nanoid';
 import { v4 as uuidv4 } from 'uuid';
+
+import { BadRequestError, NotFoundError } from '@n8n/errors';
+import { DynamicNodeParametersService } from '@/services/dynamic-node-parameters.service';
+import { getBase } from '@/workflow-execute-additional-data';
+import { WorkflowExecutionService } from '@/workflows/workflow-execution.service';
 
 import type { ChatHubAgent, IChatHubAgent } from './chat-hub-agent.entity';
 import { ChatHubAgentRepository } from './chat-hub-agent.repository';
 import { ChatHubCredentialsService } from './chat-hub-credentials.service';
-import { getModelMetadata } from './chat-hub.constants';
-import { ChatHubAttachmentService } from './chat-hub.attachment.service';
-import { type IBinaryData } from 'n8n-workflow';
-import { ChatHubWorkflowService } from './chat-hub-workflow.service';
-import { WorkflowExecutionService } from '@/workflows/workflow-execution.service';
-import { BadRequestError } from '@/errors/response-errors/bad-request.error';
-import { ChatHubSettingsService } from './chat-hub.settings.service';
-import { ChatHubToolService } from './chat-hub-tool.service';
-
-import { NotFoundError } from '@/errors/response-errors/not-found.error';
 import { ChatHubExecutionService } from './chat-hub-execution.service';
-import { DynamicNodeParametersService } from '@/services/dynamic-node-parameters.service';
-import { getBase } from '@/workflow-execute-additional-data';
+import { ChatHubToolService } from './chat-hub-tool.service';
+import { ChatHubWorkflowService } from './chat-hub-workflow.service';
+import { ChatHubAttachmentService } from './chat-hub.attachment.service';
+import { getModelMetadata } from './chat-hub.constants';
+import { ChatHubSettingsService } from './chat-hub.settings.service';
 import type { SemanticSearchOptions } from './chat-hub.types';
 
 @Service()
@@ -100,26 +98,34 @@ export class ChatHubAgentService {
 
 		const id = uuidv4();
 
-		const agent = await this.chatAgentRepository.createAgent({
-			id,
-			name: data.name,
-			description: data.description ?? null,
-			icon: data.icon,
-			suggestedPrompts: data.suggestedPrompts ?? [],
-			systemPrompt: data.systemPrompt,
-			ownerId: user.id,
-			credentialId: data.credentialId,
-			provider: data.provider,
-			model: data.model,
-			files: [],
+		// One transaction: a rejected tool removes the new agent again
+		const agent = await this.chatAgentRepository.runInTransaction({}, async (trx) => {
+			const created = await this.chatAgentRepository.createAgent(
+				{
+					id,
+					name: data.name,
+					description: data.description ?? null,
+					icon: data.icon,
+					suggestedPrompts: data.suggestedPrompts ?? [],
+					systemPrompt: data.systemPrompt,
+					ownerId: user.id,
+					credentialId: data.credentialId,
+					provider: data.provider,
+					model: data.model,
+					files: [],
+				},
+				trx,
+			);
+
+			if (data.toolIds.length > 0) {
+				await this.chatHubToolService.setAgentTools(id, user.id, data.toolIds, trx);
+			}
+
+			return created;
 		});
 
-		if (data.toolIds.length > 0) {
-			await this.chatHubToolService.setAgentTools(id, data.toolIds);
-		}
-
 		this.logger.debug(`Chat agent created: ${id} by user ${user.id}`);
-		return this.toDto(agent, data.toolIds);
+		return this.toDto(agent, [...new Set(data.toolIds)]);
 	}
 
 	async updateAgent(
@@ -150,11 +156,14 @@ export class ChatHubAgentService {
 		if (updates.provider !== undefined) updateData.provider = updates.provider;
 		if (updates.model !== undefined) updateData.model = updates.model ?? null;
 
-		const agent = await this.chatAgentRepository.updateAgent(id, updateData);
-
-		if (updates.toolIds !== undefined) {
-			await this.chatHubToolService.setAgentTools(id, updates.toolIds);
-		}
+		// One transaction: a rejected tool or a failed field update leaves the agent unchanged
+		const { toolIds: newToolIds } = updates;
+		const agent = await this.chatAgentRepository.runInTransaction({}, async (trx) => {
+			if (newToolIds !== undefined) {
+				await this.chatHubToolService.setAgentTools(id, user.id, newToolIds, trx);
+			}
+			return await this.chatAgentRepository.updateAgent(id, updateData, trx);
+		});
 
 		this.logger.debug(`Chat agent updated: ${id} by user ${user.id}`);
 		const toolIds = await this.chatHubToolService.getToolIdsForAgent(agent.id);
@@ -227,8 +236,9 @@ export class ChatHubAgentService {
 		try {
 			const settings = await this.ensureSemanticSearchOptions();
 
-			const { workflowData, executionData } = await this.chatAgentRepository.manager.transaction(
-				async (trx) => {
+			const { workflowData, executionData } = await this.chatAgentRepository.runInTransaction(
+				{},
+				async (trx, ctx) => {
 					const project = await this.chatHubCredentialsService.findPersonalProject(user, trx);
 
 					return await this.chatHubWorkflowService.createEmbeddingsInsertionWorkflow(
@@ -237,7 +247,7 @@ export class ChatHubAgentService {
 						files,
 						agentId,
 						settings,
-						trx,
+						ctx,
 						workflowId,
 					);
 				},

@@ -1,4 +1,10 @@
-import { createModel, generateTitleFromMessage } from '@n8n/agents';
+import {
+	createModel,
+	generateTitleFromMessage,
+	type BuiltTelemetry,
+	type FetchFn,
+	type Telemetry,
+} from '@n8n/agents';
 
 import type { ModelConfig } from '../types';
 
@@ -13,6 +19,13 @@ export function truncateToTitle(message: string): string {
 	return (lastSpace > 20 ? truncated.slice(0, lastSpace) : truncated) + '\u2026';
 }
 
+async function resolveBuiltTelemetry(
+	telemetry: BuiltTelemetry | Telemetry | undefined,
+): Promise<BuiltTelemetry | undefined> {
+	if (!telemetry) return undefined;
+	return 'build' in telemetry ? await telemetry.build() : telemetry;
+}
+
 /**
  * Generate a polished thread title via a lightweight LLM call.
  * Returns the cleaned title string or null on failure.
@@ -23,10 +36,19 @@ export function truncateToTitle(message: string): string {
 export async function generateTitleForRun(
 	modelId: ModelConfig,
 	userMessage: string,
+	options?: {
+		telemetry?: BuiltTelemetry | Telemetry;
+		modelFetch?: FetchFn;
+		requestLabels?: boolean;
+	},
 ): Promise<string | null> {
 	try {
-		const model = createModel(modelId);
-		return await generateTitleFromMessage(model, userMessage);
+		const model = createModel(modelId, options?.modelFetch);
+		const telemetry = await resolveBuiltTelemetry(options?.telemetry);
+		return await generateTitleFromMessage(model, userMessage, {
+			...(options?.requestLabels ? { functionId: 'instance-ai.thread_title' } : {}),
+			...(telemetry ? { telemetry } : {}),
+		});
 	} catch {
 		return null;
 	}

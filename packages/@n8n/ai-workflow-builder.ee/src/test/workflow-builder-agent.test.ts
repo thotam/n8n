@@ -3,33 +3,34 @@ import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import type { MemorySaver } from '@langchain/langgraph';
 import { GraphRecursionError } from '@langchain/langgraph';
 import type { Logger } from '@n8n/backend-common';
-import { mock } from 'jest-mock-extended';
-import type { INodeTypeDescription } from 'n8n-workflow';
-import { ApplicationError, OperationalError } from 'n8n-workflow';
+import type { INodeTypeDescription, IWorkflowBase } from 'n8n-workflow';
+import { OperationalError, UserError } from '@n8n/errors';
+import type { Mock, MockedClass, MockedFunction } from 'vitest';
+import { mock } from 'vitest-mock-extended';
 
-jest.mock('@/utils/stream-processor', () => ({
-	createStreamProcessor: jest.fn(),
-	formatMessages: jest.fn(),
+vi.mock('@/utils/stream-processor', () => ({
+	createStreamProcessor: vi.fn(),
+	formatMessages: vi.fn(),
 }));
 
-const mockCodeWorkflowBuilderChat = jest.fn();
-jest.mock('@/code-builder', () => ({
-	CodeWorkflowBuilder: jest.fn().mockImplementation(() => ({
-		chat: mockCodeWorkflowBuilderChat,
-	})),
+const mockCodeWorkflowBuilderChat = vi.fn();
+vi.mock('@/code-builder', () => ({
+	CodeWorkflowBuilder: vi.fn(function () {
+		return { chat: mockCodeWorkflowBuilderChat };
+	}),
 }));
 
-const mockTriageAgentRun = jest.fn();
-jest.mock('@/code-builder/triage.agent', () => ({
-	TriageAgent: jest.fn().mockImplementation(() => ({
-		run: mockTriageAgentRun,
-	})),
+const mockTriageAgentRun = vi.fn();
+vi.mock('@/code-builder/triage.agent', () => ({
+	TriageAgent: vi.fn(function () {
+		return { run: mockTriageAgentRun };
+	}),
 }));
 
-const mockLoadCodeBuilderSession = jest.fn();
-const mockSaveCodeBuilderSession = jest.fn();
-const mockGenerateCodeBuilderThreadId = jest.fn();
-jest.mock('@/code-builder/utils/code-builder-session', () => ({
+const mockLoadCodeBuilderSession = vi.fn();
+const mockSaveCodeBuilderSession = vi.fn();
+const mockGenerateCodeBuilderThreadId = vi.fn();
+vi.mock('@/code-builder/utils/code-builder-session', () => ({
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-return
 	loadCodeBuilderSession: (...args: unknown[]) => mockLoadCodeBuilderSession(...args),
 	// eslint-disable-next-line @typescript-eslint/no-unsafe-return
@@ -38,20 +39,20 @@ jest.mock('@/code-builder/utils/code-builder-session', () => ({
 	generateCodeBuilderThreadId: (...args: unknown[]) => mockGenerateCodeBuilderThreadId(...args),
 }));
 
-const mockRandomUUID = jest.fn();
-Object.defineProperty(global, 'crypto', {
-	value: {
-		randomUUID: mockRandomUUID,
-	},
-	writable: true,
-});
+// Spy on `crypto.randomUUID` only, leaving the rest of `crypto` (e.g.
+// `getRandomValues`, which `uuid` relies on) intact. Replacing the whole global
+// `crypto` object leaks across files in the same vitest worker and breaks later
+// suites. `restoreMocks: true` restores this spy automatically.
+vi.spyOn(globalThis.crypto, 'randomUUID');
 
 import type { AssistantHandler } from '@/assistant/assistant-handler';
 import { CodeWorkflowBuilder } from '@/code-builder';
+import { TriageAgent } from '@/code-builder/triage.agent';
 import { MAX_AI_BUILDER_PROMPT_LENGTH } from '@/constants';
 import { ValidationError } from '@/errors';
 import type { PlanInterruptValue, PlanOutput } from '@/types/planning';
 import type { StreamOutput } from '@/types/streaming';
+import type { SimpleWorkflow } from '@/types/workflow';
 import { createStreamProcessor } from '@/utils/stream-processor';
 import {
 	WorkflowBuilderAgent,
@@ -67,28 +68,29 @@ describe('WorkflowBuilderAgent', () => {
 	let parsedNodeTypes: INodeTypeDescription[];
 	let config: WorkflowBuilderAgentConfig;
 
-	const mockCreateStreamProcessor = createStreamProcessor as jest.MockedFunction<
+	const mockCreateStreamProcessor = createStreamProcessor as MockedFunction<
 		typeof createStreamProcessor
 	>;
 
 	beforeEach(() => {
 		mockLlm = mock<BaseChatModel>({
-			_llmType: jest.fn().mockReturnValue('test-llm'),
-			bindTools: jest.fn().mockReturnThis(),
-			invoke: jest.fn(),
+			_llmType: vi.fn().mockReturnValue('test-llm'),
+			bindTools: vi.fn().mockReturnThis(),
+			invoke: vi.fn(),
 		});
 
 		mockLogger = mock<Logger>({
-			debug: jest.fn(),
-			info: jest.fn(),
-			warn: jest.fn(),
-			error: jest.fn(),
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
 		});
 
 		mockCheckpointer = mock<MemorySaver>();
-		mockCheckpointer.getTuple = jest.fn();
-		mockCheckpointer.put = jest.fn();
-		mockCheckpointer.list = jest.fn();
+		mockCheckpointer.getTuple = vi.fn();
+		mockCheckpointer.put = vi.fn();
+		mockCheckpointer.putWrites = vi.fn().mockResolvedValue(undefined);
+		mockCheckpointer.list = vi.fn();
 
 		parsedNodeTypes = [
 			{
@@ -121,6 +123,74 @@ describe('WorkflowBuilderAgent', () => {
 		agent = new WorkflowBuilderAgent(config);
 	});
 
+	describe('workflow entry point', () => {
+		// getDefaultWorkflowJSON is the only producer of the workflowJSON the graph is started
+		// with, so it is the choke point where a stored workflow is made safe to key by node
+		// name. Exercised directly: the call sites below it sit behind the LangGraph stream.
+		function getDefaultWorkflowJSON(payload: ChatPayload): SimpleWorkflow {
+			return (
+				agent as unknown as {
+					getDefaultWorkflowJSON: (p: ChatPayload) => SimpleWorkflow;
+				}
+			).getDefaultWorkflowJSON(payload);
+		}
+
+		function payloadWith(currentWorkflow: unknown): ChatPayload {
+			return {
+				id: '1',
+				message: 'hi',
+				workflowContext: { currentWorkflow: currentWorkflow as IWorkflowBase },
+			};
+		}
+
+		it('should pass an ordinary workflow through unchanged', () => {
+			const currentWorkflow = {
+				name: 'w',
+				nodes: [{ id: '1', name: 'Manual' }],
+				connections: { Manual: { main: [[{ node: 'Sink', type: 'main', index: 0 }]] } },
+			};
+
+			const result = getDefaultWorkflowJSON(payloadWith(currentWorkflow));
+
+			expect(result).toBe(currentWorkflow);
+		});
+
+		it('should return an empty workflow when no workflow is supplied', () => {
+			expect(getDefaultWorkflowJSON({ id: '1', message: 'hi' })).toEqual({
+				nodes: [],
+				connections: {},
+				name: '',
+			});
+		});
+
+		it('should drop a node whose name cannot be an object key before the graph starts', () => {
+			const result = getDefaultWorkflowJSON(
+				payloadWith({
+					name: 'w',
+					nodes: [
+						{ id: '1', name: '__proto__' },
+						{ id: '2', name: 'Keep' },
+					],
+					connections: {},
+				}),
+			);
+
+			expect(result.nodes.map((n) => n.name)).toEqual(['Keep']);
+		});
+
+		it('should drop a connection field that cannot be an object key before the graph starts', () => {
+			const result = getDefaultWorkflowJSON(
+				payloadWith(
+					JSON.parse(
+						'{"name":"w","nodes":[],"connections":{"A":{"main":[[{"node":["__proto__"],"type":"main","index":0}]]}}}',
+					),
+				),
+			);
+
+			expect(result.connections.A?.main?.[0]).toEqual([]);
+		});
+	});
+
 	describe('chat method', () => {
 		let mockPayload: ChatPayload;
 
@@ -128,8 +198,6 @@ describe('WorkflowBuilderAgent', () => {
 			mockPayload = {
 				id: '12345',
 				message: 'Create a workflow',
-				// Test for plan mode as it's the only case when legacy multi-agent implementation is still in use
-				featureFlags: { planMode: true },
 				mode: 'plan',
 				workflowContext: {
 					currentWorkflow: { id: 'workflow-123' },
@@ -160,7 +228,6 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '12345',
 				message: validMessage,
-				featureFlags: { planMode: true },
 				mode: 'plan',
 			};
 
@@ -181,7 +248,7 @@ describe('WorkflowBuilderAgent', () => {
 			mockCreateStreamProcessor.mockReturnValue(mockAsyncGenerator);
 
 			// Mock the LLM to return a simple response
-			(mockLlm.invoke as jest.Mock).mockResolvedValue({
+			(mockLlm.invoke as Mock).mockResolvedValue({
 				content: 'Mocked response',
 				tool_calls: [],
 			});
@@ -203,7 +270,7 @@ describe('WorkflowBuilderAgent', () => {
 			await expect(async () => {
 				const generator = agent.chat(mockPayload);
 				await generator.next();
-			}).rejects.toThrow(ApplicationError);
+			}).rejects.toThrow(UserError);
 		});
 
 		it('should handle 401 expired token error from LangChain MODEL_AUTHENTICATION', async () => {
@@ -223,11 +290,11 @@ describe('WorkflowBuilderAgent', () => {
 			await expect(async () => {
 				const generator = agent.chat(mockPayload);
 				await generator.next();
-			}).rejects.toThrow(ApplicationError);
+			}).rejects.toThrow(UserError);
 		});
 
 		it('should not treat generic 401 errors as expired token errors', async () => {
-			// A generic 401 without lc_error_code should be rethrown as-is, not converted to ApplicationError
+			// A generic 401 without lc_error_code should be rethrown as-is, not converted to UserError
 			const generic401Error = Object.assign(new Error('Unauthorized'), { status: 401 });
 
 			mockCreateStreamProcessor.mockImplementation(() => {
@@ -319,7 +386,7 @@ describe('WorkflowBuilderAgent', () => {
 			try {
 				const generator = agent.chat(mockPayload);
 				await generator.next();
-				fail('Expected an error to be thrown');
+				expect.fail('Expected an error to be thrown');
 			} catch (error) {
 				thrownError = error;
 			}
@@ -329,7 +396,7 @@ describe('WorkflowBuilderAgent', () => {
 	});
 
 	describe('plan mode routing', () => {
-		const MockedCodeWorkflowBuilder = CodeWorkflowBuilder as jest.MockedClass<
+		const MockedCodeWorkflowBuilder = CodeWorkflowBuilder as MockedClass<
 			typeof CodeWorkflowBuilder
 		>;
 
@@ -349,7 +416,7 @@ describe('WorkflowBuilderAgent', () => {
 		};
 
 		beforeEach(() => {
-			jest.clearAllMocks();
+			vi.clearAllMocks();
 			MockedCodeWorkflowBuilder.mockClear();
 			mockCodeWorkflowBuilderChat.mockReturnValue(
 				(async function* () {
@@ -360,11 +427,10 @@ describe('WorkflowBuilderAgent', () => {
 			);
 		});
 
-		it('should route to multi-agent for initial plan request when planMode enabled', async () => {
+		it('should route to multi-agent for initial plan request', async () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a weather alert workflow',
-				featureFlags: { planMode: true },
 				mode: 'plan',
 			};
 
@@ -390,7 +456,6 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a weather alert workflow',
-				featureFlags: { planMode: true },
 				resumeData: { action: 'approve' },
 				resumeInterrupt: mockPlanInterrupt,
 			};
@@ -416,7 +481,6 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a weather alert workflow',
-				featureFlags: { planMode: true },
 				resumeData: { action: 'modify', feedback: 'Add error handling' },
 				resumeInterrupt: mockPlanInterrupt,
 			};
@@ -442,7 +506,6 @@ describe('WorkflowBuilderAgent', () => {
 			const payload: ChatPayload = {
 				id: '123',
 				message: 'Create a weather alert workflow',
-				featureFlags: { planMode: true },
 				resumeData: { action: 'reject' },
 				resumeInterrupt: mockPlanInterrupt,
 			};
@@ -489,7 +552,7 @@ describe('WorkflowBuilderAgent', () => {
 		let triageConfig: WorkflowBuilderAgentConfig;
 
 		beforeEach(() => {
-			jest.clearAllMocks();
+			vi.clearAllMocks();
 
 			mockGenerateCodeBuilderThreadId.mockReturnValue('test-thread-id');
 			mockLoadCodeBuilderSession.mockResolvedValue({
@@ -825,9 +888,7 @@ describe('WorkflowBuilderAgent', () => {
 				// consume
 			}
 
-			const mockedCtor = jest.requireMock<{ TriageAgent: jest.Mock }>(
-				'@/code-builder/triage.agent',
-			).TriageAgent;
+			const mockedCtor = vi.mocked(TriageAgent);
 			expect(mockedCtor).toHaveBeenCalledWith(
 				expect.objectContaining({
 					buildWorkflow: expect.any(Function),

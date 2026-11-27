@@ -1,4 +1,5 @@
 import { AIMessage } from '@langchain/core/messages';
+import omit from 'lodash/omit';
 import { nodeNameToToolName } from 'n8n-workflow';
 import type { EngineResponse, EngineResult, IDataObject } from 'n8n-workflow';
 
@@ -7,8 +8,15 @@ import type {
 	ToolCallData,
 	ThinkingContentBlock,
 	RedactedThinkingContentBlock,
+	TextContentBlock,
 	ToolUseContentBlock,
 } from './types';
+
+type AnthropicContentBlock =
+	| ThinkingContentBlock
+	| RedactedThinkingContentBlock
+	| TextContentBlock
+	| ToolUseContentBlock;
 
 /**
  * Provider-specific metadata extracted from tool action metadata
@@ -22,6 +30,8 @@ interface ProviderMetadata {
 	thinkingType?: 'thinking' | 'redacted_thinking';
 	/** Anthropic thinking signature */
 	thinkingSignature?: string;
+	/** DeepSeek reasoning content for thinking mode */
+	reasoningContent?: string;
 }
 
 /**
@@ -57,17 +67,33 @@ function extractProviderMetadata(metadata?: RequestResponseMetadata): ProviderMe
 			? metadata.anthropic.thinkingSignature
 			: undefined;
 
+	// Extract DeepSeek metadata
+	const reasoningContent =
+		typeof metadata.deepseek?.reasoningContent === 'string'
+			? metadata.deepseek.reasoningContent
+			: undefined;
+
 	return {
 		thoughtSignature,
 		thinkingContent,
 		thinkingType,
 		thinkingSignature,
+		reasoningContent,
 	};
 }
 
 /**
+ * A tool call to replay as an Anthropic tool_use content block.
+ */
+interface AnthropicToolCall {
+	toolInput: IDataObject;
+	toolId: string;
+	toolName: string;
+}
+
+/**
  * Builds Anthropic-specific content blocks for thinking mode.
- * Creates an array with thinking block followed by tool_use block.
+ * Creates an array with the thinking block, the model's text, then one tool_use block per tool call.
  *
  * IMPORTANT: The thinking block must come before tool_use in the message.
  * When content is an array, LangChain ignores tool_calls field for Anthropic,
@@ -76,19 +102,17 @@ function extractProviderMetadata(metadata?: RequestResponseMetadata): ProviderMe
  * @param thinkingContent - The thinking content from Anthropic
  * @param thinkingType - Type of thinking block (thinking or redacted_thinking)
  * @param thinkingSignature - Optional signature for thinking block
- * @param toolInput - The tool input data
- * @param toolId - The tool call ID
- * @param toolName - The tool name
- * @returns Array of content blocks with thinking and tool_use
+ * @param toolCalls - The tool calls that the model made in this turn
+ * @param modelText - The text the model wrote before the tool calls
+ * @returns Array of content blocks with thinking, text and tool_use
  */
 function buildAnthropicContentBlocks(
 	thinkingContent: string,
 	thinkingType: 'thinking' | 'redacted_thinking',
 	thinkingSignature: string | undefined,
-	toolInput: IDataObject,
-	toolId: string,
-	toolName: string,
-): Array<ThinkingContentBlock | RedactedThinkingContentBlock | ToolUseContentBlock> {
+	toolCalls: AnthropicToolCall[],
+	modelText: string | undefined,
+): AnthropicContentBlock[] {
 	// Create thinking block with correct field names for Anthropic API
 	const thinkingBlock: ThinkingContentBlock | RedactedThinkingContentBlock =
 		thinkingType === 'thinking'
@@ -102,63 +126,61 @@ function buildAnthropicContentBlocks(
 					data: thinkingContent,
 				};
 
-	// Create tool_use block (required for Anthropic when using structured content)
-	const toolInputData = toolInput.input;
-	const toolUseBlock: ToolUseContentBlock = {
+	// toolInput is the tool call arguments. `tool` is a toolkit routing field added by
+	// createEngineRequests. The model did not send it, so omit it from the replayed input.
+	const toolUseBlocks: ToolUseContentBlock[] = toolCalls.map(({ toolInput, toolId, toolName }) => ({
 		type: 'tool_use',
 		id: toolId,
 		name: toolName,
-		input:
-			toolInputData && typeof toolInputData === 'object'
-				? (toolInputData as Record<string, unknown>)
-				: {},
-	};
+		input: omit(toolInput, 'tool'),
+	}));
 
-	return [thinkingBlock, toolUseBlock];
+	const textBlocks: TextContentBlock[] = modelText ? [{ type: 'text', text: modelText }] : [];
+
+	return [thinkingBlock, ...textBlocks, ...toolUseBlocks];
 }
 
 /**
  * Builds message content for AI message, handling provider-specific formats.
- * For Anthropic thinking mode, creates content blocks with thinking and tool_use.
- * For other providers, creates simple string content.
+ * For Anthropic thinking mode, creates content blocks with thinking, text and tool_use.
+ * For other providers, uses the model's text, or no content when the model wrote none.
  *
  * @param providerMetadata - Provider-specific metadata
  * @param toolInput - The tool input data
  * @param toolId - The tool call ID
  * @param toolName - The tool name
- * @param nodeName - The node name for fallback string content
- * @returns Message content (string or content blocks array)
+ * @param modelText - The text the model wrote before the tool call
+ * @returns Content blocks for Anthropic thinking mode, otherwise the model's text or an empty array
  */
 function buildMessageContent(
 	providerMetadata: ProviderMetadata,
 	toolInput: IDataObject,
 	toolId: string,
 	toolName: string,
-): string | Array<ThinkingContentBlock | RedactedThinkingContentBlock | ToolUseContentBlock> {
+	modelText: string | undefined,
+): string | AnthropicContentBlock[] {
 	const { thinkingContent, thinkingType, thinkingSignature } = providerMetadata;
 
 	// Anthropic thinking mode: build content blocks
-	if (thinkingContent && thinkingType) {
+	// Empty thinking text is valid because the signature carries the reasoning.
+	if (thinkingContent !== undefined && thinkingType) {
 		return buildAnthropicContentBlocks(
 			thinkingContent,
 			thinkingType,
 			thinkingSignature,
-			toolInput,
-			toolId,
-			toolName,
+			[{ toolInput, toolId, toolName }],
+			modelText,
 		);
 	}
 
-	// Default: simple string content
-	return `Calling ${toolName} with input: ${JSON.stringify(toolInput)}`;
+	// Empty content produces no text part, which Gemini needs when the model wrote no text
+	return modelText ?? [];
 }
 
 function resolveToolName(tool: EngineResult<RequestResponseMetadata>): string {
-	// For toolkit tools (e.g., MCP Client), the actual tool name is stored in input.tool
-	// by createEngineRequests. Using the node name (e.g., "MCP_Client") instead would
-	// cause the LLM to see a wrong tool name in history and attempt to re-call it,
-	// resulting in createEngineRequests returning an empty actions array and an infinite loop.
+	// Prefer the canonical name captured when the engine request was created.
 	return (
+		tool.action.metadata?.toolName ??
 		tool.action.metadata?.hitl?.toolName ??
 		(typeof tool.action.input?.tool === 'string' ? tool.action.input.tool : undefined) ??
 		nodeNameToToolName(tool.action.nodeName)
@@ -183,21 +205,30 @@ interface ProcessedToolResponse {
  * The structure matches what @langchain/google-common expects:
  * - `__gemini_function_call_thought_signatures__`: maps the first tool call ID to the signature
  * - `tool_calls`: array of tool call descriptors
- * - `signatures`: array aligned to parts [textPart, functionCall_1, ...], with the signature
- *   only on the first function call (per Google's docs)
+ * - `signatures`: array positionally aligned to the Gemini request parts, with the signature
+ *   only on the first function call (per Google's docs). @langchain/google-common applies it
+ *   only when `signatures.length` equals the part count, so the array must account for whether
+ *   the message content produces a leading text part.
  *
  * @param toolCalls - Tool calls to include
  * @param thoughtSignature - The Gemini thought signature
+ * @param hasLeadingTextPart - Whether the message content serializes to a text part before the
+ *   function-call parts
  * @returns additional_kwargs object for AIMessage
  */
 function buildGeminiAdditionalKwargs(
 	toolCalls: Array<{ id: string; name: string; args: IDataObject }>,
 	thoughtSignature: string,
+	hasLeadingTextPart: boolean,
 ): Record<string, unknown> {
-	const signatures: string[] = ['', thoughtSignature];
-	for (let i = 2; i <= toolCalls.length; i++) {
-		signatures.push('');
-	}
+	const signatures = [
+		// Reserve the first position for the leading text part, which has no signature
+		...(hasLeadingTextPart ? [''] : []),
+		// Gemini attaches the thought signature only to the first function call
+		thoughtSignature,
+		// Reserve positions for the remaining unsigned function calls
+		...toolCalls.slice(1).map(() => ''),
+	];
 
 	return {
 		__gemini_function_call_thought_signatures__: {
@@ -211,15 +242,16 @@ function buildGeminiAdditionalKwargs(
 /**
  * Builds an AIMessage for a single tool call, handling provider-specific formats.
  *
- * For Anthropic thinking mode, content is an array of blocks (thinking + tool_use).
+ * For Anthropic thinking mode, content is an array of blocks (thinking + text + tool_use).
  * For Gemini with thought signatures, additional_kwargs carries the signature.
- * For other providers, content is a simple string with tool_calls set.
+ * For other providers, content is the model's text with tool_calls set.
  */
 function buildIndividualAIMessage(
 	toolId: string,
 	toolName: string,
 	toolInput: IDataObject,
 	providerMetadata: ProviderMetadata,
+	modelText: string | undefined,
 ): AIMessage {
 	const toolCall = {
 		id: toolId,
@@ -228,18 +260,28 @@ function buildIndividualAIMessage(
 		type: 'tool_call' as const,
 	};
 
-	const content = buildMessageContent(providerMetadata, toolInput, toolId, toolName);
+	const content = buildMessageContent(providerMetadata, toolInput, toolId, toolName, modelText);
+	const isAnthropicBlocks = Array.isArray(content) && content.length > 0;
+
+	const additionalKwargs: Record<string, unknown> = providerMetadata.thoughtSignature
+		? buildGeminiAdditionalKwargs(
+				[{ id: toolId, name: toolName, args: toolInput }],
+				providerMetadata.thoughtSignature,
+				// Text content serializes to a text part before the function call part
+				typeof content === 'string',
+			)
+		: {};
+	// DeepSeek's thinking mode requires reasoning_content to be echoed back on the
+	// assistant message that requested the tool call, or the next turn 400s.
+	if (providerMetadata.reasoningContent) {
+		additionalKwargs.reasoning_content = providerMetadata.reasoningContent;
+	}
 
 	return new AIMessage({
 		content,
 		// When content is an array (Anthropic thinking), LangChain ignores tool_calls
-		...(typeof content === 'string' && { tool_calls: [toolCall] }),
-		...(providerMetadata.thoughtSignature && {
-			additional_kwargs: buildGeminiAdditionalKwargs(
-				[{ id: toolId, name: toolName, args: toolInput }],
-				providerMetadata.thoughtSignature,
-			),
-		}),
+		...(!isAnthropicBlocks && { tool_calls: [toolCall] }),
+		...(Object.keys(additionalKwargs).length > 0 && { additional_kwargs: additionalKwargs }),
 	});
 }
 
@@ -256,11 +298,13 @@ function buildIndividualAIMessage(
  *
  * @param processedTools - Array of processed tool responses to include
  * @param thoughtSignature - The shared thought signature from Gemini
+ * @param modelText - The text the model wrote before the tool calls
  * @returns AIMessage with all tool calls and proper signature format
  */
 function buildSharedGeminiAIMessage(
 	processedTools: ProcessedToolResponse[],
 	thoughtSignature: string,
+	modelText: string | undefined,
 ): AIMessage {
 	const allToolCalls = processedTools.map((pt) => ({
 		id: pt.toolId,
@@ -269,13 +313,81 @@ function buildSharedGeminiAIMessage(
 		type: 'tool_call' as const,
 	}));
 
-	const toolNames = processedTools.map((pt) => pt.nodeName).join(', ');
-
 	return new AIMessage({
-		content: `Calling tools: ${toolNames}`,
+		// Empty content produces no text part, so the first function call is the first part
+		content: modelText ?? [],
 		tool_calls: allToolCalls,
-		additional_kwargs: buildGeminiAdditionalKwargs(allToolCalls, thoughtSignature),
+		additional_kwargs: buildGeminiAdditionalKwargs(
+			allToolCalls,
+			thoughtSignature,
+			modelText !== undefined,
+		),
 	});
+}
+
+/**
+ * Anthropic thinking metadata shared by every tool call in a parallel batch.
+ */
+interface SharedAnthropicThinking {
+	thinkingContent: string;
+	thinkingType: 'thinking' | 'redacted_thinking';
+	thinkingSignature: string | undefined;
+}
+
+/**
+ * Returns the thinking block when every tool call in the batch carries the same one.
+ * Replay that batch as one assistant message. A second copy of the signature follows
+ * content that was not present when Anthropic signed the block, and the next request fails.
+ */
+function getSharedAnthropicThinking(
+	batchTools: ProcessedToolResponse[],
+): SharedAnthropicThinking | undefined {
+	if (batchTools.length < 2) return undefined;
+
+	const first = batchTools[0].providerMetadata;
+	if (first.thinkingContent === undefined || !first.thinkingType) return undefined;
+
+	const shared: SharedAnthropicThinking = {
+		thinkingContent: first.thinkingContent,
+		thinkingType: first.thinkingType,
+		thinkingSignature: first.thinkingSignature,
+	};
+
+	const matches = batchTools.every((tool) => {
+		const metadata = tool.providerMetadata;
+		return (
+			metadata.thinkingContent === shared.thinkingContent &&
+			metadata.thinkingType === shared.thinkingType &&
+			metadata.thinkingSignature === shared.thinkingSignature
+		);
+	});
+
+	return matches ? shared : undefined;
+}
+
+/**
+ * Builds one AIMessage for parallel Anthropic tool calls that share a thinking block.
+ * The content is the original turn: the thinking block, the text, then one tool_use block per call.
+ * LangChain ignores tool_calls when content is an array, so this message sets content only.
+ */
+function buildSharedAnthropicAIMessage(
+	processedTools: ProcessedToolResponse[],
+	sharedThinking: SharedAnthropicThinking,
+	modelText: string | undefined,
+): AIMessage {
+	const content = buildAnthropicContentBlocks(
+		sharedThinking.thinkingContent,
+		sharedThinking.thinkingType,
+		sharedThinking.thinkingSignature,
+		processedTools.map(({ toolInput, toolId, toolName }) => ({
+			toolInput,
+			toolId,
+			toolName,
+		})),
+		modelText,
+	);
+
+	return new AIMessage({ content });
 }
 
 /**
@@ -303,9 +415,9 @@ function buildObservation(toolData: {
  * Rebuilds the agent steps from previous tool call responses.
  * This is used to continue agent execution after tool calls have been made.
  *
- * For parallel tool calls with Gemini thought signatures, all function calls are grouped
- * into a single AIMessage to match the original model response structure. This is required
- * because the thought_signature is cryptographically tied to the combined parallel call turn.
+ * For parallel tool calls with Gemini thought signatures or an Anthropic thinking block, all
+ * tool calls are grouped into a single AIMessage to match the original model response
+ * structure. This is required because the signature is tied to the combined parallel call turn.
  *
  * This is a generalized version that can be used across different agent types
  * (Tools Agent, OpenAI Functions Agent, etc.).
@@ -325,7 +437,14 @@ export function buildSteps(
 	const responses = response.actionResponses ?? [];
 
 	if (response.metadata?.previousRequests) {
-		steps.push(...response.metadata.previousRequests);
+		// previousRequests can contain steps from every item in a batch (see
+		// executeBatch's batch merge), so only carry forward the ones that
+		// belong to this item, or untagged steps persisted before upgrade.
+		steps.push(
+			...response.metadata.previousRequests
+				.filter((step) => step.itemIndex === undefined || step.itemIndex === itemIndex)
+				.map((step) => ({ ...step, action: { ...step.action } })),
+		);
 	}
 
 	// First pass: collect all valid tool responses for this batch
@@ -333,17 +452,14 @@ export function buildSteps(
 	for (const tool of responses) {
 		if (tool.action?.metadata?.itemIndex !== itemIndex) continue;
 
-		const toolInput: IDataObject = {
-			...tool.action.input,
-			id: tool.action.id,
-		};
+		const toolInput = tool.action.input;
 		if (!tool.data) continue;
 
-		const existingStep = steps.find((s) => s.action.toolCallId === toolInput.id);
+		const existingStep = steps.find((s) => s.action.toolCallId === tool.action.id);
 		if (existingStep) continue;
 
 		const providerMetadata = extractProviderMetadata(tool.action.metadata);
-		const toolId = typeof toolInput?.id === 'string' ? toolInput.id : 'reconstructed_call';
+		const toolId = tool.action.id;
 		const toolName = resolveToolName(tool);
 
 		batchTools.push({
@@ -364,10 +480,26 @@ export function buildSteps(
 	const sharedThoughtSignature = batchTools.find((bt) => bt.providerMetadata.thoughtSignature)
 		?.providerMetadata.thoughtSignature;
 
-	const sharedAIMessage =
-		sharedThoughtSignature && batchTools.length > 1
-			? buildSharedGeminiAIMessage(batchTools, sharedThoughtSignature)
-			: undefined;
+	// The batch is one model turn, so all its calls carry the same text
+	const modelTextValue = batchTools[0]?.tool.action.metadata?.modelText;
+	const modelText =
+		typeof modelTextValue === 'string' && modelTextValue ? modelTextValue : undefined;
+
+	// Anthropic binds the thinking signature to the whole turn. Parallel tool calls that
+	// share one thinking block must be replayed as a single assistant message.
+	let sharedAIMessage: AIMessage | undefined;
+	if (sharedThoughtSignature && batchTools.length > 1) {
+		sharedAIMessage = buildSharedGeminiAIMessage(batchTools, sharedThoughtSignature, modelText);
+	} else {
+		const sharedAnthropicThinking = getSharedAnthropicThinking(batchTools);
+		if (sharedAnthropicThinking) {
+			sharedAIMessage = buildSharedAnthropicAIMessage(
+				batchTools,
+				sharedAnthropicThinking,
+				modelText,
+			);
+		}
+	}
 
 	// Second pass: build steps
 	for (let i = 0; i < batchTools.length; i++) {
@@ -378,25 +510,41 @@ export function buildSteps(
 		// Exclude metadata fields (id, log, type) from the tool input forwarded to the result
 		const { id, log, type, ...toolInputForResult } = toolInput;
 
-		// Parallel Gemini tool calls: first step gets the shared AIMessage,
+		// Parallel Gemini or Anthropic tool calls: first step gets the shared AIMessage,
 		// subsequent steps get empty messageLog. LangChain's formatToToolMessages
 		// will produce: [SharedAIMessage, ToolMsg_1, ToolMsg_2, ...]
 		const messageLog = sharedAIMessage
 			? i === 0
 				? [sharedAIMessage]
 				: []
-			: [buildIndividualAIMessage(toolId, toolName, toolInput, providerMetadata)];
+			: [
+					buildIndividualAIMessage(
+						toolId,
+						toolName,
+						toolInput,
+						providerMetadata,
+						// Calls replayed one message each keep the text on the first message only
+						i === 0 ? modelText : undefined,
+					),
+				];
 
+		const logFallback = messageLog[0]?.content?.length
+			? messageLog[0]?.content
+			: `Calling ${nodeName}`;
 		steps.push({
 			action: {
 				tool: toolName,
 				toolInput: toolInputForResult,
-				log: toolInput.log || (messageLog[0]?.content ?? `Calling ${nodeName}`),
+				log: toolInput.log || logFallback,
 				messageLog,
-				toolCallId: toolInput?.id,
+				toolCallId: toolId,
 				type: toolInput.type || 'tool_call',
+				// Approved HITL calls are replaced by the gated tool run, so only denials still carry hitl metadata
+				...(tool.action.metadata?.hitl && { hitlDenied: true }),
+				...(tool.data.error && { errored: true }),
 			},
 			observation,
+			itemIndex,
 		});
 	}
 

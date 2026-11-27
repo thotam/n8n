@@ -1,67 +1,98 @@
 import type { PullWorkFolderRequestDto, PushWorkFolderRequestDto } from '@n8n/api-types';
-import type { AuthenticatedRequest } from '@n8n/db';
+import type { EventService } from '@n8n/backend-services';
+import type { AuthenticatedRequest, Project, User } from '@n8n/db';
+import { Person } from '@n8n/db';
 import { ControllerRegistryMetadata, type Controller } from '@n8n/decorators';
 import { Container } from '@n8n/di';
+import * as permissions from '@n8n/permissions';
 import type { Response } from 'express';
-import { mock } from 'jest-mock-extended';
+import type { Mock } from 'vitest';
+import { mock } from 'vitest-mock-extended';
 
-import type { EventService } from '@/events/event.service';
+import { ForbiddenError } from '@n8n/errors';
 
+import type { SourceControlContextFactory } from '../source-control-context.factory';
 import type { SourceControlPreferencesService } from '../source-control-preferences.service.ee';
+import type { SourceControlScopedService } from '../source-control-scoped.service';
 import { SourceControlController } from '../source-control.controller.ee';
 import type { SourceControlService } from '../source-control.service.ee';
 import type { SourceControlRequest } from '../types/requests';
+import { SourceControlContext } from '../types/source-control-context';
 import type { SourceControlGetStatus } from '../types/source-control-get-status';
+
+vi.mock('@n8n/permissions', async () => {
+	const actual = await vi.importActual<typeof import('@n8n/permissions')>('@n8n/permissions');
+	return {
+		...actual,
+		hasGlobalScope: vi.fn(actual.hasGlobalScope),
+	};
+});
 
 describe('SourceControlController', () => {
 	let controller: SourceControlController;
 	let sourceControlService: SourceControlService;
 	let sourceControlPreferencesService: SourceControlPreferencesService;
+	let sourceControlScopedService: SourceControlScopedService;
+	let sourceControlContextFactory: SourceControlContextFactory;
 	let eventService: EventService;
 
 	beforeEach(() => {
+		(permissions.hasGlobalScope as Mock).mockReset().mockReturnValue(false);
+
 		sourceControlService = {
-			pushWorkfolder: jest.fn().mockResolvedValue({ statusCode: 200 }),
-			pullWorkfolder: jest.fn().mockResolvedValue({ statusCode: 200 }),
-			getStatus: jest.fn().mockResolvedValue([]),
-			setGitUserDetails: jest.fn(),
+			pushWorkfolder: vi.fn().mockResolvedValue({ statusCode: 200 }),
+			pullWorkfolder: vi.fn().mockResolvedValue({ statusCode: 200 }),
+			getStatus: vi.fn().mockResolvedValue([]),
+			initializeRepository: vi.fn(),
+			start: vi.fn(),
 		} as unknown as SourceControlService;
 
 		sourceControlPreferencesService = mock<SourceControlPreferencesService>();
+		sourceControlScopedService = mock<SourceControlScopedService>();
+		sourceControlContextFactory = mock<SourceControlContextFactory>();
 		eventService = mock<EventService>();
 
 		controller = new SourceControlController(
 			sourceControlService,
 			sourceControlPreferencesService,
-			mock(),
+			sourceControlScopedService,
+			sourceControlContextFactory,
 			eventService,
 		);
+	});
+
+	afterEach(() => {
+		vi.clearAllMocks();
 	});
 
 	describe('pushWorkfolder', () => {
 		it('should push workfolder with expected parameters', async () => {
 			const req = mock<AuthenticatedRequest>({
-				user: { firstName: 'John', lastName: 'Doe', email: 'john.doe@example.com' },
+				user: Object.assign(new Person(), {
+					firstName: 'John',
+					lastName: 'Doe',
+					email: 'john.doe@example.com',
+				}),
 			});
 			const res = mock<Response>();
 			const payload = { force: true } as PushWorkFolderRequestDto;
 
 			await controller.pushWorkfolder(req, res, payload);
-			expect(sourceControlService.setGitUserDetails).toHaveBeenCalledWith(
-				'John Doe',
-				'john.doe@example.com',
-			);
 			expect(sourceControlService.pushWorkfolder).toHaveBeenCalledWith(req.user, payload);
 		});
 
 		it('should return commit info when push result includes commit hash', async () => {
 			const req = mock<AuthenticatedRequest>({
-				user: { firstName: 'John', lastName: 'Doe', email: 'john.doe@example.com' },
+				user: Object.assign(new Person(), {
+					firstName: 'John',
+					lastName: 'Doe',
+					email: 'john.doe@example.com',
+				}),
 			});
 			const res = mock<Response>();
 			const payload = { force: true, commitMessage: 'Test commit' } as PushWorkFolderRequestDto;
 
-			(sourceControlService.pushWorkfolder as jest.Mock).mockResolvedValueOnce({
+			(sourceControlService.pushWorkfolder as Mock).mockResolvedValueOnce({
 				statusCode: 200,
 				statusResult: [{ file: 'test.json', status: 'modified' }],
 				pushResult: {
@@ -86,12 +117,16 @@ describe('SourceControlController', () => {
 
 		it('should return null commit info when push result has no commit hash', async () => {
 			const req = mock<AuthenticatedRequest>({
-				user: { firstName: 'John', lastName: 'Doe', email: 'john.doe@example.com' },
+				user: Object.assign(new Person(), {
+					firstName: 'John',
+					lastName: 'Doe',
+					email: 'john.doe@example.com',
+				}),
 			});
 			const res = mock<Response>();
 			const payload = { force: true } as PushWorkFolderRequestDto;
 
-			(sourceControlService.pushWorkfolder as jest.Mock).mockResolvedValueOnce({
+			(sourceControlService.pushWorkfolder as Mock).mockResolvedValueOnce({
 				statusCode: 200,
 				statusResult: [],
 				pushResult: null,
@@ -107,12 +142,16 @@ describe('SourceControlController', () => {
 
 		it('should throw BadRequestError when push fails', async () => {
 			const req = mock<AuthenticatedRequest>({
-				user: { firstName: 'John', lastName: 'Doe', email: 'john.doe@example.com' },
+				user: Object.assign(new Person(), {
+					firstName: 'John',
+					lastName: 'Doe',
+					email: 'john.doe@example.com',
+				}),
 			});
 			const res = mock<Response>();
 			const payload = { force: true } as PushWorkFolderRequestDto;
 
-			(sourceControlService.pushWorkfolder as jest.Mock).mockRejectedValueOnce(
+			(sourceControlService.pushWorkfolder as Mock).mockRejectedValueOnce(
 				new Error('Git push failed'),
 			);
 
@@ -123,7 +162,11 @@ describe('SourceControlController', () => {
 	describe('pullWorkfolder', () => {
 		it('should pull workfolder with expected parameters', async () => {
 			const req = mock<AuthenticatedRequest>({
-				user: { firstName: 'John', lastName: 'Doe', email: 'john.doe@example.com' },
+				user: Object.assign(new Person(), {
+					firstName: 'John',
+					lastName: 'Doe',
+					email: 'john.doe@example.com',
+				}),
 			});
 			const res = mock<Response>();
 			const payload = { force: true, autoPublish: 'all' } as PullWorkFolderRequestDto;
@@ -134,64 +177,201 @@ describe('SourceControlController', () => {
 	});
 
 	describe('getStatus', () => {
-		it('should call getStatus with expected parameters', async () => {
-			const user = { firstName: 'John', lastName: 'Doe', email: 'john.doe@example.com' };
+		it('should authorize before calling getStatus with expected parameters', async () => {
+			const person = Object.assign(new Person(), {
+				firstName: 'John',
+				lastName: 'Doe',
+				email: 'john.doe@example.com',
+			});
 			const query = {
 				direction: 'pull',
 				preferLocalVersion: true,
 				verbose: false,
 			} as SourceControlGetStatus;
-			const req = mock<SourceControlRequest.GetStatus>({
-				query,
-				user,
-			});
+			const req = mock<SourceControlRequest.GetStatus>({ query });
+			// vitest-mock-extended doesn't populate `user` from the partial here, so set it
+			// explicitly. The controller passes `new SourceControlGetStatus(req.query)`, so
+			// match the query fields with `objectContaining` rather than the raw object.
+			req.user = person;
 
 			await controller.getStatus(req);
-			expect(sourceControlService.getStatus).toHaveBeenCalledWith(user, query);
+			expect(sourceControlScopedService.ensureIsAllowedToGetStatus).toHaveBeenCalledWith(req);
+			expect(sourceControlService.getStatus).toHaveBeenCalledWith(
+				person,
+				expect.objectContaining({ direction: 'pull', preferLocalVersion: true, verbose: false }),
+			);
+		});
+
+		it('should not call getStatus when the caller is not authorized', async () => {
+			const req = mock<SourceControlRequest.GetStatus>({ query: {}, user: {} });
+			(sourceControlScopedService.ensureIsAllowedToGetStatus as Mock).mockRejectedValueOnce(
+				new Error('forbidden'),
+			);
+
+			await expect(controller.getStatus(req)).rejects.toThrow('forbidden');
+			expect(sourceControlService.getStatus).not.toHaveBeenCalled();
+		});
+
+		it('should preserve ForbiddenError from the status service', async () => {
+			const error = new ForbiddenError('You do not have permission to pull from source control');
+			const req = mock<SourceControlRequest.GetStatus>({ query: {}, user: {} });
+			(sourceControlService.getStatus as Mock).mockRejectedValueOnce(error);
+
+			await expect(controller.getStatus(req)).rejects.toBe(error);
 		});
 	});
 
 	describe('status', () => {
-		it('should call getStatus with expected parameters', async () => {
-			const user = { firstName: 'John', lastName: 'Doe', email: 'john.doe@example.com' };
+		it('should authorize before calling getStatus with expected parameters', async () => {
+			const person = Object.assign(new Person(), {
+				firstName: 'John',
+				lastName: 'Doe',
+				email: 'john.doe@example.com',
+			});
 			const query = {
 				direction: 'pull',
 				preferLocalVersion: true,
 				verbose: false,
 			} as SourceControlGetStatus;
-			const req = mock<SourceControlRequest.GetStatus>({
-				query,
-				user,
-			});
+			const req = mock<SourceControlRequest.GetStatus>({ query });
+			req.user = person;
 
 			await controller.status(req);
-			expect(sourceControlService.getStatus).toHaveBeenCalledWith(user, query);
+			expect(sourceControlScopedService.ensureIsAllowedToGetStatus).toHaveBeenCalledWith(req);
+			expect(sourceControlService.getStatus).toHaveBeenCalledWith(
+				person,
+				expect.objectContaining({ direction: 'pull', preferLocalVersion: true, verbose: false }),
+			);
+		});
+
+		it('should not call getStatus when the caller is not authorized', async () => {
+			const req = mock<SourceControlRequest.GetStatus>({ query: {}, user: {} });
+			(sourceControlScopedService.ensureIsAllowedToGetStatus as Mock).mockRejectedValueOnce(
+				new Error('forbidden'),
+			);
+
+			await expect(controller.status(req)).rejects.toThrow('forbidden');
+			expect(sourceControlService.getStatus).not.toHaveBeenCalled();
+		});
+
+		it('should preserve ForbiddenError from the status service', async () => {
+			const error = new ForbiddenError('You do not have permission to pull from source control');
+			const req = mock<SourceControlRequest.GetStatus>({ query: {}, user: {} });
+			(sourceControlService.getStatus as Mock).mockRejectedValueOnce(error);
+
+			await expect(controller.status(req)).rejects.toBe(error);
+		});
+	});
+
+	describe('updatePreferences', () => {
+		const buildReq = (body: SourceControlRequest.UpdatePreferences['body']) =>
+			mock<SourceControlRequest.UpdatePreferences>({ user: mock<User>({ id: 'user-1' }), body });
+
+		beforeEach(() => {
+			(sourceControlPreferencesService.getPreferences as Mock).mockReturnValue({
+				environmentsVersion: 'v1',
+				repositoryUrl: 'git@github.com:acme/repo.git',
+			});
+		});
+
+		it('emits the switch event only when the environments version changes', async () => {
+			await controller.updatePreferences(buildReq({ environmentsVersion: 'v1' }));
+
+			expect(eventService.emit).not.toHaveBeenCalledWith(
+				'source-control-environments-version-switched',
+				expect.anything(),
+			);
+
+			await controller.updatePreferences(buildReq({ environmentsVersion: 'v2' }));
+
+			expect(eventService.emit).toHaveBeenCalledWith(
+				'source-control-environments-version-switched',
+				{ userId: 'user-1', version: 'v2' },
+			);
+		});
+
+		it('switches the version even when Classic Git cannot initialize', async () => {
+			(sourceControlService.start as Mock).mockRejectedValue(
+				new Error('Failed to create SSH private key file'),
+			);
+
+			await expect(
+				controller.updatePreferences(buildReq({ environmentsVersion: 'v2' })),
+			).resolves.toBeDefined();
+
+			expect(sourceControlPreferencesService.setPreferences).toHaveBeenCalledWith(
+				expect.objectContaining({ environmentsVersion: 'v2' }),
+				true,
+			);
+			await expect(
+				controller.updatePreferences(buildReq({ branchColor: '#000000' })),
+			).rejects.toThrow('Failed to create SSH private key file');
 		});
 	});
 
 	describe('getPreferences', () => {
-		it('should return preferences with public key', async () => {
-			const mockPreferences = {
-				branchName: 'main',
-				repositoryUrl: 'git@github.com:example/repo.git',
-				connected: true,
-				publicKey: '',
-			};
+		const fullPreferences = {
+			branchName: 'main',
+			branchColor: '#ff0000',
+			branchReadOnly: false,
+			connected: true,
+			repositoryUrl: 'https://x-access-token:ghp_secret@github.com/acme/private-repo.git',
+			connectionType: 'https' as const,
+			httpsUsername: 'token-user',
+			httpsPassword: 'secret',
+		};
+
+		const buildReq = (user: Partial<User> = {}) =>
+			mock<AuthenticatedRequest>({ user: mock<User>({ id: 'user-1', ...user }) });
+
+		beforeEach(() => {
+			(sourceControlPreferencesService.getPreferences as Mock).mockReturnValue(fullPreferences);
+		});
+
+		it('should return full preferences (including public key) for users with sourceControl:manage', async () => {
 			const mockPublicKey = 'ssh-rsa AAAAB3NzaC1yc2E...';
+			(sourceControlPreferencesService.getPublicKey as Mock).mockResolvedValue(mockPublicKey);
+			(permissions.hasGlobalScope as Mock).mockReturnValue(true);
+			const req = buildReq();
 
-			(sourceControlPreferencesService.getPreferences as jest.Mock).mockReturnValue(
-				mockPreferences,
+			const result = await controller.getPreferences(req);
+
+			expect(permissions.hasGlobalScope).toHaveBeenCalledWith(req.user, 'sourceControl:manage');
+			expect(result).toEqual({ ...fullPreferences, publicKey: mockPublicKey });
+			expect(sourceControlContextFactory.createContext).not.toHaveBeenCalled();
+		});
+
+		it('should return branch name and color for project admins (has authorized projects)', async () => {
+			(permissions.hasGlobalScope as Mock).mockReturnValue(false);
+			const user = mock<User>({ id: 'user-1' });
+			(sourceControlContextFactory.createContext as Mock).mockResolvedValue(
+				new SourceControlContext(user, [mock<Project>({ id: 'p1', type: 'team' })], []),
 			);
-			(sourceControlPreferencesService.getPublicKey as jest.Mock).mockResolvedValue(mockPublicKey);
 
-			const result = await controller.getPreferences();
+			const result = await controller.getPreferences(mock<AuthenticatedRequest>({ user }));
 
-			expect(sourceControlPreferencesService.getPublicKey).toHaveBeenCalled();
-			expect(sourceControlPreferencesService.getPreferences).toHaveBeenCalled();
 			expect(result).toEqual({
-				...mockPreferences,
-				publicKey: mockPublicKey,
+				connected: fullPreferences.connected,
+				branchReadOnly: fullPreferences.branchReadOnly,
+				branchName: fullPreferences.branchName,
+				branchColor: fullPreferences.branchColor,
 			});
+			expect(sourceControlPreferencesService.getPublicKey).not.toHaveBeenCalled();
+		});
+
+		it('should return only branchReadOnly for users with no source-control access', async () => {
+			(permissions.hasGlobalScope as Mock).mockReturnValue(false);
+			const user = mock<User>({ id: 'user-1' });
+			(sourceControlContextFactory.createContext as Mock).mockResolvedValue(
+				new SourceControlContext(user, [], []),
+			);
+
+			const result = await controller.getPreferences(mock<AuthenticatedRequest>({ user }));
+
+			expect(result).toEqual({
+				branchReadOnly: fullPreferences.branchReadOnly,
+			});
+			expect(sourceControlPreferencesService.getPublicKey).not.toHaveBeenCalled();
 		});
 
 		it('should require authentication', () => {
@@ -203,6 +383,66 @@ describe('SourceControlController', () => {
 			const getPreferencesRoute = controllerMetadata.routes.get('getPreferences');
 			expect(getPreferencesRoute).toBeDefined();
 			expect(getPreferencesRoute?.skipAuth).toBe(false);
+		});
+	});
+
+	describe('route access scopes', () => {
+		it('should gate get-branches behind the sourceControl:manage global scope', () => {
+			const registry = Container.get(ControllerRegistryMetadata);
+			const controllerMetadata = registry.getControllerMetadata(
+				SourceControlController as Controller,
+			);
+
+			const getBranchesRoute = controllerMetadata.routes.get('getBranches');
+			expect(getBranchesRoute?.accessScope).toEqual({
+				scope: 'sourceControl:manage',
+				globalOnly: true,
+			});
+		});
+
+		// Routes authorized in-handler rather than by a decorator, with their mechanism.
+		// A route missing from both this map and a decorator fails the audit below.
+		const IN_HANDLER_AUTHZ: Record<string, string> = {
+			getPreferences: 'returns full preferences only for sourceControl:manage',
+			getStatus: 'sourceControlScopedService.ensureIsAllowedToGetStatus',
+			status: 'sourceControlScopedService.ensureIsAllowedToGetStatus',
+			pushWorkfolder: 'sourceControlScopedService.ensureIsAllowedToPush',
+			getFileContent: 'context-scoped ForbiddenError in getRemoteFileEntity',
+		};
+
+		it('should authorize every route via a decorator or a documented in-handler check', () => {
+			const registry = Container.get(ControllerRegistryMetadata);
+			const controllerMetadata = registry.getControllerMetadata(
+				SourceControlController as Controller,
+			);
+
+			const unauthorized: string[] = [];
+			for (const [handlerName, route] of controllerMetadata.routes.entries()) {
+				// no route on this controller is public
+				expect(route.skipAuth).toBeFalsy();
+
+				const hasDecorator = route.accessScope !== undefined;
+				const hasInHandlerAuthz = handlerName in IN_HANDLER_AUTHZ;
+				if (!hasDecorator && !hasInHandlerAuthz) {
+					unauthorized.push(handlerName);
+				}
+			}
+
+			expect(unauthorized).toEqual([]);
+		});
+
+		it('should not leave any decorator-less route undocumented in the audit allowlist', () => {
+			const registry = Container.get(ControllerRegistryMetadata);
+			const controllerMetadata = registry.getControllerMetadata(
+				SourceControlController as Controller,
+			);
+
+			// Every allowlisted handler must still exist and still be decorator-less
+			for (const handlerName of Object.keys(IN_HANDLER_AUTHZ)) {
+				const route = controllerMetadata.routes.get(handlerName);
+				expect(route).toBeDefined();
+				expect(route?.accessScope).toBeUndefined();
+			}
 		});
 	});
 });

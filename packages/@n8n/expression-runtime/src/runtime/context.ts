@@ -6,10 +6,19 @@ import { extendedFunctions } from '../extensions/function-extensions';
 import { __sanitize, createSafeErrorSubclass, ExpressionError } from './safe-globals';
 import {
 	createDeepLazyProxy,
+	createLazyBoxedPrimitive,
 	isArrayMetadata,
+	isBoxedMetadata,
 	isObjectMetadata,
+	readHostResult,
 	throwIfErrorSentinel,
 } from './lazy-proxy';
+import type { ReadBatch } from './lazy-proxy';
+import { jmesPath } from './jmespath';
+import { assign, defineProperty } from './intrinsics';
+import { decodeHostValue } from './transfer-codec';
+import { isKeyOf } from './utils';
+import type { BridgeMessage } from '../bridge/bridge-messages';
 
 // Pre-create safe error subclass wrappers (reused across evaluations)
 const SafeTypeError = createSafeErrorSubclass(TypeError);
@@ -19,9 +28,147 @@ const SafeRangeError = createSafeErrorSubclass(RangeError);
 const SafeReferenceError = createSafeErrorSubclass(ReferenceError);
 const SafeURIError = createSafeErrorSubclass(URIError);
 
+/**
+ * Maps proxy property names on `$('NodeName')` to the typed-RPC discriminator
+ * the bridge dispatches on. Single source of truth for the synthetic proxy's
+ * `get`/`has` traps and the `sendNodeMethod` envelope builder. Adding a new
+ * `getNode*` schema to `BridgeMessage` lets you wire a new method here in
+ * one place; `satisfies` catches typos in the discriminator string.
+ */
+const NODE_RPC_TYPES = {
+	first: 'getNodeFirst',
+	last: 'getNodeLast',
+	all: 'getNodeAll',
+} as const satisfies Record<string, BridgeMessage['type']>;
+type NodeRpcType = (typeof NODE_RPC_TYPES)[keyof typeof NODE_RPC_TYPES];
+
+/**
+ * Same shape as `NODE_RPC_TYPES`, for the current node's `$input` proxy.
+ * Discriminators are `getInput*` and the host enforces zero-arg invocation.
+ */
+const INPUT_RPC_TYPES = {
+	first: 'getInputFirst',
+	last: 'getInputLast',
+	all: 'getInputAll',
+} as const satisfies Record<string, BridgeMessage['type']>;
+type InputRpcType = (typeof INPUT_RPC_TYPES)[keyof typeof INPUT_RPC_TYPES];
+
+/**
+ * Creates a check that returns true when a name is a valid IANA timezone.
+ * The check remembers valid names, because luxon builds a new
+ * `Intl.DateTimeFormat` for each validation.
+ */
+function createTimezoneCheck(): (timezone: string) => boolean {
+	const validTimezones = new Set<string>();
+	return (timezone) => {
+		if (!validTimezones.has(timezone) && IANAZone.isValidZone(timezone)) {
+			validTimezones.add(timezone);
+		}
+		return validTimezones.has(timezone);
+	};
+}
+
+const isValidTimezone = createTimezoneCheck();
+
+/**
+ * Defines a property whose value is created on the first read and then kept.
+ * A write replaces the value, as with a plain data property.
+ */
+function defineLazyValue(
+	target: Record<string, unknown>,
+	key: string,
+	create: () => unknown,
+): void {
+	let value: unknown;
+	let isCreated = false;
+	defineProperty(target, key, {
+		get: () => {
+			if (!isCreated) {
+				value = create();
+				isCreated = true;
+			}
+			return value;
+		},
+		set: (newValue: unknown) => {
+			value = newValue;
+			isCreated = true;
+		},
+		enumerable: true,
+		configurable: true,
+	});
+}
+
 // ============================================================================
 // Build Context Function
 // ============================================================================
+
+/**
+ * A bridge callback as seen from inside the isolate: a plain function.
+ * The host wires these as `ivm.Callback` instances, which arrive in the
+ * isolate as ordinary functions whose arguments and return value are copied
+ * via the structured-clone algorithm.
+ */
+type BridgeCallback = (...args: unknown[]) => unknown;
+
+/**
+ * Bridge callbacks the in-isolate runtime invokes synchronously as plain
+ * functions (host-side `ivm.Callback` instances).
+ *
+ *   - `getValueAtPath`, `getArrayElement`: data-access primitives used by the
+ *     lazy-proxy system. Hot path; one ivm.Callback each for minimum overhead.
+ *   - `readBatch`: reads a batch of item data values in one call.
+ *   - `callHost`: typed-RPC dispatcher. The in-isolate runtime constructs
+ *     an envelope (e.g. `{ type: 'getNodeFirst', nodeName, ... }`) and the
+ *     host-side dispatcher validates it with zod before routing to a handler.
+ *     A single ivm.Callback covers every typed operation; new operations
+ *     are new schemas in `bridge/bridge-messages.ts` + new cases in the
+ *     dispatcher switch. The name reflects what this is: a synchronous
+ *     host RPC, not a postMessage-style async send.
+ *
+ * The bridge wires all four callbacks unconditionally before invoking
+ * `buildContext`, so the runtime treats them as present — no defensive
+ * null/undefined checks at each call site.
+ */
+export interface BridgeCallbacks {
+	getValueAtPath: BridgeCallback;
+	getArrayElement: BridgeCallback;
+	readBatch: ReadBatch;
+	callHost: BridgeCallback;
+}
+
+/**
+ * Convert a `$()` argument to the node name the host `$` resolves. An empty name means the previous node.
+ * Return `undefined` for a truthy argument that converts to an empty name, such as `[]`: it names no node.
+ */
+function toNodeName(nodeSelector: unknown): string | undefined {
+	const nodeName = nodeSelector ? String(nodeSelector) : '';
+	return nodeSelector && nodeName === '' ? undefined : nodeName;
+}
+
+/** Return the error the legacy `$` throws for a node name that matches no node. */
+function createNodeNotFoundError(callbacks: BridgeCallbacks, nodeCause: string): ExpressionError {
+	const readHostValue = (key: string) =>
+		decodeHostValue(readHostResult(callbacks.getValueAtPath([key])));
+	return Object.assign(new ExpressionError("Referenced node doesn't exist"), {
+		context: {
+			runIndex: readHostValue('$runIndex'),
+			itemIndex: readHostValue('$itemIndex'),
+			nodeCause,
+			descriptionKey: 'nodeNotFound',
+		},
+	});
+}
+
+/** Return a check that throws when a node does not exist. It asks the host once per node name. */
+function createNodeCheck(callHost: (message: unknown) => unknown): (nodeName: string) => void {
+	const checkedNodeNames = new Set<string>();
+	return (nodeName) => {
+		if (!checkedNodeNames.has(nodeName)) {
+			callHost({ type: 'checkNode', nodeName });
+			checkedNodeNames.add(nodeName);
+		}
+	};
+}
 
 /**
  * Build a fresh, closure-scoped evaluation context.
@@ -33,32 +180,29 @@ const SafeURIError = createSafeErrorSubclass(URIError);
  * The returned object is used as tournament's `this` context in the
  * evalClosureSync wrapper.
  *
- * @param getValueAtPath - ivm.Reference for fetching values by path
- * @param getArrayElement - ivm.Reference for fetching array elements
- * @param callFunctionAtPath - ivm.Reference for calling functions by path
+ * @param callbacks - Bridge callbacks (data-access primitives + typed RPCs)
  * @param timezone - Optional IANA timezone string
  * @returns A context object with all workflow data, proxies, and builtins
  */
 export function buildContext(
-	getValueAtPath: any,
-	getArrayElement: any,
-	callFunctionAtPath: any,
+	callbacks: BridgeCallbacks,
 	timezone?: string,
 ): Record<string, unknown> {
-	if (timezone && !IANAZone.isValidZone(timezone)) {
+	if (timezone && !isValidTimezone(timezone)) {
 		throw new Error(`Invalid timezone: "${timezone}"`);
 	}
 	Settings.defaultZone = timezone ?? 'system';
 
-	const target: Record<string, unknown> = {};
+	// Check the error flag before decoding. Decoded data can hold the flag as user data.
+	const callHost = (message: unknown) =>
+		decodeHostValue(readHostResult(callbacks.callHost(message)));
 
-	// Callback bundle passed to createDeepLazyProxy so proxies don't touch globalThis
-	const callbacks = { getValueAtPath, getArrayElement, callFunctionAtPath };
+	const target: Record<string, unknown> = {};
 
 	// __sanitize must be on the context because PrototypeSanitizer generates:
 	// obj[this.__sanitize(expr)] where 'this' is the context (via .call(ctx) wrapping)
 	// Use a non-writable property descriptor so override attempts throw instead of silently succeeding.
-	Object.defineProperty(target, '__sanitize', {
+	defineProperty(target, '__sanitize', {
 		get: () => __sanitize,
 		set: () => {
 			throw new ExpressionError('Cannot override "__sanitize" due to security concerns');
@@ -74,14 +218,19 @@ export function buildContext(
 	// already set via Settings.defaultZone above.
 	// -------------------------------------------------------------------------
 
-	target.$now = DateTime.now();
-	target.$today = DateTime.now().set({ hour: 0, minute: 0, second: 0, millisecond: 0 });
+	// The dates are created on first read, because most expressions do not use them.
+	// Keep the zone now: a later evaluation can change Settings.defaultZone before that read.
+	const zone = Settings.defaultZone;
+	defineLazyValue(target, '$now', () => DateTime.now().setZone(zone));
+	defineLazyValue(target, '$today', () =>
+		DateTime.now().setZone(zone).set({ hour: 0, minute: 0, second: 0, millisecond: 0 }),
+	);
 
 	// -------------------------------------------------------------------------
 	// Expose standalone functions (min, max, average, numberList, zip, $ifEmpty, etc.)
 	// -------------------------------------------------------------------------
 
-	Object.assign(target, extendedFunctions);
+	assign(target, extendedFunctions);
 
 	// -------------------------------------------------------------------------
 	// Expose globals on target so tournament's "x in this ? this.x : global.x"
@@ -97,21 +246,181 @@ export function buildContext(
 	target.extend = extend;
 	target.extendOptional = extendOptional;
 
+	// Expose jmespath helpers in-isolate so they shadow the host-side
+	// `data.$jmesPath` / `data.$jmespath` from WorkflowDataProxy. Same rationale
+	// as extend / extendOptional above: keeping these in-isolate removes them
+	// from the bridge's reachable host-callable surface.
+	target.$jmesPath = jmesPath;
+	target.$jmespath = jmesPath;
+
 	// Wire builtins so tournament's VariablePolyfill resolves them from ctx
 	initializeBuiltins(target);
 
-	// $item(itemIndex) returns a sub-proxy for the specified item (legacy syntax)
+	// $item(i) → single lazy proxy at ['$item', i]; the host bridge navigates
+	// data.$item(i).<rest> safely (see isolated-vm-bridge getValueAtPath),
+	// exposing the full accessor surface ($json, $binary, $node, $nodeId, ...).
 	target.$item = function (itemIndex: number) {
-		const indexStr = String(itemIndex);
-		return {
-			$json: createDeepLazyProxy(['$item', indexStr, '$json'], undefined, callbacks),
-			$binary: createDeepLazyProxy(['$item', indexStr, '$binary'], undefined, callbacks),
-		};
+		return createDeepLazyProxy(['$item', String(itemIndex)], undefined, callbacks);
 	};
 
-	// $() function for accessing other nodes
-	target.$ = function (nodeName: string) {
-		return createDeepLazyProxy(['$', nodeName], undefined, callbacks);
+	const checkNode = createNodeCheck(callHost);
+
+	// $() function for accessing other nodes.
+	//
+	// The returned object is a Proxy whose `get` trap intercepts properties
+	// that have a typed RPC (e.g. `.first` → `getNodeFirst`) and routes them
+	// through the `callHost` envelope. Everything else (properties like
+	// `.params`, `.json`, and methods that don't yet have a typed RPC) is
+	// read from an underlying lazy proxy via explicit delegation.
+	//
+	// Important: the synthetic Proxy's *target* is a plain `{}` rather than
+	// the lazy proxy itself. Nesting one Proxy inside another causes V8 to
+	// run invariant checks (`[[OwnPropertyKeys]]`, descriptor consistency)
+	// against the inner target, which would trigger the lazy proxy's
+	// `ownKeys` trap and an unnecessary `getValueAtPath` round-trip for the
+	// whole node's keys. Using `{}` as the target keeps those checks cheap;
+	// the lazy proxy lives in closure and is only consulted on demand.
+	//
+	// As more typed RPCs are added, more cases land in this trap.
+	// The `has` trap mirrors the `get` trap for typed-RPC names so that
+	// tournament's `"first" in this.$('Foo')` check resolves true even though
+	// the inner target is empty.
+	target.$ = function (nodeSelector: unknown) {
+		const nodeName = toNodeName(nodeSelector);
+		if (nodeName === undefined) {
+			throw createNodeNotFoundError(callbacks, '');
+		}
+		checkNode(nodeName);
+		const lazyProxy = createDeepLazyProxy(['$', nodeName], undefined, callbacks);
+		const sendNodeMethod = (type: NodeRpcType) => {
+			return (branchIndex?: number, runIndex?: number) => {
+				return callHost({ type, nodeName, branchIndex, runIndex });
+			};
+		};
+		// Paired-item cluster: `.pairedItem(idx?)`, `.itemMatching(idx)`,
+		// `.item`. Each surface form has its own typed-RPC discriminator
+		// (`getNodePairedItem` / `getNodeItemMatching` / `getNodeItem`)
+		// because the host's resolver closes over the literal property
+		// name to pick error messages and getter-vs-method semantics.
+		// The bridge handler for each reads the matching property name.
+		const sendPairedRpc = (
+			type: 'getNodePairedItem' | 'getNodeItemMatching',
+			itemIndex?: number,
+		) => {
+			return callHost({ type, nodeName, itemIndex });
+		};
+		const sendGetNodeItem = () => {
+			return callHost({ type: 'getNodeItem', nodeName });
+		};
+		return new Proxy({} as Record<string, unknown>, {
+			get(_emptyTarget, prop) {
+				if (isKeyOf(NODE_RPC_TYPES, prop)) {
+					return sendNodeMethod(NODE_RPC_TYPES[prop]);
+				}
+				if (prop === 'pairedItem') {
+					return (itemIndex?: number) => sendPairedRpc('getNodePairedItem', itemIndex);
+				}
+				if (prop === 'itemMatching') {
+					return (itemIndex?: number) => sendPairedRpc('getNodeItemMatching', itemIndex);
+				}
+				if (prop === 'item') {
+					// Getter form: invoke immediately, return the value.
+					return sendGetNodeItem();
+				}
+				// Everything else: delegate to the lazy proxy. The lazy proxy's
+				// own `get` trap handles caching, host fetching, and metadata.
+				return lazyProxy[prop];
+			},
+			has(_emptyTarget, prop) {
+				return (
+					isKeyOf(NODE_RPC_TYPES, prop) ||
+					prop === 'pairedItem' ||
+					prop === 'itemMatching' ||
+					prop === 'item' ||
+					prop in lazyProxy
+				);
+			},
+		});
+	};
+
+	// $input — current-node input proxy. Same synthetic-Proxy pattern as
+	// `target.$()`: intercept the typed-RPC method names (`first`, `last`,
+	// `all`, all zero-arg per the host's `WorkflowDataProxy`), delegate
+	// everything else (notably the `.item` getter and `.params` / `.context`
+	// properties) to a lazy proxy on `$input`.
+	const lazyInputProxy = createDeepLazyProxy(['$input'], undefined, callbacks);
+	const sendInputMethod = (type: InputRpcType) => {
+		return () => {
+			return callHost({ type });
+		};
+	};
+	target.$input = new Proxy({} as Record<string, unknown>, {
+		get(_emptyTarget, prop) {
+			if (isKeyOf(INPUT_RPC_TYPES, prop)) return sendInputMethod(INPUT_RPC_TYPES[prop]);
+			return lazyInputProxy[prop];
+		},
+		has(_emptyTarget, prop) {
+			return isKeyOf(INPUT_RPC_TYPES, prop) || prop in lazyInputProxy;
+		},
+	});
+
+	// $items — global accessor for a node's execution data. Unlike $() and
+	// $input this is a plain typed-RPC function (not a synthetic Proxy):
+	// the host enforces nothing structural here, the schema validates the
+	// args, and the host's `WorkflowDataProxy.$items` applies its own
+	// defaults when fields are undefined.
+	target.$items = (nodeName?: string, outputIndex?: number, runIndex?: number) => {
+		return callHost({ type: 'getItems', nodeName, outputIndex, runIndex });
+	};
+
+	// $fromAI / $fromAi / $fromai — AI-builder placeholder accessor.
+	// All three host aliases route to the same `handleFromAi` callback;
+	// the typed-RPC envelope is identical regardless of which name the
+	// expression used. `name` is forwarded as-is — host validates it
+	// (required, regex-restricted) and emits a structured `ExpressionError`
+	// on bad input.
+	const sendFromAi = (
+		name?: string,
+		description?: string,
+		valueType?: string,
+		defaultValue?: unknown,
+	) => {
+		return callHost({
+			type: 'fromAi',
+			name,
+			description,
+			valueType,
+			defaultValue,
+		});
+	};
+	target.$fromAI = sendFromAi;
+	target.$fromAi = sendFromAi;
+	target.$fromai = sendFromAi;
+
+	// $evaluateExpression — recursive expression evaluator. Forwards the
+	// inner expression string to the host, which re-invokes the engine.
+	// Under the VM engine this re-enters the bridge on a fresh evaluation;
+	// the legacy engine handles it inline.
+	target.$evaluateExpression = (expression: string, itemIndex?: number) => {
+		return callHost({ type: 'evaluateExpression', expression, itemIndex });
+	};
+
+	// $getPairedItem — walks the paired-item ancestry chain back to the
+	// named upstream node. The host validates the structural shape of
+	// `incomingSourceData` and `initialPairedItem` via the typed-RPC
+	// schema; bad input surfaces as a schema-parse error sentinel rather
+	// than a host throw, keeping the protocol surface tight.
+	target.$getPairedItem = (
+		destinationNodeName: string,
+		incomingSourceData: unknown,
+		initialPairedItem: unknown,
+	) => {
+		return callHost({
+			type: 'getPairedItem',
+			destinationNodeName,
+			incomingSourceData,
+			initialPairedItem,
+		});
 	};
 
 	// -------------------------------------------------------------------------
@@ -120,7 +429,7 @@ export function buildContext(
 	// so each key is fetched at most once per evaluation.
 	// -------------------------------------------------------------------------
 
-	// Track keys we've already probed so we never call applySync twice
+	// Track keys we've already probed so we never call getValueAtPath twice
 	// for the same key — even if the host returned undefined.
 	const probedKeys = new Set<string>();
 
@@ -129,10 +438,7 @@ export function buildContext(
 
 		let value: unknown;
 		try {
-			value = getValueAtPath.applySync(null, [[key]], {
-				arguments: { copy: true },
-				result: { copy: true },
-			});
+			value = callbacks.getValueAtPath([key]);
 		} catch {
 			// Don't mark as probed — the throw may be transient
 			// (e.g. host data not yet available) and a retry should be allowed.
@@ -145,19 +451,6 @@ export function buildContext(
 		if (value === undefined) return false;
 
 		throwIfErrorSentinel(value);
-
-		// Function metadata — create a callable wrapper
-		if (value && typeof value === 'object' && (value as any).__isFunction) {
-			target[key] = function (...args: unknown[]) {
-				const result = callFunctionAtPath.applySync(null, [[key], ...args], {
-					arguments: { copy: true },
-					result: { copy: true },
-				});
-				throwIfErrorSentinel(result);
-				return result;
-			};
-			return true;
-		}
 
 		// Object / array metadata — create a shape-matched lazy proxy for deep access
 		if (isArrayMetadata(value)) {
@@ -172,9 +465,13 @@ export function buildContext(
 			target[key] = createDeepLazyProxy([key], { kind: 'object', keys: value.__keys }, callbacks);
 			return true;
 		}
+		if (isBoxedMetadata(value)) {
+			target[key] = createLazyBoxedPrimitive([key], value, callbacks);
+			return true;
+		}
 
-		// Primitive or null — store directly
-		target[key] = value;
+		// Decode after the metadata checks. User data can hold the same keys.
+		target[key] = decodeHostValue(value);
 		return true;
 	}
 

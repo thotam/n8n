@@ -6,7 +6,7 @@ import {
 	testDb,
 } from '@n8n/backend-test-utils';
 import { LDAP_DEFAULT_CONFIGURATION } from '@n8n/constants';
-import type { User } from '@n8n/db';
+import type { Person } from '@n8n/db';
 import {
 	AuthProviderSyncHistoryRepository,
 	GLOBAL_MEMBER_ROLE,
@@ -31,9 +31,9 @@ import { createLdapConfig, defaultLdapConfig } from '../shared/ldap';
 import type { SuperAgentTest } from '../shared/types';
 import * as utils from '../shared/utils/';
 
-jest.mock('@/telemetry');
+vi.mock('@/telemetry');
 
-let owner: User;
+let owner: Person;
 let authOwnerAgent: SuperAgentTest;
 
 const testServer = utils.setupTestServer({
@@ -46,7 +46,7 @@ beforeAll(async () => {
 	owner = await createUser({ role: GLOBAL_OWNER_ROLE });
 	authOwnerAgent = testServer.authAgentFor(owner);
 
-	defaultLdapConfig.bindingAdminPassword = Container.get(Cipher).encrypt(
+	defaultLdapConfig.bindingAdminPassword = Container.get(Cipher).encryptWithInstanceKey(
 		defaultLdapConfig.bindingAdminPassword,
 	);
 });
@@ -62,8 +62,6 @@ beforeEach(async () => {
 	]);
 
 	await Container.get(UserRepository).delete({ id: Not(owner.id) });
-
-	jest.mock('@/telemetry');
 
 	await setCurrentAuthenticationMethod('email');
 });
@@ -163,7 +161,9 @@ describe('PUT /ldap/config', () => {
 		// disable the login, so the strategy is applied
 		await authOwnerAgent.put('/ldap/config').send({ ...configuration, loginEnabled: false });
 
-		const emailUser = await Container.get(UserRepository).findOneByOrFail({ id: member.id });
+		const emailUser = (await Container.get(UserRepository).findOneByOrFail({
+			id: member.id,
+		})) as Person;
 		const localLdapIdentities = await getLdapIdentities();
 
 		expect(getCurrentAuthenticationMethod()).toBe('email');
@@ -204,7 +204,7 @@ describe('POST /ldap/test-connection', () => {
 	});
 
 	test('route should success', async () => {
-		jest.spyOn(LdapService.prototype, 'testConnection').mockResolvedValue();
+		vi.spyOn(LdapService.prototype, 'testConnection').mockResolvedValue();
 
 		await authOwnerAgent.post('/ldap/test-connection').expect(200);
 	});
@@ -212,7 +212,7 @@ describe('POST /ldap/test-connection', () => {
 	test('route should fail', async () => {
 		const errorMessage = 'Invalid connection';
 
-		jest.spyOn(LdapService.prototype, 'testConnection').mockRejectedValue(new Error(errorMessage));
+		vi.spyOn(LdapService.prototype, 'testConnection').mockRejectedValue(new Error(errorMessage));
 
 		const response = await authOwnerAgent.post('/ldap/test-connection');
 		expect(response.statusCode).toBe(400);
@@ -239,7 +239,7 @@ describe('POST /ldap/sync', () => {
 
 	describe('dry mode', () => {
 		const runTest = async (ldapUsers: LdapUser[]) => {
-			jest.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue(ldapUsers);
+			vi.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue(ldapUsers);
 
 			await authOwnerAgent.post('/ldap/sync').send({ type: 'dry' }).expect(200);
 
@@ -304,10 +304,10 @@ describe('POST /ldap/sync', () => {
 
 			// Make sure the changes in the "LDAP server" were not persisted in the database
 			const localLdapIdentities = await getLdapIdentities();
-			const localLdapUsers = localLdapIdentities.map(({ user }) => user);
-			expect(localLdapUsers.length).toBe(1);
-			expect(localLdapUsers[0].id).toBe(member.id);
-			expect(localLdapUsers[0].lastName).toBe(member.lastName);
+			const localLdapPeople = localLdapIdentities.map(({ user }) => user as Person);
+			expect(localLdapPeople.length).toBe(1);
+			expect(localLdapPeople[0].id).toBe(member.id);
+			expect(localLdapPeople[0].lastName).toBe(member.lastName);
 		});
 
 		test('should detect disabled user but not persist change in model', async () => {
@@ -325,16 +325,16 @@ describe('POST /ldap/sync', () => {
 
 			// Make sure the changes in the "LDAP server" were not persisted in the database
 			const localLdapIdentities = await getLdapIdentities();
-			const localLdapUsers = localLdapIdentities.map(({ user }) => user);
-			expect(localLdapUsers.length).toBe(1);
-			expect(localLdapUsers[0].id).toBe(member.id);
-			expect(localLdapUsers[0].disabled).toBe(false);
+			const localLdapPeople = localLdapIdentities.map(({ user }) => user as Person);
+			expect(localLdapPeople.length).toBe(1);
+			expect(localLdapPeople[0].id).toBe(member.id);
+			expect(localLdapPeople[0].disabled).toBe(false);
 		});
 	});
 
 	describe('live mode', () => {
 		const runTest = async (ldapUsers: LdapUser[]) => {
-			jest.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue(ldapUsers);
+			vi.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue(ldapUsers);
 
 			await authOwnerAgent.post('/ldap/sync').send({ type: 'live' }).expect(200);
 
@@ -370,23 +370,55 @@ describe('POST /ldap/sync', () => {
 			expect(synchronization.created).toBe(1);
 
 			// Make sure the changes in the "LDAP server" were persisted in the database
-			const allUsers = await getAllUsers();
-			expect(allUsers.length).toBe(2);
+			const allPeople = (await getAllUsers()) as Person[];
+			expect(allPeople.length).toBe(2);
 
-			const ownerUser = allUsers.find((u) => u.email === owner.email)!;
-			expect(ownerUser.email).toBe(owner.email);
+			const ownerPerson = allPeople.find((u) => u.email === owner.email)!;
+			expect(ownerPerson.email).toBe(owner.email);
 
-			const memberUser = allUsers.find((u) => u.email !== owner.email)!;
-			expect(memberUser.email).toBe(ldapUser.mail);
-			expect(memberUser.lastName).toBe(ldapUser.sn);
-			expect(memberUser.firstName).toBe(ldapUser.givenName);
-			const memberProject = getPersonalProject(memberUser);
+			const memberPerson = allPeople.find((u) => u.email !== owner.email)!;
+			expect(memberPerson.email).toBe(ldapUser.mail);
+			expect(memberPerson.lastName).toBe(ldapUser.sn);
+			expect(memberPerson.firstName).toBe(ldapUser.givenName);
+			const memberProject = getPersonalProject(memberPerson);
 			expect(memberProject).toBeDefined();
 
 			const authIdentities = await getLdapIdentities();
 			expect(authIdentities.length).toBe(1);
 			expect(authIdentities[0].providerId).toBe(ldapUser.uid);
 			expect(authIdentities[0].providerType).toBe('ldap');
+		});
+
+		test('should skip an entry whose email matches an existing account when linking by email is disabled', async () => {
+			const ldapUser = {
+				mail: randomEmail(),
+				dn: '',
+				sn: randomName(),
+				givenName: randomName(),
+				uid: uniqueId(),
+			};
+
+			const existingUser = await createUser({
+				role: GLOBAL_MEMBER_ROLE,
+				email: ldapUser.mail,
+				firstName: 'existing',
+				lastName: 'account',
+			});
+
+			const ldapConfig = await createLdapConfig({ linkExistingAccountsByEmail: false });
+			Container.get(LdapService).setConfig(ldapConfig);
+
+			const synchronization = await runTest([ldapUser]);
+			expect(synchronization.created).toBe(0);
+			expect(synchronization.status).toBe('success');
+
+			expect(await getLdapIdentities()).toHaveLength(0);
+
+			const unchanged = (await Container.get(UserRepository).findOneByOrFail({
+				id: existingUser.id,
+			})) as Person;
+			expect(unchanged.firstName).toBe('existing');
+			expect(unchanged.lastName).toBe('account');
 		});
 
 		test('should detect updated user and persist change in model', async () => {
@@ -413,12 +445,12 @@ describe('POST /ldap/sync', () => {
 
 			// Make sure the changes in the "LDAP server" were persisted in the database
 			const localLdapIdentities = await getLdapIdentities();
-			const localLdapUsers = localLdapIdentities.map(({ user }) => user);
+			const localLdapPeople = localLdapIdentities.map(({ user }) => user as Person);
 
-			expect(localLdapUsers.length).toBe(1);
-			expect(localLdapUsers[0].email).toBe(ldapUser.mail);
-			expect(localLdapUsers[0].lastName).toBe(ldapUser.sn);
-			expect(localLdapUsers[0].firstName).toBe(ldapUser.givenName);
+			expect(localLdapPeople.length).toBe(1);
+			expect(localLdapPeople[0].email).toBe(ldapUser.mail);
+			expect(localLdapPeople[0].lastName).toBe(ldapUser.sn);
+			expect(localLdapPeople[0].firstName).toBe(ldapUser.givenName);
 			expect(localLdapIdentities[0].providerId).toBe(ldapUser.uid);
 		});
 
@@ -445,17 +477,17 @@ describe('POST /ldap/sync', () => {
 			expect(synchronization.disabled).toBe(1);
 
 			// Make sure the changes in the "LDAP server" were persisted in the database
-			const allUsers = await getAllUsers();
-			expect(allUsers.length).toBe(2);
+			const allPeople = (await getAllUsers()) as Person[];
+			expect(allPeople.length).toBe(2);
 
-			const ownerUser = allUsers.find((u) => u.email === owner.email)!;
-			expect(ownerUser.email).toBe(owner.email);
+			const ownerPerson = allPeople.find((u) => u.email === owner.email)!;
+			expect(ownerPerson.email).toBe(owner.email);
 
-			const memberUser = allUsers.find((u) => u.email !== owner.email)!;
-			expect(memberUser.email).toBe(ldapUser.mail);
-			expect(memberUser.lastName).toBe(ldapUser.sn);
-			expect(memberUser.firstName).toBe(ldapUser.givenName);
-			expect(memberUser.disabled).toBe(true);
+			const memberPerson = allPeople.find((u) => u.email !== owner.email)!;
+			expect(memberPerson.email).toBe(ldapUser.mail);
+			expect(memberPerson.lastName).toBe(ldapUser.sn);
+			expect(memberPerson.firstName).toBe(ldapUser.givenName);
+			expect(memberPerson.disabled).toBe(true);
 
 			const authIdentities = await getLdapIdentities();
 			expect(authIdentities.length).toBe(0);
@@ -464,7 +496,7 @@ describe('POST /ldap/sync', () => {
 		test('should remove user instance access once the user is disabled during synchronization', async () => {
 			const member = await createLdapUser({ role: { slug: 'global:member' } }, uniqueId());
 
-			jest.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue([]);
+			vi.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue([]);
 
 			await authOwnerAgent.post('/ldap/sync').send({ type: 'live' });
 
@@ -491,7 +523,7 @@ describe('POST /ldap/sync', () => {
 
 			const ldapUsers = [validLdapUser, invalidLdapUser];
 
-			const loggerSpy = jest.spyOn(Container.get(LdapService)['logger'], 'warn');
+			const loggerSpy = vi.mocked(Container.get(LdapService)['logger'].warn);
 
 			const synchronization = await runTest(ldapUsers);
 
@@ -507,11 +539,11 @@ describe('POST /ldap/sync', () => {
 			loggerSpy.mockRestore();
 
 			// Verify only valid user was created
-			const allUsers = await getAllUsers();
-			expect(allUsers.length).toBe(2); // owner + valid user
+			const allPeople = (await getAllUsers()) as Person[];
+			expect(allPeople.length).toBe(2); // owner + valid user
 
-			const memberUser = allUsers.find((u) => u.email !== owner.email)!;
-			expect(memberUser.email).toBe(validLdapUser.mail);
+			const memberPerson = allPeople.find((u) => u.email !== owner.email)!;
+			expect(memberPerson.email).toBe(validLdapUser.mail);
 		});
 
 		test('should filter out users with invalid email addresses during update', async () => {
@@ -538,7 +570,7 @@ describe('POST /ldap/sync', () => {
 				uid: originalUserId,
 			};
 
-			const loggerSpy = jest.spyOn(Container.get(LdapService)['logger'], 'warn');
+			const loggerSpy = vi.mocked(Container.get(LdapService)['logger'].warn);
 
 			const synchronization = await runTest([invalidLdapUser]);
 
@@ -555,9 +587,9 @@ describe('POST /ldap/sync', () => {
 
 			// Verify user still has original email
 			const localLdapIdentities = await getLdapIdentities();
-			const localLdapUsers = localLdapIdentities.map(({ user }) => user);
-			expect(localLdapUsers.length).toBe(1);
-			expect(localLdapUsers[0].email).toBe(originalEmail);
+			const localLdapPeople = localLdapIdentities.map(({ user }) => user as Person);
+			expect(localLdapPeople.length).toBe(1);
+			expect(localLdapPeople[0].email).toBe(originalEmail);
 		});
 	});
 });
@@ -598,9 +630,9 @@ describe('POST /login', () => {
 
 		await setCurrentAuthenticationMethod('ldap');
 
-		jest.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue([ldapUser]);
+		vi.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue([ldapUser]);
 
-		jest.spyOn(LdapService.prototype, 'validUser').mockResolvedValue();
+		vi.spyOn(LdapService.prototype, 'validUser').mockResolvedValue();
 
 		const response = await testServer.authlessAgent
 			.post('/login')
@@ -612,16 +644,16 @@ describe('POST /login', () => {
 
 		// Make sure the changes in the "LDAP server" were persisted in the database
 		const localLdapIdentities = await getLdapIdentities();
-		const localLdapUsers = localLdapIdentities.map(({ user }) => user);
+		const localLdapPeople = localLdapIdentities.map(({ user }) => user as Person);
 
-		expect(localLdapUsers.length).toBe(1);
-		expect(localLdapUsers[0].email).toBe(ldapUser.mail);
-		expect(localLdapUsers[0].lastName).toBe(ldapUser.sn);
-		expect(localLdapUsers[0].firstName).toBe(ldapUser.givenName);
+		expect(localLdapPeople.length).toBe(1);
+		expect(localLdapPeople[0].email).toBe(ldapUser.mail);
+		expect(localLdapPeople[0].lastName).toBe(ldapUser.sn);
+		expect(localLdapPeople[0].firstName).toBe(ldapUser.givenName);
 		expect(localLdapIdentities[0].providerId).toBe(ldapUser.uid);
-		expect(localLdapUsers[0].disabled).toBe(false);
+		expect(localLdapPeople[0].disabled).toBe(false);
 
-		await expect(getPersonalProject(localLdapUsers[0])).resolves.toBeDefined();
+		await expect(getPersonalProject(localLdapPeople[0])).resolves.toBeDefined();
 	};
 
 	test('should allow new LDAP user to login and synchronize data', async () => {
@@ -687,6 +719,42 @@ describe('POST /login', () => {
 		});
 
 		await runTest(ldapUser);
+	});
+
+	test('should refuse login when the email matches an existing account and linking by email is disabled', async () => {
+		const ldapUser = {
+			mail: randomEmail(),
+			dn: '',
+			sn: randomName(),
+			givenName: randomName(),
+			uid: uniqueId(),
+		};
+
+		const existingUser = await createUser({
+			role: GLOBAL_MEMBER_ROLE,
+			email: ldapUser.mail,
+			firstName: 'existing',
+			lastName: 'account',
+		});
+
+		const ldapConfig = await createLdapConfig({ linkExistingAccountsByEmail: false });
+		Container.get(LdapService).setConfig(ldapConfig);
+		await setCurrentAuthenticationMethod('ldap');
+		vi.spyOn(LdapService.prototype, 'searchWithAdminBinding').mockResolvedValue([ldapUser]);
+		vi.spyOn(LdapService.prototype, 'validUser').mockResolvedValue();
+
+		const response = await testServer.authlessAgent
+			.post('/login')
+			.send({ emailOrLdapLoginId: ldapUser.mail, password: 'ldap-password' });
+
+		expect(response.statusCode).toBe(401);
+		expect(await getLdapIdentities()).toHaveLength(0);
+
+		const unchanged = (await Container.get(UserRepository).findOneByOrFail({
+			id: existingUser.id,
+		})) as Person;
+		expect(unchanged.firstName).toBe('existing');
+		expect(unchanged.lastName).toBe('account');
 	});
 });
 

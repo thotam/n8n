@@ -1,10 +1,27 @@
 import type { CredentialListItem } from '@n8n/agents';
+import { mockInstance } from '@n8n/backend-test-utils';
 import type { CredentialsEntity, User } from '@n8n/db';
-import { mock } from 'jest-mock-extended';
+import type { IWorkflowExecuteAdditionalData } from 'n8n-workflow';
+import { mock } from 'vitest-mock-extended';
 
 import type { CredentialsService } from '@/credentials/credentials.service';
+import { CredentialsHelper } from '@/credentials-helper';
 
 import { AgentsCredentialProvider } from '../adapters/agents-credential-provider';
+
+const additionalData = mock<IWorkflowExecuteAdditionalData>();
+const getBaseMock = vi.fn<(...args: unknown[]) => Promise<IWorkflowExecuteAdditionalData>>();
+
+vi.mock('@/workflow-execute-additional-data', () => ({
+	getBase: async (...args: unknown[]) => await getBaseMock(...args),
+}));
+
+const credentialsHelper = mockInstance(CredentialsHelper);
+
+beforeEach(() => {
+	vi.clearAllMocks();
+	getBaseMock.mockResolvedValue(additionalData);
+});
 
 function credential(overrides: Partial<CredentialsEntity>): CredentialsEntity {
 	return {
@@ -31,10 +48,17 @@ describe('AgentsCredentialProvider', () => {
 		credentialsService.getCredentialsAUserCanUseInAWorkflow.mockResolvedValue([
 			{
 				...listItem({ id: 'allowed' }),
+				description: null,
+				createdAt: '2024-01-01T00:00:00.000Z',
+				updatedAt: '2024-01-01T00:00:00.000Z',
 				scopes: [],
 				isManaged: false,
 				isGlobal: false,
-				isResolvable: true,
+				isResolvable: false,
+				currentUserHasAccess: true,
+				homeProject: null,
+				sharedWithProjects: [],
+				sharedRoute: 'project',
 			},
 		]);
 
@@ -45,6 +69,8 @@ describe('AgentsCredentialProvider', () => {
 		]);
 		expect(credentialsService.getCredentialsAUserCanUseInAWorkflow).toHaveBeenCalledWith(user, {
 			projectId: 'project-1',
+			excludePersonalRoute: true,
+			excludeResolvable: true,
 		});
 		expect(credentialsService.findAllCredentialIdsForProject).not.toHaveBeenCalled();
 	});
@@ -102,17 +128,47 @@ describe('AgentsCredentialProvider', () => {
 		]);
 	});
 
+	it.each([false, true])(
+		'excludes end-user credentials with a request user: %s',
+		async (withUser) => {
+			const credentialsService = mock<CredentialsService>();
+			const fixed = credential({ id: 'fixed', isResolvable: false });
+			const endUser = credential({ id: 'end-user', isResolvable: true });
+			credentialsService.findAllCredentialIdsForProject.mockResolvedValue([fixed, endUser]);
+			credentialsService.findAllGlobalCredentialIds.mockResolvedValue([]);
+			credentialsService.getCredentialsAUserCanUseInAWorkflow.mockResolvedValue([
+				mock({ id: fixed.id, name: fixed.name, type: fixed.type, isResolvable: false }),
+			]);
+			const provider = new AgentsCredentialProvider(
+				credentialsService,
+				'project-1',
+				withUser ? mock<User>() : undefined,
+			);
+
+			await expect(provider.list()).resolves.toEqual([listItem({ id: 'fixed' })]);
+			await expect(provider.resolve(endUser.id)).rejects.toThrow('not found or not accessible');
+			expect(credentialsHelper.getDecrypted).not.toHaveBeenCalled();
+		},
+	);
+
 	it('resolves a project credential when no request user is provided', async () => {
 		const credentialsService = mock<CredentialsService>();
 		const projectCred = credential({ id: 'project-cred', name: 'Project Slack' });
 		credentialsService.findAllCredentialIdsForProject.mockResolvedValue([projectCred]);
 		credentialsService.findAllGlobalCredentialIds.mockResolvedValue([]);
-		credentialsService.decrypt.mockResolvedValue({ apiKey: 'project-secret' });
+		credentialsHelper.getDecrypted.mockResolvedValue({ apiKey: 'project-secret' });
 
 		const provider = new AgentsCredentialProvider(credentialsService, 'project-1');
 
 		await expect(provider.resolve('project-cred')).resolves.toEqual({ apiKey: 'project-secret' });
-		expect(credentialsService.decrypt).toHaveBeenCalledWith(projectCred, true);
+		expect(credentialsHelper.getDecrypted).toHaveBeenCalledWith(
+			additionalData,
+			{ id: 'project-cred', name: 'Project Slack' },
+			'slackApi',
+			'internal',
+		);
+		// `getBase` must be project-scoped — it supplies the project's variables.
+		expect(getBaseMock).toHaveBeenCalledWith({ userId: undefined, projectId: 'project-1' });
 	});
 
 	it('resolves a global credential when no request user is provided', async () => {
@@ -120,12 +176,39 @@ describe('AgentsCredentialProvider', () => {
 		const globalCred = credential({ id: 'global-cred', name: 'Global OpenAI', type: 'openAiApi' });
 		credentialsService.findAllCredentialIdsForProject.mockResolvedValue([]);
 		credentialsService.findAllGlobalCredentialIds.mockResolvedValue([globalCred]);
-		credentialsService.decrypt.mockResolvedValue({ apiKey: 'global-secret' });
+		credentialsHelper.getDecrypted.mockResolvedValue({ apiKey: 'global-secret' });
 
 		const provider = new AgentsCredentialProvider(credentialsService, 'project-1');
 
 		await expect(provider.resolve('global-cred')).resolves.toEqual({ apiKey: 'global-secret' });
-		expect(credentialsService.decrypt).toHaveBeenCalledWith(globalCred, true);
+		expect(credentialsHelper.getDecrypted).toHaveBeenCalledWith(
+			additionalData,
+			{ id: 'global-cred', name: 'Global OpenAI' },
+			'openAiApi',
+			'internal',
+		);
+	});
+
+	// Expression evaluation itself (a stored `={{ $secrets... }}` resolving to
+	// plaintext, and a missing secret rejecting) is covered against a real
+	// `CredentialsHelper` in `test/integration/agents/agents-credential-provider.test.ts`.
+	it('defaults apiKey to an empty string for a credential type that has none', async () => {
+		const credentialsService = mock<CredentialsService>();
+		const bearerCred = credential({
+			id: 'bearer-cred',
+			name: 'MCP bearer',
+			type: 'httpBearerAuth',
+		});
+		credentialsService.findAllCredentialIdsForProject.mockResolvedValue([bearerCred]);
+		credentialsService.findAllGlobalCredentialIds.mockResolvedValue([]);
+		credentialsHelper.getDecrypted.mockResolvedValue({ token: 'bearer-token' });
+
+		const provider = new AgentsCredentialProvider(credentialsService, 'project-1');
+
+		await expect(provider.resolve('bearer-cred')).resolves.toEqual({
+			token: 'bearer-token',
+			apiKey: '',
+		});
 	});
 
 	it('rejects resolve for a credential not in project or global scope when no request user is provided', async () => {
@@ -142,5 +225,60 @@ describe('AgentsCredentialProvider', () => {
 		await expect(provider.resolve('unknown-cred')).rejects.toThrow(
 			'Credential "unknown-cred" not found or not accessible',
 		);
+	});
+
+	it('resolves a credential the user can access when a request user is provided', async () => {
+		const credentialsService = mock<CredentialsService>();
+		const user = { id: 'user-1' } as User;
+		const projectCred = credential({ id: 'allowed', name: 'Slack' });
+		credentialsService.getCredentialsAUserCanUseInAWorkflow.mockResolvedValue([
+			{
+				...listItem({ id: 'allowed' }),
+				description: null,
+				createdAt: '2024-01-01T00:00:00.000Z',
+				updatedAt: '2024-01-01T00:00:00.000Z',
+				scopes: [],
+				isManaged: false,
+				isGlobal: false,
+				isResolvable: false,
+				currentUserHasAccess: true,
+				homeProject: null,
+				sharedWithProjects: [],
+				sharedRoute: 'project',
+			},
+		]);
+		credentialsService.findAllCredentialIdsForProject.mockResolvedValue([projectCred]);
+		credentialsService.findAllGlobalCredentialIds.mockResolvedValue([]);
+		credentialsHelper.getDecrypted.mockResolvedValue({ apiKey: 'secret' });
+
+		const provider = new AgentsCredentialProvider(credentialsService, 'project-1', user);
+
+		await expect(provider.resolve('allowed')).resolves.toEqual({ apiKey: 'secret' });
+		expect(getBaseMock).toHaveBeenCalledWith({ userId: 'user-1', projectId: 'project-1' });
+		expect(credentialsHelper.getDecrypted).toHaveBeenCalledWith(
+			additionalData,
+			{ id: 'allowed', name: 'Slack' },
+			'slackApi',
+			'internal',
+		);
+	});
+
+	it('rejects resolve for a credential accessible to the project but not to the request user', async () => {
+		const credentialsService = mock<CredentialsService>();
+		const user = { id: 'user-1' } as User;
+		// The user has no accessible credentials, but the project itself can
+		// see `forbidden-cred` — this must not be resolvable/decryptable by the user.
+		credentialsService.getCredentialsAUserCanUseInAWorkflow.mockResolvedValue([]);
+		credentialsService.findAllCredentialIdsForProject.mockResolvedValue([
+			credential({ id: 'forbidden-cred' }),
+		]);
+		credentialsService.findAllGlobalCredentialIds.mockResolvedValue([]);
+
+		const provider = new AgentsCredentialProvider(credentialsService, 'project-1', user);
+
+		await expect(provider.resolve('forbidden-cred')).rejects.toThrow(
+			'Credential "forbidden-cred" not found or not accessible',
+		);
+		expect(credentialsHelper.getDecrypted).not.toHaveBeenCalled();
 	});
 });

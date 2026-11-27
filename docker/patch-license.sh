@@ -23,71 +23,86 @@ if grep -q "feat:showNonProdBanner" "$LICENSE_FILE"; then
 fi
 
 echo "[patch] Đang patch license.js ..."
+cp "$LICENSE_FILE" "$LICENSE_FILE.orig"
 
 node -e "
 const fs = require('fs');
 let code = fs.readFileSync('$LICENSE_FILE', 'utf8');
+const patch = (re, rep) => {
+  if (!re.test(code)) console.warn('[patch] CẢNH BÁO: không khớp ' + re.source.slice(0, 40));
+  code = code.replace(re, rep);
+};
 
 // 1. isLicensed() → return true (trừ showNonProdBanner, apiDisabled, và toàn bộ AI features)
-code = code.replace(
+patch(
   /isLicensed\(feature\)\s*\{\s*return this\.manager\?\.hasFeatureEnabled\(feature\) \?\? false;\s*\}/,
   \"isLicensed(_feature) { const _disabled = ['feat:showNonProdBanner','feat:apiDisabled','feat:aiAssistant','feat:aiBuilder','feat:aiGateway','feat:aiCredits']; if (_disabled.includes(_feature)) return false; return true; }\"
 );
 
 // 2. getValue() → return unlimited cho mọi quota
-code = code.replace(
+patch(
   /getValue\(feature\)\s*\{\s*return this\.manager\?\.getFeatureValue\(feature\);\s*\}/,
   \"getValue(feature) { if (feature === 'planName') return 'Enterprise'; if (typeof feature === 'string' && feature.startsWith('quota:')) return constants_1.UNLIMITED_LICENSE_QUOTA; return this.manager?.getFeatureValue(feature); }\"
 );
 
 // 3. Quota methods - getUsersLimit
-code = code.replace(
+patch(
   /getUsersLimit\(\)\s*\{[^}]*LICENSE_QUOTAS\.USERS_LIMIT[^}]*\}/,
   'getUsersLimit() { return constants_1.UNLIMITED_LICENSE_QUOTA; }'
 );
 
 // getTriggerLimit
-code = code.replace(
+patch(
   /getTriggerLimit\(\)\s*\{[^}]*LICENSE_QUOTAS\.TRIGGER_LIMIT[^}]*\}/,
   'getTriggerLimit() { return constants_1.UNLIMITED_LICENSE_QUOTA; }'
 );
 
 // getVariablesLimit
-code = code.replace(
+patch(
   /getVariablesLimit\(\)\s*\{[^}]*LICENSE_QUOTAS\.VARIABLES_LIMIT[^}]*\}/,
   'getVariablesLimit() { return constants_1.UNLIMITED_LICENSE_QUOTA; }'
 );
 
 // getAiCredits
-code = code.replace(
+patch(
   /getAiCredits\(\)\s*\{[^}]*LICENSE_QUOTAS\.AI_CREDITS[^}]*\}/,
   'getAiCredits() { return constants_1.UNLIMITED_LICENSE_QUOTA; }'
 );
 
 // getWorkflowHistoryPruneLimit (multiline)
-code = code.replace(
+patch(
   /getWorkflowHistoryPruneLimit\(\)\s*\{[\s\S]*?DEFAULT_WORKFLOW_HISTORY_PRUNE_LIMIT\);?\s*\}/,
   'getWorkflowHistoryPruneLimit() { return constants_1.UNLIMITED_LICENSE_QUOTA; }'
 );
 
 // getTeamProjectLimit
-code = code.replace(
+patch(
   /getTeamProjectLimit\(\)\s*\{[^}]*LICENSE_QUOTAS\.TEAM_PROJECT_LIMIT[^}]*\}/,
   'getTeamProjectLimit() { return constants_1.UNLIMITED_LICENSE_QUOTA; }'
 );
 
-// getPlanName
-code = code.replace(
-  /getPlanName\(\)\s*\{[^}]*'Community'[^}]*\}/,
-  \"getPlanName() { return 'Enterprise'; }\"
+// getPlanName: chèn return vào đầu thân hàm, phần thân cũ thành code chết nên không phụ thuộc cách upstream viết
+patch(
+  /getPlanName\(\)\s*\{/,
+  \"getPlanName() { return 'Enterprise';\"
 );
 
 fs.writeFileSync('$LICENSE_FILE', code);
 console.log('[patch] Ghi file thành công!');
 "
+PATCH_STATUS=$?
 
-if [ $? -ne 0 ]; then
+# Kiểm tra cú pháp; hỏng thì khôi phục bản gốc để n8n vẫn khởi động được
+if [ $PATCH_STATUS -eq 0 ] && ! node --check "$LICENSE_FILE"; then
+  echo "[patch] LỖI: license.js sau patch sai cú pháp, khôi phục bản gốc!"
+  cp "$LICENSE_FILE.orig" "$LICENSE_FILE"
+  PATCH_STATUS=1
+fi
+
+if [ $PATCH_STATUS -ne 0 ]; then
   echo "[patch] LỖI: Patch thất bại!"
+  # Build-time thì làm fail build image, tránh ship image hỏng
+  [ "$SKIP_EXEC" = "1" ] && exit 1
 else
   echo "[patch] Hoàn tất!"
 fi

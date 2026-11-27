@@ -84,6 +84,8 @@ services:
       N8N_DIAGNOSTICS_ENABLED: ${N8N_DIAGNOSTICS_ENABLED}
       N8N_METRICS: ${N8N_METRICS}
       N8N_USER_FOLDER: ${N8N_USER_FOLDER}
+      # Journal riêng từng container (ngoài volume chia sẻ), tránh báo crash giả giữa main và worker
+      N8N_CRASH_JOURNAL_PATH: /home/node/crash.journal
       # MCP Server
       N8N_MCP_MANAGED_BY_ENV: ${N8N_MCP_MANAGED_BY_ENV:-false}
       N8N_MCP_ACCESS_ENABLED: ${N8N_MCP_ACCESS_ENABLED:-false}
@@ -158,6 +160,8 @@ services:
       N8N_DIAGNOSTICS_ENABLED: ${N8N_DIAGNOSTICS_ENABLED}
       N8N_METRICS: ${N8N_METRICS}
       N8N_USER_FOLDER: ${N8N_USER_FOLDER}
+      # Journal riêng từng container (ngoài volume chia sẻ), tránh báo crash giả giữa main và worker
+      N8N_CRASH_JOURNAL_PATH: /home/node/crash.journal
       # MCP Server
       N8N_MCP_MANAGED_BY_ENV: ${N8N_MCP_MANAGED_BY_ENV:-false}
       N8N_MCP_ACCESS_ENABLED: ${N8N_MCP_ACCESS_ENABLED:-false}

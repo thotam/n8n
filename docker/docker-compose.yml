@@ -152,6 +152,10 @@ services:
       QUEUE_BULL_REDIS_PASSWORD: ${REDIS_PASSWORD}
       QUEUE_HEALTH_CHECK_ACTIVE: ${QUEUE_HEALTH_CHECK_ACTIVE}
       N8N_GRACEFUL_SHUTDOWN_TIMEOUT: ${N8N_GRACEFUL_SHUTDOWN_TIMEOUT}
+      # Worker heap + task runner heap must stay below WORKER_MEMORY, leaving room for off-heap memory,
+      # so V8 fails with a readable heap error instead of the kernel OOM-killing the container.
+      NODE_OPTIONS: --max-old-space-size=${WORKER_MAX_OLD_SPACE_SIZE:-1792}
+      N8N_RUNNERS_MAX_OLD_SPACE_SIZE: ${WORKER_RUNNERS_MAX_OLD_SPACE_SIZE:-768}
       # n8n Core — ENCRYPTION_KEY phải giống main
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
       GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
